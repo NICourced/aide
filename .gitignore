@@ -1,0 +1,21 @@
+# Артефакты сборки корневой сборки и её модулей.
+# Правило без ведущего слэша действует на любом уровне вложенности: `.kotlin/` закрывает
+# и корневой `.kotlin/`, и `build-logic/.kotlin/` — то же самое, что `**/.kotlin/`.
+.gradle/
+build/
+*/build/
+.kotlin/
+
+# Артефакты сборки build-logic: это отдельная included-сборка со своими каталогами
+build-logic/build/
+build-logic/.gradle/
+build-logic/.kotlin/
+
+# Локальные и IDE-файлы
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Wrapper коммитится: без него на чистой машине нет команды ./gradlew
+!gradle/wrapper/gradle-wrapper.jar
