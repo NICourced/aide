@@ -1,5 +1,7 @@
 plugins {
     alias(libs.plugins.androidApplication)
+    alias(libs.plugins.kotlinAndroid)
+    alias(libs.plugins.composeCompiler)
 }
 
 android {
@@ -12,9 +14,16 @@ android {
         versionCode = 1
         versionName = "0.1.0-stage0"
     }
+    buildFeatures { compose = true }
     compileOptions {
         val javaVersion = JavaVersion.toVersion(libs.versions.jvmTarget.get())
         sourceCompatibility = javaVersion
         targetCompatibility = javaVersion
     }
+}
+
+dependencies {
+    implementation(project(":client-ui"))
+    implementation(project(":platform-android"))
+    implementation(libs.androidx.activity.compose)
 }
