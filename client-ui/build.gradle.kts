@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.testing.Test
+
 plugins {
     id("aide.kmp-library")
     alias(libs.plugins.composeMultiplatform)
@@ -8,8 +10,9 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(project(":domain"))
-            // api: типы client-state появляются в публичных подписях модуля — в параметрах
-            // App, — поэтому точки входа должны видеть их без дублирования этой зависимости.
+            // api: тип client-state стоит в публичной подписи модуля — в параметре App, —
+            // поэтому без api потребитель не соберётся: implementation-зависимости
+            // не попадают на его compile classpath.
             api(project(":client-state"))
             implementation(compose.runtime)
             implementation(compose.foundation)
@@ -29,4 +32,11 @@ kotlin {
             implementation(libs.androidx.activity.compose)
         }
     }
+}
+
+// NoLocalityBranchingTest читает исходники файловой системой (T-0.13). Путь передаётся
+// системным свойством как абсолютный: при запуске из IDE и из корня сборки рабочий
+// каталог разный. Тестовый набор `jvmTest` наследует `kotlin("test")` из `commonTest`.
+tasks.named<Test>("jvmTest") {
+    systemProperty("clientUiSourcesDir", layout.projectDirectory.dir("src").asFile.path)
 }

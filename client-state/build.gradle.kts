@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.testing.Test
+
 plugins {
     id("aide.kmp-library")
     alias(libs.plugins.kotlinSerialization)
@@ -27,4 +29,12 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
         }
     }
+}
+
+// NoLocalityBranchingTest читает исходники файловой системой. Путь передаётся системным
+// свойством как абсолютный (layout, а не рабочий каталог задачи): при запуске из IDE
+// и из корня сборки рабочий каталог разный. Тестовый набор `jvmTest` наследует
+// `kotlin("test")` из `commonTest` (aide.kmp-base), отдельная зависимость не нужна.
+tasks.named<Test>("jvmTest") {
+    systemProperty("clientSourcesDir", layout.projectDirectory.dir("src").asFile.path)
 }

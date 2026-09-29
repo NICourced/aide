@@ -85,7 +85,7 @@ class ProtocolServer(
         }
         engine = server
         server.start(wait = false)
-        logger.info("Хост слушает $endpoint")
+        logger.info("Хост слушает $endpoint, режим $mode")
     }
 
     /** Останавливает сервер и освобождает порт. */
