@@ -20,6 +20,12 @@ jobs:
 
       - name: Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # У действия по умолчанию `packages: tools platform-tools`, но пакета `tools`
+          # в репозитории SDK больше нет: установка падает с "Failed to find package 'tools'"
+          # и роняет job за 20 секунд. Нужный набор ставится шагом ниже, поэтому здесь
+          # из умолчания убран только исчезнувший пакет.
+          packages: platform-tools
 
       - name: Лицензии Android SDK
         run: yes | sdkmanager --licenses
