@@ -1,0 +1,30 @@
+CREATE TABLE tool_call (
+    id TEXT NOT NULL PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    required_approval INTEGER NOT NULL,
+    duration_millis INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    payload BLOB NOT NULL
+);
+
+CREATE INDEX tool_call_run ON tool_call(run_id);
+CREATE INDEX tool_call_tool ON tool_call(tool);
+
+insert:
+INSERT OR REPLACE INTO tool_call(id, run_id, tool, outcome, required_approval, duration_millis, at, payload)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+byId:
+SELECT * FROM tool_call WHERE id = ?;
+
+byRun:
+SELECT * FROM tool_call WHERE run_id = ? ORDER BY at;
+
+/** Фильтр журнала аудита по инструменту (T-1.14). */
+byRunAndTool:
+SELECT * FROM tool_call WHERE run_id = ? AND tool = ? ORDER BY at;
+
+count:
+SELECT count(*) FROM tool_call;

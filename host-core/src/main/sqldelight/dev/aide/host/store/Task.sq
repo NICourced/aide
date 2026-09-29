@@ -1,0 +1,27 @@
+CREATE TABLE task (
+    id TEXT NOT NULL PRIMARY KEY,
+    title TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    payload BLOB NOT NULL
+);
+
+CREATE INDEX task_status ON task(status);
+
+insert:
+INSERT OR REPLACE INTO task(id, title, prompt, branch, status, created_at, payload)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+byId:
+SELECT * FROM task WHERE id = ?;
+
+byStatus:
+SELECT * FROM task WHERE status = ? ORDER BY created_at DESC;
+
+delete:
+DELETE FROM task WHERE id = ?;
+
+count:
+SELECT count(*) FROM task;

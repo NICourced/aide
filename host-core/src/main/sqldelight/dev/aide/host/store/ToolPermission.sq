@@ -1,0 +1,19 @@
+CREATE TABLE tool_permission (
+    tool TEXT NOT NULL PRIMARY KEY,
+    read_permission TEXT NOT NULL,
+    write_permission TEXT NOT NULL,
+    payload BLOB NOT NULL
+);
+
+insert:
+INSERT OR REPLACE INTO tool_permission(tool, read_permission, write_permission, payload)
+VALUES (?, ?, ?, ?);
+
+byTool:
+SELECT * FROM tool_permission WHERE tool = ?;
+
+all:
+SELECT * FROM tool_permission ORDER BY tool;
+
+delete:
+DELETE FROM tool_permission WHERE tool = ?;

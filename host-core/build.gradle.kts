@@ -1,9 +1,29 @@
 plugins {
     alias(libs.plugins.kotlinJvm)
     alias(libs.plugins.kotlinSerialization)
+    alias(libs.plugins.sqldelight)
 }
 
 kotlin { jvmToolchain(libs.versions.jvmTarget.get().toInt()) }
+
+// Хранилище метаданных хоста (T-0.16): SQLite через SQLDelight.
+// packageName — пакет DB-класса; пакет классов запросов задаётся ещё и путём
+// .sq-файла внутри srcDirs (dev/aide/host/store → dev.aide.host.store).
+sqldelight {
+    databases {
+        create("HostDatabase") {
+            packageName.set("dev.aide.host.store.db")
+            srcDirs.setFrom("src/main/sqldelight")
+            // Файл схемы текущей версии коммитится вместе с кодом как эталон.
+            // Каталог лежит вне srcDirs: плагин пишет выход внутрь srcDirs, и тогда
+            // выход schema-задачи попадает внутрь входов задачи генерации интерфейса —
+            // Gradle 8 валит сборку. Встроенная проверка миграций (verifyMigrations)
+            // по умолчанию выключена: миграцию на непустой базе версии 1 проверяет
+            // MigrationTest.
+            schemaOutputDirectory.set(file("src/main/sqldelight-schema"))
+        }
+    }
+}
 
 dependencies {
     implementation(project(":domain"))
@@ -16,6 +36,13 @@ dependencies {
     implementation(libs.ktor.server.websockets)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.datetime)
+    // Полный доменный объект хранится в колонке payload в CBOR: домен остаётся
+    // единственным описанием объекта, а индексируемые поля вынесены в колонки.
+    implementation(libs.kotlinx.serialization.core)
+    implementation(libs.kotlinx.serialization.cbor)
+    // SQLite: runtime нужен сгенерированному коду, sqlite-driver — драйвер JDBC.
+    implementation(libs.sqldelight.runtime)
+    implementation(libs.sqldelight.jdbc)
     implementation(libs.slf4j.api)
     // Композиционный корень хоста (задача 13) собирает граф на Koin — DI-фреймворк стека.
     implementation(libs.koin.core)

@@ -1,0 +1,33 @@
+CREATE TABLE review_decision (
+    packet_id TEXT NOT NULL,
+    packet_revision INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    target_hunk_id TEXT,
+    value TEXT NOT NULL,
+    client_platform TEXT NOT NULL,
+    decided_at INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    PRIMARY KEY (packet_id, packet_revision, scope, target_hunk_id, decided_at)
+);
+
+CREATE INDEX review_decision_packet ON review_decision(packet_id);
+CREATE INDEX review_decision_platform ON review_decision(client_platform);
+
+insert:
+INSERT OR REPLACE INTO review_decision(
+    packet_id, packet_revision, scope, target_hunk_id, value, client_platform, decided_at, payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+byPacket:
+SELECT * FROM review_decision WHERE packet_id = ? ORDER BY decided_at;
+
+byPacketAndRevision:
+SELECT * FROM review_decision WHERE packet_id = ? AND packet_revision = ? ORDER BY decided_at;
+
+/** Читает решения, принятые с указанной платформы, от старых к новым — сырьё метрики «доля задач, закрытых с телефона» (§ 2.3). */
+byPlatform:
+SELECT * FROM review_decision WHERE client_platform = ? ORDER BY decided_at;
+
+/** Сколько решений принято с каждой платформы — метрика «доля задач, закрытых с телефона» (§ 2.3). */
+countByPlatform:
+SELECT client_platform, count(*) AS decisions FROM review_decision GROUP BY client_platform;
