@@ -12,7 +12,6 @@ kotlin {
             api(project(":domain"))
             implementation(libs.kotlinx.serialization.core)
             implementation(libs.kotlinx.serialization.cbor)
-            implementation(libs.kotlinx.datetime)
         }
     }
 }

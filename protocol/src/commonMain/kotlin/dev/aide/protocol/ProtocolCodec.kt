@@ -59,6 +59,9 @@ object HostMessageType {
  *
  * CBOR и бинарные `encodeToByteArray`/`decodeFromByteArray` помечены в kotlinx.serialization
  * экспериментальными — отсюда opt-in на весь объект, а не только на построитель [Cbor].
+ *
+ * Сборка конверта (`envelope`) намеренно `internal`: это деталь реализации кодека, а не часть
+ * контракта протокола. Публично сообщение задаётся парой `encode`/`decode…Message`.
  */
 @OptIn(ExperimentalSerializationApi::class)
 object ProtocolCodec {
@@ -122,7 +125,7 @@ object ProtocolCodec {
     }
 
     /** Собирает конверт, который клиент или хост может прочитать, даже не зная тип сообщения. */
-    fun <T> envelope(type: String, serializer: SerializationStrategy<T>, value: T): ByteArray =
+    internal fun <T> envelope(type: String, serializer: SerializationStrategy<T>, value: T): ByteArray =
         cbor.encodeToByteArray(
             WireEnvelope.serializer(),
             WireEnvelope(type, cbor.encodeToByteArray(serializer, value)),
