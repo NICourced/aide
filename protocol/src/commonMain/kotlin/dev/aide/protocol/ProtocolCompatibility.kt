@@ -50,9 +50,3 @@ object ProtocolCompatibility {
 
 /** Результат проверки совместимости: либо [ProtocolCompatibility.Compatible], либо причина несовместимости. */
 sealed interface ProtocolCompatibilityResult
-
-/** Псевдоним для читаемости объявлений вида `when (result) { is Compatible -> … }`. */
-typealias Compatible = ProtocolCompatibility.Compatible
-
-/** Псевдоним для читаемости обработки несовместимости. */
-typealias Incompatible = ProtocolCompatibility.Incompatible
