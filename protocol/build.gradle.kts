@@ -10,6 +10,9 @@ kotlin {
             // в публичных сигнатурах (payload'ы, HostEvent), поэтому клиентским модулям
             // домен нужен на компиляции без отдельной строки у каждого.
             api(project(":domain"))
+            implementation(libs.kotlinx.serialization.core)
+            implementation(libs.kotlinx.serialization.cbor)
+            implementation(libs.kotlinx.datetime)
         }
     }
 }
