@@ -21,15 +21,21 @@ object ProtocolCompatibility {
         val userMessage: String,
     ) : ProtocolCompatibilityResult
 
-    /** Сравнивает версии клиента и хоста. */
+    /**
+     * Сравнивает версии клиента и хоста.
+     *
+     * `userMessage` по сети не передаётся: [HostMessage.Incompatible] несёт только причину и
+     * версию хоста, а текст клиент строит сам, вызывая эту же чистую функцию с версией хоста.
+     */
     fun check(client: ProtocolVersion, host: ProtocolVersion): ProtocolCompatibilityResult = when {
-        client.major != host.major && client.major < host.major -> Incompatible(
+        client.major < host.major -> Incompatible(
             reason = IncompatibilityReason.CLIENT_OUTDATED,
             userMessage = "Версия протокола не поддерживается: обновите приложение " +
                 "(клиент $client, хост $host).",
         )
 
-        client.major != host.major -> Incompatible(
+        // После первой ветки major у клиента не меньше, чем у хоста, значит эта ветка — про «клиент новее».
+        client.major > host.major -> Incompatible(
             reason = IncompatibilityReason.HOST_OUTDATED,
             userMessage = "Версия протокола не поддерживается: обновите хост " +
                 "(клиент $client, хост $host).",
