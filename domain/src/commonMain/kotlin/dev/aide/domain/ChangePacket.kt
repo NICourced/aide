@@ -32,7 +32,13 @@ data class ChangePacket(
     val snapshotRef: SnapshotRef? = null,
     /** Момент сборки пакета. */
     val createdAt: Instant,
-)
+) {
+    init {
+        // Валидация в конструкторе, а не в вызывающем коде: инварианты 1 и 5 § 4.1
+        // нельзя обойти, разобрав пакет из CBOR — десериализатор зовёт конструктор.
+        validatePacket(files, risk)
+    }
+}
 
 /** Суммарно добавленные строки по всем файлам — то, что карточка показывает как `+N`. */
 val ChangePacket.addedLines: Int get() = files.sumOf { it.addedLines }
