@@ -39,6 +39,11 @@ jobs:
         # главное доказательство приёмки этапа не запускалось бы нигде.
         run: ./gradlew :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test
 
+      - name: Сквозной тест этапа действительно исполнился
+        # Тест, который не запускается, не существует. Эта проверка превращает
+        # «забыли добавить задачу в список» из незаметного в красную сборку.
+        run: test -f desktopApp/build/test-results/test/TEST-dev.aide.desktop.DesktopEndToEndTest.xml
+
       - name: Линт
         run: ./gradlew detekt
 
