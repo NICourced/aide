@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Послабление cleartext только для debug-сборки (T-0.15).
+
+  targetSdk 35 запрещает cleartext по умолчанию, а хост в этом этапе слушает
+  `ws://` — без этого послабления Android-клиент не подключится к хосту вообще.
+  Файл лежит в `src/debug`, поэтому в release-сборке его нет: там действует
+  запрет по умолчанию, и незашифрованный трафик по-прежнему невозможен.
+
+  Разрешены только локальные адреса машины разработчика: адрес эмулятора
+  (10.0.2.2 — псевдоним loopback-интерфейса хоста), петля и localhost.
+  Любой другой узел обязан быть `wss://`.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/network_security_config_debug" />
+</manifest>

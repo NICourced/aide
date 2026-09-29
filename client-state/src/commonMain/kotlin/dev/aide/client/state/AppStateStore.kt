@@ -1,0 +1,151 @@
+package dev.aide.client.state
+
+import dev.aide.protocol.FileContentPayload
+import dev.aide.protocol.FileTreePayload
+import dev.aide.protocol.HostStatePayload
+import dev.aide.protocol.ProtocolError
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+/**
+ * Состояние экранов приложения, независимое от UI.
+ *
+ * Отдельный слой нужен по двум причинам: состояния можно тестировать без
+ * Compose, и правила переходов («ошибка важнее данных», «нет связи не стирает
+ * кэш») описаны в одном месте, а не разбросаны по composable-функциям.
+ */
+class AppStateStore {
+
+    private val _treeState = MutableStateFlow<ScreenState<FileTreePayload>>(ScreenState.Empty)
+
+    /** Состояние дерева файлов. */
+    val treeState: StateFlow<ScreenState<FileTreePayload>> = _treeState.asStateFlow()
+
+    private val _fileState = MutableStateFlow<ScreenState<FileContentPayload>>(ScreenState.Empty)
+
+    /** Состояние просмотра файла. */
+    val fileState: StateFlow<ScreenState<FileContentPayload>> = _fileState.asStateFlow()
+
+    private val _hostState = MutableStateFlow<HostStatePayload?>(null)
+
+    /** Состояние хоста для шапки: ветка, корень, режим. */
+    val hostState: StateFlow<HostStatePayload?> = _hostState.asStateFlow()
+
+    private val _selectedFile = MutableStateFlow<String?>(null)
+
+    /** Путь выбранного файла; null, если файл не выбран. */
+    val selectedFile: StateFlow<String?> = _selectedFile.asStateFlow()
+
+    /** Последнее достоверное состояние связи; нужно, чтобы вернуться из [ScreenState.Offline]. */
+    private var lastConnection: ConnectionState = ConnectionState.Idle
+
+    /** Показывает загрузку дерева. */
+    fun onTreeLoading() {
+        _treeState.value = ScreenState.Loading
+    }
+
+    /** Принимает загруженное дерево; пустое дерево становится состоянием «пусто». */
+    fun onTreeLoaded(tree: FileTreePayload) {
+        _treeState.value = if (tree.entries.isEmpty()) ScreenState.Empty else ScreenState.Loaded(tree)
+    }
+
+    /** Превращает ошибку хоста в состояние экрана. */
+    fun onTreeFailed(error: ProtocolError) {
+        _treeState.value = error.toScreenState()
+    }
+
+    /** Выбирает файл и переводит просмотр в состояние загрузки; null снимает выбор. */
+    fun selectFile(path: String?) {
+        _selectedFile.value = path
+        _fileState.value = if (path == null) ScreenState.Empty else ScreenState.Loading
+    }
+
+    /** Принимает содержимое файла. */
+    fun onFileLoaded(content: FileContentPayload) {
+        _fileState.value = ScreenState.Loaded(content)
+    }
+
+    /** Превращает ошибку чтения файла в состояние экрана. */
+    fun onFileFailed(error: ProtocolError) {
+        _fileState.value = error.toScreenState()
+    }
+
+    /** Сохраняет состояние хоста для шапки. */
+    fun onHostState(state: HostStatePayload) {
+        _hostState.value = state
+    }
+
+    /**
+     * Реагирует на изменение связи.
+     *
+     * Правила: потеря связи переводит загруженные данные в [ScreenState.Offline],
+     * сохраняя кэш; несовместимость версий перекрывает всё остальное, потому что
+     * работать в этом состоянии нельзя; восстановление связи возвращает
+     * загруженные данные из кэша, чтобы экран не мигал пустотой.
+     */
+    fun onConnectionState(state: ConnectionState) {
+        val previous = lastConnection
+        lastConnection = state
+
+        when (state) {
+            is ConnectionState.Incompatible -> {
+                _treeState.value = ScreenState.Failed(ScreenState.ErrorKind.INCOMPATIBLE, state.userMessage)
+            }
+
+            is ConnectionState.Reconnecting -> {
+                _treeState.value = _treeState.value.toOffline()
+                _fileState.value = _fileState.value.toOffline()
+            }
+
+            is ConnectionState.Connected -> {
+                if (previous is ConnectionState.Reconnecting) {
+                    _treeState.value = _treeState.value.fromOffline()
+                    _fileState.value = _fileState.value.fromOffline()
+                }
+            }
+
+            is ConnectionState.Closed -> Unit
+            ConnectionState.Idle, ConnectionState.Connecting -> Unit
+        }
+    }
+}
+
+/**
+ * Помечает загруженные данные как устаревшие, не теряя их: экран показывает кэш
+ * с пометкой «нет связи», а не пустоту.
+ */
+private fun <T> ScreenState<T>.toOffline(): ScreenState<T> = when (this) {
+    is ScreenState.Loaded -> ScreenState.Offline(data)
+    is ScreenState.Offline -> this
+    else -> this
+}
+
+/** Возвращает данные из кэша в обычное состояние после восстановления связи. */
+private fun <T> ScreenState<T>.fromOffline(): ScreenState<T> = when (this) {
+    is ScreenState.Offline -> ScreenState.Loaded(cached)
+    else -> this
+}
+
+/**
+ * Отображает ошибку хоста на состояние экрана.
+ *
+ * Тип ошибки задан протоколом, поэтому разбирать текст не нужно: «нет прав»,
+ * «не git-репозиторий» и «путь не существует» приходят как разные типы, а не
+ * как одно сообщение, в котором пришлось бы искать подстроки.
+ */
+private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
+    is ProtocolError.NotFound -> ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, what)
+
+    is ProtocolError.NotAGitRepository ->
+        ScreenState.Failed(ScreenState.ErrorKind.NOT_A_REPOSITORY, "Каталог не является git-репозиторием: $path")
+
+    is ProtocolError.AccessDenied -> ScreenState.NoPermission(path = path, reason = reason)
+
+    is ProtocolError.WorkspaceClosed ->
+        ScreenState.Failed(ScreenState.ErrorKind.OTHER, "Воркспейс закрыт, откройте репозиторий заново")
+
+    is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, what)
+
+    is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, message, detail)
+}

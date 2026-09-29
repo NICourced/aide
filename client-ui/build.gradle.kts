@@ -1,3 +1,5 @@
+@file:OptIn(org.jetbrains.compose.ExperimentalComposeLibrary::class)
+
 import org.gradle.api.tasks.testing.Test
 
 plugins {
@@ -27,6 +29,17 @@ kotlin {
             // Тест SharedUiHasNoPlatformBranchingTest читает исходники commonMain
             // файловой системой, для этого и нужен okio.
             implementation(libs.okio)
+        }
+        jvmTest.dependencies {
+            // ScreenStatesTest — настоящий UI-тест (runComposeUiTest), а не проверка
+            // состояний вручную. compose.uiTest даёт сам API теста, coroutines.test нужен
+            // для rule о главном диспетчере Compose.
+            implementation(compose.uiTest)
+            implementation(libs.kotlinx.coroutines.test)
+            // runComposeUiTest на десктопе рисует через Skiko: без рантайма текущей ОС
+            // тест падает с UnsatisfiedLinkError на нативной библиотеке. Одна эта
+            // зависимость и приносит нужный skiko-awt-runtime.
+            implementation(compose.desktop.currentOs)
         }
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)
