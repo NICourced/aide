@@ -14,8 +14,6 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
-import io.ktor.websocket.send
-import kotlinx.coroutines.channels.consumeEach
 import org.slf4j.LoggerFactory
 
 /**
@@ -60,14 +58,25 @@ class ProtocolServer(
                         send = { bytes -> send(Frame.Binary(true, bytes)) },
                     )
                     logger.info("Клиент подключился, сессия ${session.sessionId.value}, режим $mode")
+                    var closeReason = CloseReason(CloseReason.Codes.NORMAL, "Сессия завершена")
                     try {
-                        incoming.consumeEach { frame ->
-                            if (frame is Frame.Binary) session.onBytes(frame.readBytes())
+                        for (frame in incoming) {
+                            // Небинарные кадры игнорируем; если сессия просит закрыть соединение
+                            // (несовместимые версии), прекращаем чтение — ни один последующий
+                            // кадр не должен быть обработан.
+                            val closeRequested = frame is Frame.Binary && !session.onBytes(frame.readBytes())
+                            if (closeRequested) {
+                                closeReason = CloseReason(
+                                    CloseReason.Codes.PROTOCOL_ERROR,
+                                    "Несовместимая версия протокола",
+                                )
+                                break
+                            }
                         }
                     } finally {
-                        close(CloseReason(CloseReason.Codes.NORMAL, "Сессия завершена"))
+                        close(closeReason)
                         logger.info(
-                            "Сессия ${session.sessionId.value} закрыта, " +
+                            "Сессия ${session.sessionId.value} закрыта ($closeReason), " +
                                 "обработано запросов: ${session.handledRequests}",
                         )
                     }

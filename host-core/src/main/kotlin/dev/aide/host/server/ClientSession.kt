@@ -26,6 +26,11 @@ fun interface ClientMessageHandler {
  * Отвечает за три вещи: приветствие и проверку версий, идемпотентность по `requestId`
  * и передачу остальных сообщений обработчику. Приветствие должно прийти первым —
  * иначе сессия отвечает ошибкой, не разбирая запросы (§ 8.4).
+ *
+ * Несовместимость версий — это причина закрыть соединение, а не ошибка отдельного
+ * запроса: [onBytes] возвращает false, вызывающий код (см. [ProtocolServer]) закрывает
+ * WebSocket, и дальнейшие кадры не обрабатываются вовсе — § 8.4 требует явной ошибки
+ * вместо частично работающего соединения.
  */
 class ClientSession(
     private val handler: ClientMessageHandler,
@@ -41,38 +46,66 @@ class ClientSession(
 
     private var greeted = false
 
+    /** true после решения закрыть сессию: новые кадры не разбираются. */
+    private var closeRequested = false
+
     /** Число запросов, дошедших до обработчика; по нему проверяется идемпотентность. */
     var handledRequests: Int = 0
         private set
 
-    /** Обрабатывает один кадр от клиента. */
-    suspend fun onBytes(bytes: ByteArray) {
-        when (val decoded = ProtocolCodec.decodeClientMessage(bytes)) {
-            is DecodeResult.Ignored -> logger.warn(
-                "Пропущено сообщение клиента: ${decoded.reason} (тип: ${decoded.rawType})",
-            )
+    /**
+     * Обрабатывает один кадр от клиента.
+     *
+     * @return true, если сессия продолжает работу; false, если её пора закрыть
+     *   (в текущей реализации — только несовместимость версий, § 8.4).
+     */
+    suspend fun onBytes(bytes: ByteArray): Boolean {
+        if (closeRequested) return false
+        return when (val decoded = ProtocolCodec.decodeClientMessage(bytes)) {
+            is DecodeResult.Ignored -> {
+                logger.warn("Пропущено сообщение клиента: ${decoded.reason} (тип: ${decoded.rawType})")
+                true
+            }
 
             is DecodeResult.Message -> onMessage(decoded.message)
         }
     }
 
-    private suspend fun onMessage(message: ClientMessage) {
+    private suspend fun onMessage(message: ClientMessage): Boolean {
         val requestId = message.requestIdOrNull()
-        when {
+        return when {
             message is ClientMessage.Hello -> greet(message)
-            !greeted -> sendUnGreetedFailure(requestId)
-            requestId == null -> logger.warn("Сообщение без requestId пропущено: $message")
-            else -> respond(requestId, message)
+            !greeted -> {
+                sendUnGreetedFailure(requestId)
+                true
+            }
+
+            requestId == null -> {
+                logger.warn("Сообщение без requestId пропущено: $message")
+                true
+            }
+
+            else -> {
+                respond(requestId, message)
+                true
+            }
         }
     }
 
-    private suspend fun greet(hello: ClientMessage.Hello) {
+    private suspend fun greet(hello: ClientMessage.Hello): Boolean {
         val compatibility = ProtocolCompatibility.check(hello.clientVersion, hostVersion)
-        if (compatibility is ProtocolCompatibility.Incompatible) {
+        return if (compatibility is ProtocolCompatibility.Incompatible) {
+            logger.warn(
+                "Несовместимые версии протокола: клиент ${hello.clientVersion}, хост $hostVersion — " +
+                    "закрываю сессию ${sessionId.value}",
+            )
+            closeRequested = true
             send(ProtocolCodec.encode(ProtocolCompatibility.toHostMessage(compatibility, hostVersion)))
+            false
         } else {
             greeted = true
             send(ProtocolCodec.encode(HostMessage.Hello(hostVersion = hostVersion, sessionId = sessionId)))
+            true
         }
     }
 

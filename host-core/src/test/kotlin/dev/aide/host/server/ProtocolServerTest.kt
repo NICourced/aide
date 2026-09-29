@@ -13,6 +13,7 @@ import dev.aide.protocol.HostMessage
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolError
+import dev.aide.protocol.ProtocolVersion
 import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
 import io.ktor.client.HttpClient
@@ -25,11 +26,14 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -240,6 +244,55 @@ class ProtocolServerTest {
                 assertIs<ConnectionState.Connected>(connection.state.value)
             } finally {
                 noisy.stop()
+            }
+        }
+    }
+
+    @Test
+    fun `клиент с несовместимой версией получает Incompatible, а не уходит в переподключения`() {
+        runBlocking {
+            val incompatible = KtorHostConnection(
+                endpoint = server.endpoint,
+                scope = scope,
+                httpClient = HttpClient { install(WebSockets) },
+                clientVersion = ProtocolVersion(major = 2, minor = 0),
+                initialRetryMillis = 50,
+                maxRetryMillis = 100,
+            )
+            connections += incompatible
+
+            val states = mutableListOf<ConnectionState>()
+            val watcher = scope.launch { incompatible.state.collect { states += it } }
+            try {
+                incompatible.start()
+                val reached = withTimeoutOrNull(5_000) {
+                    while (incompatible.state.value !is ConnectionState.Incompatible) delay(20)
+                    incompatible.state.value
+                }
+                assertIs<ConnectionState.Incompatible>(reached)
+
+                delay(500)
+                watcher.cancelAndJoin()
+
+                val resumedAfterIncompatible = states
+                    .dropWhile { it !is ConnectionState.Incompatible }
+                    .drop(1)
+                    .any { it is ConnectionState.Connecting || it is ConnectionState.Reconnecting }
+                assertTrue(
+                    !resumedAfterIncompatible,
+                    "После несовместимости клиент не должен переподключаться, наблюдались состояния: $states",
+                )
+
+                // Сервер закрыл сессию по протоколу, поэтому запрос после этого не обслуживается.
+                assertNull(
+                    incompatible.request(
+                        ClientMessage.HostState(RequestId("after-incompatible"), workspaceId),
+                        timeoutMillis = 500,
+                    ),
+                    "Закрытая сессия не должна отвечать на запросы",
+                )
+            } finally {
+                watcher.cancel()
             }
         }
     }

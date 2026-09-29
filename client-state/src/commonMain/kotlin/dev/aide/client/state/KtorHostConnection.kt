@@ -99,7 +99,10 @@ class KtorHostConnection(
 
     /**
      * Одна попытка соединения. Возвращает номер следующей попытки либо null,
-     * если цикл должен остановиться (соединение закрыто или версии несовместимы).
+     * если цикл должен остановиться: соединение закрыто, либо хост сообщил
+     * о несовместимости версий. Проверка нужна в обоих исходах попытки — и когда
+     * `connectOnce` бросил исключение, и когда вернулся нормально (хост сам закрыл
+     * соединение по протоколу), иначе `Incompatible` перетёрлось бы на `Reconnecting`.
      *
      * Ошибка ловится широко намеренно: транспорт бросает разные типы (обрыв, таймаут,
      * закрытие прокси), и любая из них означает лишь «попытка не удалась». Отмена
@@ -114,12 +117,10 @@ class KtorHostConnection(
         }
         return try {
             connectOnce()
-            0
+            if (sessionIsFinished()) null else 0
         } catch (error: Throwable) {
             currentCoroutineContext().ensureActive()
-            if (_state.value is ConnectionState.Closed || _state.value is ConnectionState.Incompatible) {
-                return null
-            }
+            if (sessionIsFinished()) return null
             val attempt = previousAttempt + 1
             val wait = backoffMillis(attempt)
             logger.warn("Попытка подключения №$attempt не удалась: ${error.message}")
@@ -128,6 +129,10 @@ class KtorHostConnection(
             attempt
         }
     }
+
+    /** true, если сессия завершена по протоколу и переподключаться не нужно. */
+    private fun sessionIsFinished(): Boolean =
+        _state.value is ConnectionState.Incompatible || _state.value is ConnectionState.Closed
 
     private suspend fun connectOnce() {
         val session = httpClient.webSocketSession(endpoint)
