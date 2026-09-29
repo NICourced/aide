@@ -10347,7 +10347,7 @@ class HostStoreTest {
 
 - [ ] **Шаг 8: написать `HostStore`**
 
-Слой доступа разбит по сущностям, а не собран в один класс: у `HostStore` из плана набиралось бы около шестнадцати методов, а detekt валится уже на двенадцати (`Class '…' with '12' functions detected. Defined threshold inside classes is set to '11'`). Пять небольших хранилищ читаются лучше, а `HostStore` остаётся фасадом из пяти свойств и методов не делегирует — поэтому порог не задет.
+Слой доступа разбит по сущностям, а не собран в один класс: у `HostStore` из плана набиралось бы около шестнадцати методов, а detekt валится уже на одиннадцати (`Class '…' with '11' functions detected. Defined threshold inside classes is set to '11'`). Пять небольших хранилищ читаются лучше, а `HostStore` остаётся фасадом из пяти свойств и методов не делегирует — поэтому порог не задет.
 
 `host-core/src/main/kotlin/dev/aide/host/store/StoreCodec.kt`:
 
@@ -11006,6 +11006,7 @@ git commit -m "feat(host): схема метаданных в SQLite, мигра
 ## Задача 16: сквозная проверка — репозиторий на экране (`T-0.15`)
 
 **Файлы:**
+- Создать: `client-state/src/commonMain/kotlin/dev/aide/client/state/ScreenState.kt`
 - Создать: `client-state/src/commonMain/kotlin/dev/aide/client/state/AppStateStore.kt`
 - Тест: `client-state/src/commonTest/kotlin/dev/aide/client/state/AppStateStoreTest.kt`
 - Создать: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/screens/StateViews.kt`
@@ -11017,9 +11018,14 @@ git commit -m "feat(host): схема метаданных в SQLite, мигра
 - Тест: `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/ScreenStatesTest.kt`
 - Создать: `platform-android/src/androidMain/kotlin/dev/aide/platform/android/AndroidClientRuntime.kt`
 - Изменить: `androidApp/src/main/kotlin/dev/aide/android/MainActivity.kt`
-- Изменить: `androidApp/build.gradle.kts` (зависимость на корутины)
+- Изменить: `androidApp/build.gradle.kts` (корутины и debug-провайдер SLF4J)
+- Изменить: `androidApp/src/main/AndroidManifest.xml` (разрешение INTERNET)
+- Создать: `androidApp/src/debug/AndroidManifest.xml` (послабление cleartext для debug)
+- Создать: `androidApp/src/debug/res/xml/network_security_config_debug.xml`
 - Создать: `platform-desktop/src/main/kotlin/dev/aide/platform/desktop/DesktopRuntime.kt`
 - Изменить: `desktopApp/src/main/kotlin/dev/aide/desktop/Main.kt`
+- Изменить: `desktopApp/build.gradle.kts` (тестовые зависимости)
+- Тест: `desktopApp/src/test/kotlin/dev/aide/desktop/DesktopEndToEndTest.kt`
 - Изменить: `client-ui/build.gradle.kts` (зависимость для UI-тестов)
 
 **Что считается выполненным.** На Android и на десктопе приложение открывает репозиторий, показывает ветку в шапке, дерево файлов и содержимое выбранного файла. Для экрана дерева и содержимого проверены пять состояний из § 6.1: пусто, загрузка, ошибка, нет связи, нет прав — на ширине 360 dp и на десктопе.
@@ -11027,6 +11033,10 @@ git commit -m "feat(host): схема метаданных в SQLite, мигра
 **Про пять состояний.** Состояния моделируются как один тип `ScreenState`, а не как набор флагов: так нельзя случайно показать одновременно «загрузка» и «ошибка». Состояние «нет связи» берётся из `ConnectionState`, остальные — из результата запроса.
 
 **Про Android в этом этапе.** Обнаружение хоста в сети и сопряжение устройств — это `T-1.51` и этап 5 (`T-5.11`). Здесь Android подключается по адресу, заданному в настройках вручную; автоматического поиска нет и он не обещается.
+
+**Про адрес хоста.** Локальный хост слушает `ws://127.0.0.1:<порт>/ws`, и это не мешает эмулятору: `10.0.2.2` — псевдоним именно loopback-интерфейса машины-хоста, поэтому эмулятор достучится до хоста без правок адреса биндинга (проверено фактически: хост на `127.0.0.1:36459` принял Android-сессию). Подключение реального устройства по LAN потребует биндинга хоста на сетевой интерфейс (`0.0.0.0`), но это работа `T-1.51`, а не этапа 0; параметризовать адрес биндинга сейчас не нужно — фиксированный loopback безопаснее.
+
+**Про автотест десктопа.** Критерий «десктоп показывает репозиторий» закрывает `desktopApp/src/test/kotlin/dev/aide/desktop/DesktopEndToEndTest.kt` — единственный автотест десктопа (1 тест, `:desktopApp:test`): настоящий `EmbeddedHost`, настоящее WebSocket-соединение и тот же `App`; ручной клик по окну в среде сборки невозможен, потому что инъекция ввода не доходит до Xwayland-клиента.
 
 - [ ] **Шаг 1: написать падающий тест состояний экрана**
 
@@ -11038,8 +11048,10 @@ package dev.aide.client.state
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreeEntry
 import dev.aide.protocol.FileTreePayload
+import dev.aide.protocol.HostMode
 import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolError
+import dev.aide.protocol.SessionId
 import dev.aide.protocol.WorkspaceId
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -11068,33 +11080,36 @@ class AppStateStoreTest {
         branch = "master",
         headCommit = "abc1234",
         uptimeMillis = 10,
-        mode = dev.aide.protocol.HostMode.LOCAL,
+        mode = HostMode.LOCAL,
     )
 
     @Test
     fun `начальное состояние — пусто и загрузка не начата`() {
-        assertEquals(ScreenState.Empty, store.treeState)
-        assertNull(store.selectedFile)
-        assertNull(store.hostState)
+        assertEquals(ScreenState.Empty, store.treeState.value)
+        assertNull(store.selectedFile.value)
+        assertNull(store.hostState.value)
     }
 
     @Test
     fun `успешная загрузка даёт данные`() {
         store.onTreeLoaded(tree)
-        val loaded = assertIs<ScreenState.Loaded<FileTreePayload>>(store.treeState)
+
+        val loaded = assertIs<ScreenState.Loaded<FileTreePayload>>(store.treeState.value)
         assertEquals(2, loaded.data.entries.size)
     }
 
     @Test
     fun `пустое дерево даёт состояние «пусто», а не пустой экран`() {
         store.onTreeLoaded(tree.copy(entries = emptyList()))
-        assertEquals(ScreenState.Empty, store.treeState)
+
+        assertEquals(ScreenState.Empty, store.treeState.value)
     }
 
     @Test
     fun `ошибка пути даёт состояние ошибки с понятным текстом`() {
         store.onTreeFailed(ProtocolError.NotFound("путь не существует: /nope"))
-        val failed = assertIs<ScreenState.Failed>(store.treeState)
+
+        val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.PATH_MISSING, failed.kind)
         assertTrue(failed.detail.contains("/nope"))
     }
@@ -11102,14 +11117,16 @@ class AppStateStoreTest {
     @Test
     fun `каталог без git даёт отдельный вид ошибки`() {
         store.onTreeFailed(ProtocolError.NotAGitRepository("/tmp/not-a-repo"))
-        val failed = assertIs<ScreenState.Failed>(store.treeState)
+
+        val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.NOT_A_REPOSITORY, failed.kind)
     }
 
     @Test
     fun `ошибка доступа даёт состояние «нет прав»`() {
         store.onTreeFailed(ProtocolError.AccessDenied(path = "/etc/passwd", reason = "вне корня воркспейса"))
-        val denied = assertIs<ScreenState.NoPermission>(store.treeState)
+
+        val denied = assertIs<ScreenState.NoPermission>(store.treeState.value)
         assertEquals("/etc/passwd", denied.path)
         assertEquals("вне корня воркспейса", denied.reason)
     }
@@ -11119,17 +11136,19 @@ class AppStateStoreTest {
         store.onTreeLoaded(tree)
         store.onConnectionState(ConnectionState.Reconnecting(attempt = 1, nextRetryMillis = 100))
 
-        val offline = assertIs<ScreenState.Offline<FileTreePayload>>(store.treeState)
-        assertEquals(2, offline.cached.data.entries.size, "Кэш остаётся доступен офлайн")
+        val offline = assertIs<ScreenState.Offline<FileTreePayload>>(store.treeState.value)
+        // Тройной assertEquals с `Int` разрешается в перегрузку с допуском `Double` —
+        // поэтому сравнение через assertTrue, а не через трёхаргументный assertEquals.
+        assertTrue(offline.cached.entries.size == 2, "Кэш остаётся доступен офлайн")
     }
 
     @Test
     fun `восстановление связи возвращает загруженное состояние`() {
         store.onTreeLoaded(tree)
         store.onConnectionState(ConnectionState.Reconnecting(1, 100))
-        store.onConnectionState(ConnectionState.Connected(sessionId = dev.aide.protocol.SessionId("s"), reconnected = true))
+        store.onConnectionState(ConnectionState.Connected(sessionId = SessionId("s"), reconnected = true))
 
-        assertIs<ScreenState.Loaded<FileTreePayload>>(store.treeState)
+        assertIs<ScreenState.Loaded<FileTreePayload>>(store.treeState.value)
     }
 
     @Test
@@ -11137,7 +11156,7 @@ class AppStateStoreTest {
         store.onTreeLoaded(tree)
         store.onConnectionState(ConnectionState.Incompatible("Обновите приложение (клиент 1.0, хост 2.0)"))
 
-        val failed = assertIs<ScreenState.Failed>(store.treeState)
+        val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.INCOMPATIBLE, failed.kind)
     }
 
@@ -11146,12 +11165,14 @@ class AppStateStoreTest {
         store.onTreeLoaded(tree)
         store.selectFile("src/Login.kt")
 
-        assertEquals("src/Login.kt", store.selectedFile)
-        assertIs<ScreenState.Loading>(store.fileState)
+        assertEquals("src/Login.kt", store.selectedFile.value)
+        assertIs<ScreenState.Loading>(store.fileState.value)
 
         val content = FileContentPayload(workspaceId, "src/Login.kt", "fun login() = Unit\n", 19, false, "kotlin")
         store.onFileLoaded(content)
-        assertEquals("fun login() = Unit\n", assertIs<ScreenState.Loaded<FileContentPayload>>(store.fileState).data.text)
+
+        val loaded = assertIs<ScreenState.Loaded<FileContentPayload>>(store.fileState.value)
+        assertEquals("fun login() = Unit\n", loaded.data.text)
     }
 
     @Test
@@ -11159,20 +11180,23 @@ class AppStateStoreTest {
         store.onTreeLoaded(tree)
         store.selectFile("src/Login.kt")
         store.selectFile(null)
-        assertNull(store.selectedFile)
-        assertEquals(ScreenState.Empty, store.fileState)
+
+        assertNull(store.selectedFile.value)
+        assertEquals(ScreenState.Empty, store.fileState.value)
     }
 
     @Test
     fun `состояние хоста сохраняется для шапки`() {
         store.onHostState(hostState)
-        assertEquals("master", store.hostState?.branch)
+
+        assertEquals("master", store.hostState.value?.branch)
     }
 
     @Test
     fun `загрузка показывается отдельным состоянием`() {
         store.onTreeLoading()
-        assertEquals(ScreenState.Loading, store.treeState)
+
+        assertEquals(ScreenState.Loading, store.treeState.value)
     }
 }
 ```
@@ -11272,25 +11296,27 @@ import kotlinx.coroutines.flow.asStateFlow
 class AppStateStore {
 
     private val _treeState = MutableStateFlow<ScreenState<FileTreePayload>>(ScreenState.Empty)
+
     /** Состояние дерева файлов. */
     val treeState: StateFlow<ScreenState<FileTreePayload>> = _treeState.asStateFlow()
 
     private val _fileState = MutableStateFlow<ScreenState<FileContentPayload>>(ScreenState.Empty)
+
     /** Состояние просмотра файла. */
     val fileState: StateFlow<ScreenState<FileContentPayload>> = _fileState.asStateFlow()
 
     private val _hostState = MutableStateFlow<HostStatePayload?>(null)
+
     /** Состояние хоста для шапки: ветка, корень, режим. */
     val hostState: StateFlow<HostStatePayload?> = _hostState.asStateFlow()
 
     private val _selectedFile = MutableStateFlow<String?>(null)
+
     /** Путь выбранного файла; null, если файл не выбран. */
     val selectedFile: StateFlow<String?> = _selectedFile.asStateFlow()
 
     /** Последнее достоверное состояние связи; нужно, чтобы вернуться из [ScreenState.Offline]. */
     private var lastConnection: ConnectionState = ConnectionState.Idle
-
-    // ——— Дерево ———
 
     /** Показывает загрузку дерева. */
     fun onTreeLoading() {
@@ -11306,8 +11332,6 @@ class AppStateStore {
     fun onTreeFailed(error: ProtocolError) {
         _treeState.value = error.toScreenState()
     }
-
-    // ——— Файл ———
 
     /** Выбирает файл и переводит просмотр в состояние загрузки; null снимает выбор. */
     fun selectFile(path: String?) {
@@ -11363,41 +11387,45 @@ class AppStateStore {
             ConnectionState.Idle, ConnectionState.Connecting -> Unit
         }
     }
+}
 
-    private fun <T> ScreenState<T>.toOffline(): ScreenState<T> = when (this) {
-        is ScreenState.Loaded -> ScreenState.Offline(data)
-        is ScreenState.Offline -> this
-        else -> this
-    }
+/**
+ * Помечает загруженные данные как устаревшие, не теряя их: экран показывает кэш
+ * с пометкой «нет связи», а не пустоту.
+ */
+private fun <T> ScreenState<T>.toOffline(): ScreenState<T> = when (this) {
+    is ScreenState.Loaded -> ScreenState.Offline(data)
+    is ScreenState.Offline -> this
+    else -> this
+}
 
-    private fun <T> ScreenState<T>.fromOffline(): ScreenState<T> = when (this) {
-        is ScreenState.Offline -> ScreenState.Loaded(cached)
-        else -> this
-    }
+/** Возвращает данные из кэша в обычное состояние после восстановления связи. */
+private fun <T> ScreenState<T>.fromOffline(): ScreenState<T> = when (this) {
+    is ScreenState.Offline -> ScreenState.Loaded(cached)
+    else -> this
+}
 
-    private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
-        is ProtocolError.NotFound -> {
-            if (what.contains("не является git") || what.contains("не git")) {
-                ScreenState.Failed(ScreenState.ErrorKind.NOT_A_REPOSITORY, what)
-            } else {
-                ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, what)
-            }
-        }
+/**
+ * Отображает ошибку хоста на состояние экрана.
+ *
+ * Тип ошибки задан протоколом, поэтому разбирать текст не нужно: «нет прав»,
+ * «не git-репозиторий» и «путь не существует» приходят как разные типы, а не
+ * как одно сообщение, в котором пришлось бы искать подстроки.
+ */
+private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
+    is ProtocolError.NotFound -> ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, what)
 
-        is ProtocolError.NotAGitRepository ->
-            ScreenState.Failed(ScreenState.ErrorKind.NOT_A_REPOSITORY, "Каталог не является git-репозиторием: $path")
+    is ProtocolError.NotAGitRepository ->
+        ScreenState.Failed(ScreenState.ErrorKind.NOT_A_REPOSITORY, "Каталог не является git-репозиторием: $path")
 
-        is ProtocolError.AccessDenied -> ScreenState.NoPermission(path = path, reason = reason)
+    is ProtocolError.AccessDenied -> ScreenState.NoPermission(path = path, reason = reason)
 
-        is ProtocolError.WorkspaceClosed ->
-            ScreenState.Failed(ScreenState.ErrorKind.OTHER, "Воркспейс закрыт, откройте репозиторий заново")
+    is ProtocolError.WorkspaceClosed ->
+        ScreenState.Failed(ScreenState.ErrorKind.OTHER, "Воркспейс закрыт, откройте репозиторий заново")
 
-        is ProtocolError.NotImplemented ->
-            ScreenState.Failed(ScreenState.ErrorKind.OTHER, what)
+    is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, what)
 
-        is ProtocolError.Internal ->
-            ScreenState.Failed(ScreenState.ErrorKind.OTHER, message, detail)
-    }
+    is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, message, detail)
 }
 ```
 
@@ -11407,7 +11435,7 @@ class AppStateStore {
 ./gradlew :client-state:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 22 теста (`AppStateStoreTest` — 13, `SettingsStoreTest` — 8, `NoLocalityBranchingTest` — 1).
+Ожидаемо: `BUILD SUCCESSFUL`, 25 тестов (`AppStateStoreTest` — 13, `SettingsStoreTest` — 8, `FileKeyValueStoreTest` — 3, `NoLocalityBranchingTest` — 1).
 
 - [ ] **Шаг 6: написать экраны состояний**
 
@@ -11432,6 +11460,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.aide.client.ui.strings.Strings
 
+/** Доля ширины у последней строки скелетона: строки разной длины читаются как текст, а не как таблица. */
+private const val LAST_SKELETON_ROW_FRACTION = 0.6f
+
 /**
  * Пять состояний экрана из § 6.1. Каждое состояние обязано объяснять, что
  * произошло и что делать, — иначе это не состояние, а пустой экран.
@@ -11448,7 +11479,7 @@ fun LoadingState(modifier: Modifier = Modifier, rows: Int = 4) {
         repeat(rows) { index ->
             Surface(
                 modifier = Modifier
-                    .fillMaxWidth(if (index % 3 == 2) 0.6f else 1f)
+                    .fillMaxWidth(if (index == rows - 1) LAST_SKELETON_ROW_FRACTION else 1f)
                     .height(20.dp)
                     .testTag("skeleton-row-$index"),
                 shape = RoundedCornerShape(4.dp),
@@ -11484,7 +11515,9 @@ fun ErrorState(message: String, onRetry: () -> Unit, modifier: Modifier = Modifi
     ) {
         Text(Strings.text(Strings.stateErrorTitle), style = MaterialTheme.typography.titleMedium)
         Text(message, style = MaterialTheme.typography.bodyMedium)
-        Button(onClick = onRetry) { Text(Strings.text(Strings.stateErrorRetry)) }
+        Button(onClick = onRetry, modifier = Modifier.testTag("state-retry")) {
+            Text(Strings.text(Strings.stateErrorRetry))
+        }
     }
 }
 
@@ -11492,7 +11525,7 @@ fun ErrorState(message: String, onRetry: () -> Unit, modifier: Modifier = Modifi
 @Composable
 fun OfflineBanner(modifier: Modifier = Modifier) {
     Surface(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("offline-banner"),
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.errorContainer,
     ) {
@@ -11536,6 +11569,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import dev.aide.client.state.ScreenState
 import dev.aide.client.ui.strings.Strings
 import dev.aide.protocol.FileTreePayload
@@ -11631,9 +11665,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.FontFamily
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily as ComposeFontFamily
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.aide.client.state.ScreenState
 import dev.aide.client.ui.strings.Strings
@@ -11689,7 +11722,7 @@ private fun FileBody(content: FileContentPayload) {
         }
         Text(
             text = content.text,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = ComposeFontFamily.Monospace),
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
@@ -11875,6 +11908,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import dev.aide.client.state.AppStateStore
 import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.HostCallException
@@ -11928,7 +11962,13 @@ fun App(
                 when (destination) {
                     Destination.SETTINGS -> SettingsScreen(
                         settings = settings,
-                        onOpenRepository = { path -> coroutineScope.launch { openRepository(client, state, path) } },
+                        onOpenRepository = { path ->
+                            // Открытие пути уводит на экран репозитория: иначе нажатие
+                            // «Открыть» выглядит не сделавшим ничего — дерево показывается
+                            // на другом экране, а пользователь остаётся в настройках.
+                            if (path.isNotBlank()) destination = Destination.REPOSITORY
+                            coroutineScope.launch { openRepository(client, state, path) }
+                        },
                     )
 
                     Destination.REPOSITORY -> RepoScreen(
@@ -12158,12 +12198,22 @@ fun main() = application {
 
 - [ ] **Шаг 9: написать UI-тесты состояний**
 
-`client-ui/build.gradle.kts` — добавить в `commonTest.dependencies`:
+`client-ui/build.gradle.kts` — `compose.uiTest` идёт в `jvmTest`, а не в `commonTest`: тест лежит в `jvmTest`, и в `commonTest` зависимость применилась бы и к android-наборам. Рядом нужен `compose.desktop.currentOs`:
 
 ```kotlin
+        jvmTest.dependencies {
+            // ScreenStatesTest — настоящий UI-тест (runComposeUiTest), а не проверка
+            // состояний вручную: compose.uiTest даёт сам API теста.
             implementation(compose.uiTest)
-            implementation(libs.kotlinx.coroutines.test)
+            // Проверено снятием: без рантайма Skiko текущей ОС тесты падают на
+            // `NoClassDefFoundError: Could not initialize class org.jetbrains.skia.Surface`
+            // внутри SkikoComposeUiTest — то есть compose.uiTest сам нативную библиотеку
+            // не приносит, её даёт только compose.desktop.currentOs.
+            implementation(compose.desktop.currentOs)
+        }
 ```
+
+`libs.kotlinx.coroutines.test` не подключается: ни UI-тесты, ни тесты состояния его не используют (проверено снятием). Без `compose.desktop.currentOs` компиляция при этом проходит, и `BUILD` выглядит успешным до первого теста: нативная библиотека Skiko нужна только на запуске `SkikoComposeUiTest`, поэтому её отсутствие проявляется падением всех одиннадцати UI-тестов, а не ошибкой сборки.
 
 `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/ScreenStatesTest.kt`:
 
@@ -12172,6 +12222,7 @@ package dev.aide.client.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
@@ -12207,20 +12258,23 @@ class ScreenStatesTest {
         truncated = false,
     )
 
-    private fun narrow(content: @androidx.compose.runtime.Composable () -> Unit): @androidx.compose.runtime.Composable () -> Unit = {
+    private fun narrow(content: @Composable () -> Unit): @Composable () -> Unit = {
         Box(modifier = Modifier.width(360.dp)) { content() }
     }
 
     @Test
     fun `состояние загрузки показывает скелетон, а не пустой экран`() = runComposeUiTest {
         setContent(narrow { RepoTreeScreen(state = ScreenState.Loading, onFileClick = {}, onRetry = {}) })
+
         onNodeWithTag("skeleton-row-0").assertIsDisplayed()
     }
 
     @Test
     fun `пустое дерево объясняет, что делать`() = runComposeUiTest {
         setContent(narrow { RepoTreeScreen(state = ScreenState.Empty, onFileClick = {}, onRetry = {}) })
-        onNodeWithText("В репозитории нет коммитов и файлов. Создайте первый коммит — дерево появится.").assertIsDisplayed()
+
+        onNodeWithText("В репозитории нет коммитов и файлов. Создайте первый коммит — дерево появится.")
+            .assertIsDisplayed()
     }
 
     @Test
@@ -12234,6 +12288,7 @@ class ScreenStatesTest {
                 )
             },
         )
+
         onNodeWithText("Путь не существует: /nope").assertIsDisplayed()
         onNodeWithText("Повторить").assertIsDisplayed()
     }
@@ -12241,6 +12296,7 @@ class ScreenStatesTest {
     @Test
     fun `нет связи помечает кэш и всё равно показывает дерево`() = runComposeUiTest {
         setContent(narrow { RepoTreeScreen(state = ScreenState.Offline(tree), onFileClick = {}, onRetry = {}) })
+
         onNodeWithText("Нет связи с хостом").assertIsDisplayed()
         onNodeWithTag("tree-row-src/Login.kt").assertIsDisplayed()
     }
@@ -12256,6 +12312,7 @@ class ScreenStatesTest {
                 )
             },
         )
+
         onNodeWithText("Нет доступа").assertIsDisplayed()
         onNodeWithText("Доступ к «/etc/passwd» закрыт: вне корня воркспейса").assertIsDisplayed()
     }
@@ -12264,6 +12321,7 @@ class ScreenStatesTest {
     fun `загруженное содержимое файла показывается`() = runComposeUiTest {
         val content = FileContentPayload(workspaceId, "src/Login.kt", "fun login() = Unit\n", 19, false, "kotlin")
         setContent(narrow { FileContentScreen(state = ScreenState.Loaded(content), onRetry = {}) })
+
         onNodeWithTag("file-content").assertIsDisplayed()
         onNodeWithText("Файл: src/Login.kt").assertIsDisplayed()
     }
@@ -12272,12 +12330,58 @@ class ScreenStatesTest {
     fun `обрезанный файл помечается`() = runComposeUiTest {
         val content = FileContentPayload(workspaceId, "big.txt", "aaa", 600_000, truncated = true, language = null)
         setContent(narrow { FileContentScreen(state = ScreenState.Loaded(content), onRetry = {}) })
+
         onNodeWithText("Файл показан не целиком: превышен предел показа").assertIsDisplayed()
+    }
+
+    @Test
+    fun `экран файла показывает загрузку`() = runComposeUiTest {
+        setContent(narrow { FileContentScreen(state = ScreenState.Loading, onRetry = {}) })
+
+        onNodeWithTag("skeleton-row-0").assertIsDisplayed()
+    }
+
+    @Test
+    fun `экран файла показывает ошибку с повтором`() = runComposeUiTest {
+        setContent(
+            narrow {
+                val error = ScreenState.Failed(
+                    ScreenState.ErrorKind.OTHER,
+                    "Воркспейс закрыт, откройте репозиторий заново",
+                )
+                FileContentScreen(state = error, onRetry = {})
+            },
+        )
+
+        onNodeWithText("Воркспейс закрыт, откройте репозиторий заново").assertIsDisplayed()
+        onNodeWithText("Повторить").assertIsDisplayed()
+    }
+
+    @Test
+    fun `экран файла в офлайне показывает кэш и плашку`() = runComposeUiTest {
+        val content = FileContentPayload(workspaceId, "src/Login.kt", "fun login() = Unit\n", 19, false, "kotlin")
+        setContent(narrow { FileContentScreen(state = ScreenState.Offline(content), onRetry = {}) })
+
+        onNodeWithText("Нет связи с хостом").assertIsDisplayed()
+        onNodeWithTag("file-content").assertIsDisplayed()
+    }
+
+    @Test
+    fun `экран файла без прав называет путь`() = runComposeUiTest {
+        setContent(
+            narrow {
+                val denied = ScreenState.NoPermission("secret.txt", "нет прав на чтение файла")
+                FileContentScreen(state = denied, onRetry = {})
+            },
+        )
+
+        onNodeWithText("Нет доступа").assertIsDisplayed()
+        onNodeWithText("Доступ к «secret.txt» закрыт: нет прав на чтение файла").assertIsDisplayed()
     }
 }
 ```
 
-Список импортов соответствует фактически используемым символам: `ScreenState`, `RepoTreeScreen`, `FileContentScreen`, `FileContentPayload`, `FileTreeEntry`, `FileTreePayload`, `WorkspaceId`, `Box`, `width`, `dp`, `runComposeUiTest`, `onNodeWithTag`, `onNodeWithText`, `assertIsDisplayed`, `ExperimentalTestApi`.
+Список импортов соответствует фактически используемым символам: `ScreenState`, `RepoTreeScreen`, `FileContentScreen`, `FileContentPayload`, `FileTreeEntry`, `FileTreePayload`, `WorkspaceId`, `Box`, `width`, `dp`, `Composable`, `runComposeUiTest`, `onNodeWithTag`, `onNodeWithText`, `assertIsDisplayed`, `ExperimentalTestApi`.
 
 - [ ] **Шаг 10: прогнать UI-тесты**
 
@@ -12285,11 +12389,118 @@ class ScreenStatesTest {
 ./gradlew :client-ui:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 12 тестов (`ScreenStatesTest` — 7, `NoLiteralUiStringsTest` — 1, `NoLocalityBranchingTest` — 1, `SharedUiHasNoPlatformBranchingTest` — 1, `EntryPointStringsTest` — 2).
+Ожидаемо: `BUILD SUCCESSFUL`, 16 тестов (`ScreenStatesTest` — 11, `EntryPointStringsTest` — 2, `NoLiteralUiStringsTest` — 1, `NoLocalityBranchingTest` — 1, `SharedUiHasNoPlatformBranchingTest` — 1).
 
 - [ ] **Шаг 11: подключить Android-приложение**
 
-`androidApp/build.gradle.kts` — добавить `implementation(libs.kotlinx.coroutines.core)`: область корутин точка входа создаёт сама, значит типы корутин должны быть видны. Зависимость от `:client-state` не нужна: `platform-android` объявляет `api(project(":client-state"))` (задача 1, шаг 8), и типы `SettingsStore` и `HostConnection` приходят из `AndroidClientDependencies` транзитивно.
+`androidApp/build.gradle.kts` — `implementation(libs.kotlinx.coroutines.core)` (точка входа создаёт область корутин сама) и `debugImplementation(libs.slf4j.simple)`: без провайдера SLF4J `KtorHostConnection` пишет в NOP, и в logcat нет ни попыток подключения, ни их причин — из-за этого диагностика `EPERM` заняла время. Провайдер только для debug: в release лишнего логгера быть не должно. Зависимость от `:client-state` не нужна: `platform-android` объявляет `api(project(":client-state"))` (задача 1, шаг 8), и типы `SettingsStore` и `HostConnection` приходят из `AndroidClientDependencies` транзитивно.
+
+```kotlin
+plugins {
+    alias(libs.plugins.androidApplication)
+    alias(libs.plugins.kotlinAndroid)
+    alias(libs.plugins.composeCompiler)
+}
+
+android {
+    namespace = "dev.aide.android"
+    compileSdk = libs.versions.androidCompileSdk.get().toInt()
+    defaultConfig {
+        applicationId = "dev.aide.android"
+        minSdk = libs.versions.androidMinSdk.get().toInt()
+        targetSdk = libs.versions.androidCompileSdk.get().toInt()
+        versionCode = 1
+        versionName = "0.1.0-stage0"
+    }
+    buildFeatures { compose = true }
+    compileOptions {
+        val javaVersion = JavaVersion.toVersion(libs.versions.jvmTarget.get())
+        sourceCompatibility = javaVersion
+        targetCompatibility = javaVersion
+    }
+}
+
+dependencies {
+    implementation(project(":client-ui"))
+    implementation(project(":platform-android"))
+    implementation(libs.androidx.activity.compose)
+    // Область корутин точка входа создаёт сама, значит типы корутин должны быть
+    // видны ей напрямую. Зависимости от `:client-state` нет: `platform-android`
+    // объявляет `api(project(":client-state"))`, и типы настроек и соединения
+    // приходят из `AndroidClientDependencies` транзитивно.
+    implementation(libs.kotlinx.coroutines.core)
+    // Как и на десктопе, провайдер SLF4J — дело приложения: без него slf4j-api
+    // молча уходит в NOP, и в logcat нет ни попыток подключения, ни их причин —
+    // Android-клиент становится неотлаживаемым. Только debug: в release-сборке
+    // лишнего логгера быть не должно.
+    debugImplementation(libs.slf4j.simple)
+}
+```
+
+`androidApp/src/main/AndroidManifest.xml` — разрешение `INTERNET`: без него сокет не создаётся вовсе (`socket failed: EPERM (Operation not permitted)`), и Android-клиент не подключается ни при каких настройках:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Клиент обязан соединяться с хостом по сети: без этого разрешения сокет
+         не создаётся вовсе (socket failed: EPERM), и Android-клиент не работает. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="@string/app_name" android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+```
+
+`androidApp/src/debug/AndroidManifest.xml` — послабление cleartext **только для debug**: `targetSdk = 35` запрещает `ws://` (`CLEARTEXT communication to 10.0.2.2 not permitted by network security policy`), а хост на этом этапе слушает `ws://`. Файл лежит в `src/debug`, поэтому в release его нет и там действует запрет по умолчанию:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Послабление cleartext только для debug-сборки (T-0.15).
+
+  targetSdk 35 запрещает cleartext по умолчанию, а хост в этом этапе слушает
+  `ws://` — без этого послабления Android-клиент не подключится к хосту вообще.
+  Файл лежит в `src/debug`, поэтому в release-сборке его нет: там действует
+  запрет по умолчанию, и незашифрованный трафик по-прежнему невозможен.
+
+  Разрешены только локальные адреса машины разработчика: адрес эмулятора
+  (10.0.2.2 — псевдоним loopback-интерфейса хоста), петля и localhost.
+  Любой другой узел обязан быть `wss://`.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/network_security_config_debug" />
+</manifest>
+```
+
+`androidApp/src/debug/res/xml/network_security_config_debug.xml` — базовый запрет cleartext и точечное исключение только для локальных адресов:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Правила сетевой безопасности debug-сборки (T-0.15).
+
+  Базовое правило запрещает cleartext, а исключение сделано точечно: только для
+  адресов машины разработчика, к которой подключается эмулятор или устройство
+  по локальной сети на время отладки. Так послабление не открывает приложение
+  целиком: любой внешний адрес по-прежнему обязан быть `wss://`.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Псевдоним петли машины-хоста в эмуляторе Android. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
+```
+
+Проверить, что послабление не попало в release: конфиг есть в debug-APK (`aapt2 dump xmltree androidApp/build/outputs/apk/debug/androidApp-debug.apk --file AndroidManifest.xml | grep networkSecurityConfig`), а в merged-манифесте release (`androidApp/build/intermediates/merged_manifests/release/AndroidManifest.xml`) `networkSecurityConfig` отсутствует.
 
 `platform-android/src/androidMain/kotlin/dev/aide/platform/android/AndroidClientRuntime.kt` — платформенное связывание Android-клиента: инициализация хранилища настроек и адрес хоста по умолчанию живут здесь, а не в точке входа:
 
@@ -12445,10 +12656,19 @@ cd -   # возврат в каталог, из которого запуска�
 | пусто | `mkdir /tmp/aide-empty && cd /tmp/aide-empty && git init` → открыть этот путь | «В репозитории нет коммитов и файлов…» |
 | ошибка (путь) | ввести `/tmp/нет-такого-каталога` и нажать «Открыть» | «Путь не существует…» и кнопка «Повторить» |
 | ошибка (не репозиторий) | открыть `/tmp` | «Каталог не является git-репозиторием…» |
-| нет связи | на десктопе в локальном режиме не воспроизводится: хост живёт в том же процессе — это состояние проверяется на Android с выключенной сетью (шаг 15) | — |
-| нет прав | ввести путь `/etc/passwd` в поле адреса репозитория | «Нет доступа» с путём и причиной |
+| нет связи | вручную в поставляемом приложении не воспроизводится (хост встроен и умирает с окном); поведение при остановке хоста закрывает автотест `DesktopEndToEndTest`, вживую — Android с выключенной сетью (шаг 15) | плашка «Нет связи с хостом» и дерево из кэша |
+| нет прав | выбрать в дереве нечитаемый файл **внутри** воркспейса, сняв с него права на чтение (`chmod 000`, подготовка ниже) | «Нет доступа» с путём и причиной |
 
-Состояние «нет связи» на десктопе в локальном режиме не воспроизводится: хост живёт в том же процессе, поэтому его проверяют на Android с выключенной сетью — шаг 15.
+Состояние «нет прав» воспроизводится только нечитаемым файлом **внутри** воркспейса. Путь наружу (`/etc/passwd`) даёт не `NoPermission`, а ошибку пути: `Workspace.open` отвергает не-каталог как `NotFound("путь не является каталогом: /etc/passwd")`. Файл достаточно положить в воркспейс — дерево строится обходом файловой системы, под git его класть не нужно:
+
+```bash
+echo secret > /tmp/aide-fixture/secret.txt
+chmod 000 /tmp/aide-fixture/secret.txt
+```
+
+После этого нажать «Открыть» (дерево обновится) и выбрать `secret.txt` — на экране «Нет доступа» с путём и причиной.
+
+Состояние «нет связи» в поставляемом десктопном приложении вручную не воспроизводится: хост встроен и живёт в том же процессе, умирает вместе с окном. Но само поведение при остановке хоста реализовано и проверяется автотестом `DesktopEndToEndTest` — приложение показывает плашку и оставляет дерево из кэша; вживую это состояние проверяют на Android с выключенной сетью (шаг 15).
 
 - [ ] **Шаг 15: сквозная проверка на Android**
 
@@ -12487,7 +12707,7 @@ adb shell am start -n dev.aide.android/.MainActivity
 - [ ] **Шаг 17: финальный прогон и коммит**
 
 ```bash
-./gradlew clean :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest detekt verifyModuleBoundaries :androidApp:assembleDebug :desktopApp:createDistributable
+./gradlew clean :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test detekt verifyModuleBoundaries :androidApp:assembleDebug :desktopApp:createDistributable
 ./gradlew -p build-logic test
 ```
 
@@ -12530,7 +12750,7 @@ git commit -m "feat(client): экраны дерева и файла с пять
 **Известные ограничения плана, которые исполнителю стоит знать:**
 
 1. `host-core` объявлен JVM-модулем, а не KMP. Это соответствует § 3.2 (хост — JVM-сервис) и § 7.1, но означает, что хост нельзя запустить на Android. Если позже понадобится локальный хост на телефоне, модуль придётся делать мультиплатформенным — это отдельное решение, а не следствие этапа 0.
-2. Состояние «нет связи» на десктопе в локальном режиме не воспроизводится (хост живёт в том же процессе). Честная проверка этого состояния — на Android с выключенной сетью (шаг 15).
+2. Состояние «нет связи» в поставляемом десктопном приложении вручную не воспроизводится: хост встроен и живёт в том же процессе, умирает вместе с окном. При остановке хоста приложение штатно показывает плашку и оставляет данные из кэша — это проверяет автотест `DesktopEndToEndTest`; вживую состояние проверяют на Android с выключенной сетью (шаг 15).
 3. Тесты `JGitRepositoryTest` и `MigrationTest` требуют `git` в `PATH` и JDBC-драйвер SQLite; в CI на `ubuntu-latest` оба есть. Локально на Windows `git` нужно добавить в `PATH`, иначе тесты упадут с явным сообщением из `GitCliFixture.requireGit`.
 
 ---
