@@ -4639,8 +4639,8 @@ class RequestDedupCacheTest {
         cache.put(RequestId("b"), byteArrayOf(2))
         cache.put(RequestId("c"), byteArrayOf(3))
 
-        assertNull(cache.get(RequestId("a")))
-        assertNull(cache.get(RequestId("b")), "Обращение к 'a' должно было обновить порядок вытеснения")
+        assertNull(cache.get(RequestId("a")), "Самый старый запрос 'a' должен быть вытеснен")
+        assertContentEquals(byteArrayOf(2), cache.get(RequestId("b")))
         assertContentEquals(byteArrayOf(3), cache.get(RequestId("c")))
         assertEquals(2, cache.size)
     }
@@ -4699,7 +4699,7 @@ class RequestDedupCache(private val capacity: Int = DEFAULT_CAPACITY) {
         require(capacity > 0) { "Ёмкость кэша должна быть положительной, получено $capacity" }
     }
 
-    private val responses = LinkedHashMap<RequestId, ByteArray>(capacity, 0.75f, /* accessOrder = */ true)
+    private val responses = LinkedHashMap<RequestId, ByteArray>(capacity, LOAD_FACTOR, /* accessOrder = */ true)
 
     /** Число сохранённых ответов. */
     val size: Int get() = responses.size
@@ -4722,6 +4722,9 @@ class RequestDedupCache(private val capacity: Int = DEFAULT_CAPACITY) {
     companion object {
         /** Значение по умолчанию: с запасом покрывает запросы одного экрана ревью. */
         const val DEFAULT_CAPACITY: Int = 256
+
+        /** Коэффициент загрузки: при переполнении вытесняет самый старый запрос (LRU). */
+        private const val LOAD_FACTOR: Float = 0.75f
     }
 }
 ```
@@ -4844,15 +4847,19 @@ import dev.aide.protocol.RequestId
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocketSession
+import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
+import io.ktor.websocket.WebSocketSession
+import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
-import io.ktor.websocket.send
 import kotlin.math.min
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -4862,7 +4869,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.datetime.Clock
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("dev.aide.client.state.KtorHostConnection")
 
 /**
  * Соединение по WebSocket с автопереподключением.
@@ -4880,14 +4889,14 @@ class KtorHostConnection(
     private val scope: CoroutineScope,
     private val httpClient: HttpClient = defaultHttpClient(),
     private val clientVersion: ProtocolVersion = ProtocolVersion.CURRENT,
-    private val initialRetryMillis: Long = 250,
-    private val maxRetryMillis: Long = 5_000,
+    private val initialRetryMillis: Long = INITIAL_RETRY_MILLIS,
+    private val maxRetryMillis: Long = MAX_RETRY_MILLIS,
 ) : HostConnection {
 
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     override val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
-    private val _events = MutableSharedFlow<HostMessage>(extraBufferCapacity = 64)
+    private val _events = MutableSharedFlow<HostMessage>(extraBufferCapacity = EVENT_BUFFER_CAPACITY)
     override val events: SharedFlow<HostMessage> = _events.asSharedFlow()
 
     private val outgoing = Channel<ByteArray>(capacity = Channel.UNLIMITED)
@@ -4901,21 +4910,7 @@ class KtorHostConnection(
         loop = scope.launch {
             var attempt = 0
             while (isActive) {
-                try {
-                    _state.value = if (everConnected) {
-                        ConnectionState.Reconnecting(attempt = attempt + 1, nextRetryMillis = 0)
-                    } else {
-                        ConnectionState.Connecting
-                    }
-                    connectOnce()
-                    attempt = 0
-                } catch (error: Throwable) {
-                    if (_state.value is ConnectionState.Closed || _state.value is ConnectionState.Incompatible) return@launch
-                    attempt += 1
-                    val wait = backoffMillis(attempt)
-                    _state.value = ConnectionState.Reconnecting(attempt = attempt, nextRetryMillis = wait)
-                    delay(wait)
-                }
+                attempt = runConnectionAttempt(attempt) ?: return@launch
             }
         }
     }
@@ -4929,7 +4924,7 @@ class KtorHostConnection(
 
     override suspend fun request(message: ClientMessage, timeoutMillis: Long): HostMessage? {
         val requestId = message.requestIdOrNull()
-            ?: return withTimeoutOrNull(timeoutMillis) { sendAndAwait(message, RequestId("__hello__")) }
+            ?: return null // Приветствие отправляет цикл соединения; отдельного ответа здесь нет.
 
         // Если соединение уже установлено, отправляем сразу; иначе кладём в очередь —
         // цикл соединения вышлет накопленное после подключения.
@@ -4939,12 +4934,42 @@ class KtorHostConnection(
         return withTimeoutOrNull(timeoutMillis) { deferred.await() }.also { pending.remove(requestId) }
     }
 
-    private suspend fun sendAndAwait(message: ClientMessage, requestId: RequestId): HostMessage? {
-        val deferred = CompletableDeferred<HostMessage>()
-        pending[requestId] = deferred
-        outgoing.trySend(ProtocolCodec.encode(message))
-        return deferred.await().also { pending.remove(requestId) }
+    /**
+     * Одна попытка соединения. Возвращает номер следующей попытки либо null,
+     * если цикл должен остановиться: соединение закрыто, либо хост сообщил
+     * о несовместимости версий. Проверка нужна в обоих исходах попытки — и когда
+     * `connectOnce` бросил исключение, и когда вернулся нормально (хост сам закрыл
+     * соединение по протоколу), иначе `Incompatible` перетёрлось бы на `Reconnecting`.
+     *
+     * Ошибка ловится широко намеренно: транспорт бросает разные типы (обрыв, таймаут,
+     * закрытие прокси), и любая из них означает лишь «попытка не удалась». Отмена
+     * корутины через `ensureActive` не превращается в повторную попытку.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun runConnectionAttempt(previousAttempt: Int): Int? {
+        _state.value = if (everConnected) {
+            ConnectionState.Reconnecting(attempt = previousAttempt + 1, nextRetryMillis = 0)
+        } else {
+            ConnectionState.Connecting
+        }
+        return try {
+            connectOnce()
+            if (sessionIsFinished()) null else 0
+        } catch (error: Throwable) {
+            currentCoroutineContext().ensureActive()
+            if (sessionIsFinished()) return null
+            val attempt = previousAttempt + 1
+            val wait = backoffMillis(attempt)
+            logger.warn("Попытка подключения №$attempt не удалась: ${error.message}")
+            _state.value = ConnectionState.Reconnecting(attempt = attempt, nextRetryMillis = wait)
+            delay(wait)
+            attempt
+        }
     }
+
+    /** true, если сессия завершена по протоколу и переподключаться не нужно. */
+    private fun sessionIsFinished(): Boolean =
+        _state.value is ConnectionState.Incompatible || _state.value is ConnectionState.Closed
 
     private suspend fun connectOnce() {
         val session = httpClient.webSocketSession(endpoint)
@@ -4952,20 +4977,24 @@ class KtorHostConnection(
             session.send(Frame.Binary(true, ProtocolCodec.encode(ClientMessage.Hello(clientVersion))))
 
             // Отправляем накопленные запросы, включая те, что клиент поставил в очередь до подключения.
-            val pump = scope.launch {
-                for (bytes in outgoing) session.send(Frame.Binary(true, bytes))
-            }
-
+            val pump = scope.launch { pumpOutgoing(session) }
             try {
-                for (frame in session.incoming) {
-                    if (frame !is Frame.Binary) continue
-                    handleFrame(frame.readBytes())
-                }
+                readLoop(session)
             } finally {
                 pump.cancel()
             }
         } finally {
-            session.close()
+            session.close(CloseReason(CloseReason.Codes.NORMAL, "Соединение закрыто"))
+        }
+    }
+
+    private suspend fun pumpOutgoing(session: WebSocketSession) {
+        for (bytes in outgoing) session.send(Frame.Binary(true, bytes))
+    }
+
+    private suspend fun readLoop(session: WebSocketSession) {
+        for (frame in session.incoming) {
+            if (frame is Frame.Binary) handleFrame(frame.readBytes())
         }
     }
 
@@ -4982,7 +5011,10 @@ class KtorHostConnection(
                     is HostMessage.Hello -> {
                         val reconnected = everConnected
                         everConnected = true
-                        _state.value = ConnectionState.Connected(sessionId = message.sessionId, reconnected = reconnected)
+                        _state.value = ConnectionState.Connected(
+                            sessionId = message.sessionId,
+                            reconnected = reconnected,
+                        )
                     }
 
                     is HostMessage.Incompatible -> {
@@ -5015,21 +5047,18 @@ class KtorHostConnection(
     companion object {
         /** Клиент по умолчанию: движок websockets. */
         fun defaultHttpClient(): HttpClient = HttpClient { install(WebSockets) }
+
+        /** Задержка перед первой повторной попыткой. */
+        const val INITIAL_RETRY_MILLIS: Long = 250
+
+        /** Потолок экспоненциальной задержки между попытками. */
+        const val MAX_RETRY_MILLIS: Long = 5_000
+
+        /** Буфер событий хоста до подписки; события сверх него теряются, не блокируя чтение. */
+        private const val EVENT_BUFFER_CAPACITY: Int = 64
     }
 }
-```
 
-Добавить в этот файл логгер — временный, до появления общего логгера в задаче 14:
-
-```kotlin
-import org.slf4j.LoggerFactory
-
-private val logger = LoggerFactory.getLogger("dev.aide.client.state.KtorHostConnection")
-```
-
-И расширение для извлечения `requestId`, в конце того же файла:
-
-```kotlin
 /** Идентификатор запроса, если сообщение является ответом; null для событий. */
 internal fun HostMessage.requestIdOrNull(): RequestId? = when (this) {
     is HostMessage.WorkspaceOpened -> requestId
@@ -5190,7 +5219,6 @@ package dev.aide.host.server
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.DecodeResult
 import dev.aide.protocol.HostMessage
-import dev.aide.protocol.IncompatibilityReason
 import dev.aide.protocol.ProtocolCodec
 import dev.aide.protocol.ProtocolCompatibility
 import dev.aide.protocol.ProtocolError
@@ -5199,6 +5227,7 @@ import dev.aide.protocol.RequestDedupCache
 import dev.aide.protocol.RequestId
 import dev.aide.protocol.SessionId
 import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import java.util.UUID
 
 /** Обработчик сообщений хоста, кроме приветствия: его разбирает сама сессия. */
@@ -5213,78 +5242,112 @@ fun interface ClientMessageHandler {
  * Отвечает за три вещи: приветствие и проверку версий, идемпотентность по `requestId`
  * и передачу остальных сообщений обработчику. Приветствие должно прийти первым —
  * иначе сессия отвечает ошибкой, не разбирая запросы (§ 8.4).
+ *
+ * Несовместимость версий — это причина закрыть соединение, а не ошибка отдельного
+ * запроса: [onBytes] возвращает false, вызывающий код (см. [ProtocolServer]) закрывает
+ * WebSocket, и дальнейшие кадры не обрабатываются вовсе — § 8.4 требует явной ошибки
+ * вместо частично работающего соединения.
  */
 class ClientSession(
     private val handler: ClientMessageHandler,
     private val hostVersion: ProtocolVersion,
     private val send: suspend (ByteArray) -> Unit,
-    private val logger: Logger,
     private val dedup: RequestDedupCache = RequestDedupCache(),
 ) {
+
+    private val logger: Logger = LoggerFactory.getLogger(ClientSession::class.java)
 
     /** Идентификатор сессии, выданный этому клиенту. */
     val sessionId: SessionId = SessionId(UUID.randomUUID().toString())
 
     private var greeted = false
 
+    /** true после решения закрыть сессию: новые кадры не разбираются. */
+    private var closeRequested = false
+
     /** Число запросов, дошедших до обработчика; по нему проверяется идемпотентность. */
     var handledRequests: Int = 0
         private set
 
-    /** Обрабатывает один кадр от клиента. Возвращает false, если сессию нужно закрыть. */
-    suspend fun onBytes(bytes: ByteArray) {
-        when (val decoded = ProtocolCodec.decodeClientMessage(bytes)) {
-            is DecodeResult.Ignored -> logger.warn(
-                "Пропущено сообщение клиента: ${decoded.reason} (тип: ${decoded.rawType})",
-            )
+    /**
+     * Обрабатывает один кадр от клиента.
+     *
+     * @return true, если сессия продолжает работу; false, если её пора закрыть
+     *   (в текущей реализации — только несовместимость версий, § 8.4).
+     */
+    suspend fun onBytes(bytes: ByteArray): Boolean {
+        if (closeRequested) return false
+        return when (val decoded = ProtocolCodec.decodeClientMessage(bytes)) {
+            is DecodeResult.Ignored -> {
+                logger.warn("Пропущено сообщение клиента: ${decoded.reason} (тип: ${decoded.rawType})")
+                true
+            }
 
             is DecodeResult.Message -> onMessage(decoded.message)
         }
     }
 
-    private suspend fun onMessage(message: ClientMessage) {
-        if (message is ClientMessage.Hello) {
-            val compatibility = ProtocolCompatibility.check(message.clientVersion, hostVersion)
-            if (compatibility is ProtocolCompatibility.Incompatible) {
-                send(ProtocolCodec.encode(ProtocolCompatibility.toHostMessage(compatibility, hostVersion)))
-                return
+    private suspend fun onMessage(message: ClientMessage): Boolean {
+        val requestId = message.requestIdOrNull()
+        return when {
+            message is ClientMessage.Hello -> greet(message)
+            !greeted -> {
+                sendUnGreetedFailure(requestId)
+                true
             }
+
+            requestId == null -> {
+                logger.warn("Сообщение без requestId пропущено: $message")
+                true
+            }
+
+            else -> {
+                respond(requestId, message)
+                true
+            }
+        }
+    }
+
+    private suspend fun greet(hello: ClientMessage.Hello): Boolean {
+        val compatibility = ProtocolCompatibility.check(hello.clientVersion, hostVersion)
+        return if (compatibility is ProtocolCompatibility.Incompatible) {
+            logger.warn(
+                "Несовместимые версии протокола: клиент ${hello.clientVersion}, хост $hostVersion — " +
+                    "закрываю сессию ${sessionId.value}",
+            )
+            closeRequested = true
+            send(ProtocolCodec.encode(ProtocolCompatibility.toHostMessage(compatibility, hostVersion)))
+            false
+        } else {
             greeted = true
             send(ProtocolCodec.encode(HostMessage.Hello(hostVersion = hostVersion, sessionId = sessionId)))
-            return
+            true
         }
+    }
 
-        if (!greeted) {
-            send(
-                ProtocolCodec.encode(
-                    HostMessage.Failure(
-                        requestId = message.requestIdOrNull() ?: RequestId("unknown"),
-                        error = ProtocolError.Internal("Первым сообщением должно быть приветствие"),
-                    ),
+    private suspend fun sendUnGreetedFailure(requestId: RequestId?) {
+        send(
+            ProtocolCodec.encode(
+                HostMessage.Failure(
+                    requestId = requestId ?: RequestId("unknown"),
+                    error = ProtocolError.Internal("Первым сообщением должно быть приветствие"),
                 ),
-            )
-            return
-        }
+            ),
+        )
+    }
 
-        val requestId = message.requestIdOrNull()
-        if (requestId == null) {
-            logger.warn("Сообщение без requestId пропущено: $message")
-            return
-        }
-
+    private suspend fun respond(requestId: RequestId, message: ClientMessage) {
         // Идемпотентность: повтор запроса возвращает прежний ответ и не выполняет операцию снова.
         val cached = dedup.get(requestId)
         if (cached != null) {
             logger.info("Повтор запроса $requestId — отдаю сохранённый ответ")
             send(cached)
-            return
+        } else {
+            val encoded = ProtocolCodec.encode(handler.handle(message))
+            dedup.put(requestId, encoded)
+            handledRequests += 1
+            send(encoded)
         }
-
-        val response = handler.handle(message)
-        val encoded = ProtocolCodec.encode(response)
-        dedup.put(requestId, encoded)
-        handledRequests += 1
-        send(encoded)
     }
 }
 
@@ -5295,13 +5358,6 @@ internal fun ClientMessage.requestIdOrNull(): RequestId? = when (this) {
     is ClientMessage.FileContent -> requestId
     is ClientMessage.HostState -> requestId
     is ClientMessage.Hello -> null
-}
-
-/** Причина несовместимости версий в виде, пригодном для лога. */
-internal fun IncompatibilityReason.asLogText(): String = when (this) {
-    IncompatibilityReason.CLIENT_OUTDATED -> "клиент старее хоста"
-    IncompatibilityReason.HOST_OUTDATED -> "клиент новее хоста"
-    IncompatibilityReason.MALFORMED_HELLO -> "приветствие не разобрано"
 }
 ```
 
@@ -5324,18 +5380,17 @@ package dev.aide.host.server
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.ProtocolVersion
 import io.ktor.server.application.install
-import io.ktor.server.engine.ApplicationEngine
+import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
+import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
+import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
-import io.ktor.websocket.send
-import io.ktor.websocket.sendClose
-import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.channels.consumeEach
 import org.slf4j.LoggerFactory
 
 /**
@@ -5353,7 +5408,8 @@ class ProtocolServer(
 ) {
 
     private val logger = LoggerFactory.getLogger(ProtocolServer::class.java)
-    private var engine: ApplicationEngine? = null
+
+    private var engine: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration>? = null
 
     /** Порт, на котором фактически слушает сервер. Действителен после [start]. */
     val boundPort: Int get() = port
@@ -5368,8 +5424,8 @@ class ProtocolServer(
     fun start() {
         val server = embeddedServer(Netty, port = port, host = host) {
             install(WebSockets) {
-                pingPeriod = 15.seconds
-                timeout = 30.seconds
+                pingPeriodMillis = PING_PERIOD_MILLIS
+                timeoutMillis = SESSION_TIMEOUT_MILLIS
             }
             routing {
                 webSocket("/ws") {
@@ -5377,16 +5433,29 @@ class ProtocolServer(
                         handler = handler,
                         hostVersion = hostVersion,
                         send = { bytes -> send(Frame.Binary(true, bytes)) },
-                        logger = logger,
                     )
                     logger.info("Клиент подключился, сессия ${session.sessionId.value}, режим $mode")
+                    var closeReason = CloseReason(CloseReason.Codes.NORMAL, "Сессия завершена")
                     try {
-                        incoming.consumeEach { frame ->
-                            if (frame is Frame.Binary) session.onBytes(frame.readBytes())
+                        for (frame in incoming) {
+                            // Небинарные кадры игнорируем; если сессия просит закрыть соединение
+                            // (несовместимые версии), прекращаем чтение — ни один последующий
+                            // кадр не должен быть обработан.
+                            val closeRequested = frame is Frame.Binary && !session.onBytes(frame.readBytes())
+                            if (closeRequested) {
+                                closeReason = CloseReason(
+                                    CloseReason.Codes.PROTOCOL_ERROR,
+                                    "Несовместимая версия протокола",
+                                )
+                                break
+                            }
                         }
                     } finally {
-                        sendClose()
-                        logger.info("Сессия ${session.sessionId.value} закрыта, обработано запросов: ${session.handledRequests}")
+                        close(closeReason)
+                        logger.info(
+                            "Сессия ${session.sessionId.value} закрыта ($closeReason), " +
+                                "обработано запросов: ${session.handledRequests}",
+                        )
                     }
                 }
             }
@@ -5398,11 +5467,27 @@ class ProtocolServer(
 
     /** Останавливает сервер и освобождает порт. */
     fun stop() {
-        engine?.stop(gracePeriodMillis = 100, timeoutMillis = 1_000)
+        engine?.stop(gracePeriodMillis = SHUTDOWN_GRACE_MILLIS, timeoutMillis = SHUTDOWN_TIMEOUT_MILLIS)
         engine = null
+    }
+
+    companion object {
+        /** Период ping-кадров: держит соединение живым через прокси. */
+        private const val PING_PERIOD_MILLIS: Long = 15_000
+
+        /** Таймаут молчания: после него сессия считается оборванной. */
+        private const val SESSION_TIMEOUT_MILLIS: Long = 30_000
+
+        /** Сколько ждать завершения обработки при остановке. */
+        private const val SHUTDOWN_GRACE_MILLIS: Long = 100
+
+        /** Верхняя граница остановки сервера. */
+        private const val SHUTDOWN_TIMEOUT_MILLIS: Long = 1_000
     }
 }
 ```
+
+**Про API Ktor.** Версия зафиксирована каталогом (`ktor = "3.0.3"` в `gradle/libs.versions.toml`), поэтому код написан под API 3.x, а не 2.x: в `WebSockets` — `pingPeriodMillis`/`timeoutMillis` (`Long`) вместо `pingPeriod`/`timeout` из `kotlin.time.Duration`, вместо `sendClose()` — `close(CloseReason(...))`, а тип движка — `EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration>`, не `ApplicationEngine`. На клиенте из-за того же API нужен явный `import io.ktor.websocket.close` (шаг 6).
 
 - [ ] **Шаг 9: подключить зависимости**
 
@@ -5418,7 +5503,10 @@ kotlin { jvmToolchain(libs.versions.jvmTarget.get().toInt()) }
 
 dependencies {
     implementation(project(":domain"))
-    implementation(project(":protocol"))
+    // api, а не implementation: ClientMessageHandler, ClientSession и ProtocolServer
+    // держат в публичных сигнатурах типы протокола (ClientMessage, HostMessage,
+    // ProtocolVersion, HostMode, RequestId). Домен приходит транзитивно.
+    api(project(":protocol"))
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.websockets)
@@ -5429,6 +5517,9 @@ dependencies {
     implementation(libs.koin.core)
 
     testImplementation(libs.kotlin.test)
+    // Клиент нужен интеграционным тестам транспорта. Правило границ проверяет
+    // только main-наборы, поэтому ребро host-core → client-state в тестах легально.
+    testImplementation(project(":client-state"))
     testImplementation(libs.ktor.client.cio)
     testImplementation(libs.ktor.client.websockets)
     testImplementation(libs.slf4j.simple)
@@ -5448,13 +5539,16 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            // api, а не implementation (правило шага 7 задачи 1): HostClient и HostConnection
-            // принимают и возвращают типы протокола, а домен приходит транзитивно.
+            // api, а не implementation: HostClient и HostConnection принимают и возвращают
+            // типы протокола (ClientMessage, HostMessage, WorkspaceId), а KtorHostConnection
+            // и HostConnection держат в публичных сигнатурах HttpClient, CoroutineScope,
+            // StateFlow и SharedFlow. Без api потребитель клиента — client-ui и platform-* —
+            // не соберётся: implementation-зависимости не попадают на его compile classpath.
             api(project(":protocol"))
-            implementation(libs.ktor.client.core)
+            api(libs.ktor.client.core)
+            api(libs.kotlinx.coroutines.core)
             implementation(libs.ktor.client.websockets)
-            implementation(libs.kotlinx.coroutines.core)
-            implementation(libs.kotlinx.datetime)
+            implementation(libs.slf4j.api)
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
@@ -5478,17 +5572,22 @@ kotlin {
 ```kotlin
 package dev.aide.host.server
 
-import dev.aide.protocol.ClientMessage
-import dev.aide.protocol.FileTreeEntry
-import dev.aide.protocol.FileTreePayload
-import dev.aide.protocol.HostMessage
-import dev.aide.protocol.HostMode
-import dev.aide.protocol.ProtocolError
-import dev.aide.protocol.RequestId
-import dev.aide.protocol.WorkspaceId
 import dev.aide.client.state.ConnectionState
+import dev.aide.client.state.HostCallException
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.KtorHostConnection
+import dev.aide.protocol.ClientMessage
+import dev.aide.protocol.FileContentPayload
+import dev.aide.protocol.FileTreeEntry
+import dev.aide.protocol.FileTreePayload
+import dev.aide.protocol.HostEvent
+import dev.aide.protocol.HostMessage
+import dev.aide.protocol.HostMode
+import dev.aide.protocol.HostStatePayload
+import dev.aide.protocol.ProtocolError
+import dev.aide.protocol.ProtocolVersion
+import dev.aide.protocol.RequestId
+import dev.aide.protocol.WorkspaceId
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import java.util.concurrent.atomic.AtomicInteger
@@ -5498,11 +5597,15 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -5511,6 +5614,7 @@ class ProtocolServerTest {
 
     private val treeCalls = AtomicInteger(0)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val connections = mutableListOf<KtorHostConnection>()
 
     private val workspaceId = WorkspaceId("ws-test")
 
@@ -5536,18 +5640,18 @@ class ProtocolServerTest {
 
             is ClientMessage.FileContent -> HostMessage.Content(
                 requestId = message.requestId,
-                content = dev.aide.protocol.FileContentPayload(
+                content = FileContentPayload(
                     workspaceId = workspaceId,
                     path = message.path,
                     text = "fun login() = Unit",
-                    sizeBytes = 16,
+                    sizeBytes = 17,
                     truncated = false,
                 ),
             )
 
             is ClientMessage.HostState -> HostMessage.State(
                 requestId = message.requestId,
-                state = dev.aide.protocol.HostStatePayload(
+                state = HostStatePayload(
                     workspaceId = workspaceId,
                     rootPath = "/projects/aide",
                     branch = "master",
@@ -5574,6 +5678,8 @@ class ProtocolServerTest {
 
     @AfterTest
     fun tearDown() {
+        runBlocking { connections.forEach { runCatching { it.stop() } } }
+        connections.clear()
         server.stop()
         scope.cancel()
     }
@@ -5584,131 +5690,222 @@ class ProtocolServerTest {
             scope = scope,
             httpClient = HttpClient { install(WebSockets) },
         )
+        connections += connection
         return connection to HostClient(connection, scope)
     }
 
-    @Test
-    fun `клиент подключается, открывает воркспейс и получает дерево`() = runBlocking {
-        val (connection, client) = newClient()
-        client.start()
-        assertNotNull(
-            withTimeoutOrNull(5_000) {
-                while (connection.state.value !is ConnectionState.Connected) kotlinx.coroutines.delay(20)
-                connection.state.value
-            },
-            "Клиент не подключился за 5 секунд",
-        )
-
-        val opened = client.openWorkspace("/projects/aide")
-        assertEquals(workspaceId, opened)
-
-        val tree = client.fileTree().getOrThrow()
-        assertEquals(2, tree.entries.size)
-        assertEquals("src/auth/Login.kt", tree.entries.last().path)
-    }
-
-    @Test
-    fun `повтор запроса с тем же идентификатором не выполняет операцию дважды`() = runBlocking {
-        val (connection, client) = newClient()
-        client.start()
-        withTimeoutOrNull(5_000) {
-            while (connection.state.value !is ConnectionState.Connected) kotlinx.coroutines.delay(20)
+    private suspend fun awaitConnected(connection: KtorHostConnection) {
+        val state = withTimeoutOrNull(5_000) {
+            while (connection.state.value !is ConnectionState.Connected) delay(20)
+            connection.state.value
         }
-        client.openWorkspace("/projects/aide")
-
-        val requestId = RequestId("dup-1")
-        val first = connection.request(ClientMessage.FileTree(requestId, workspaceId))
-        val second = connection.request(ClientMessage.FileTree(requestId, workspaceId))
-
-        assertIs<HostMessage.Tree>(first)
-        assertIs<HostMessage.Tree>(second)
-        assertEquals(first, second, "Повтор должен вернуть тот же ответ")
-        assertEquals(1, treeCalls.get(), "Обработчик должен выполниться ровно один раз")
+        assertNotNull(state, "Клиент не подключился за 5 секунд, состояние: ${connection.state.value}")
     }
 
     @Test
-    fun `ошибка доступа доходит до клиента типизированной`() = runBlocking {
-        val failing = ProtocolServer(
-            handler = ClientMessageHandler { message ->
-                HostMessage.Failure(
-                    requestId = (message as ClientMessage.FileContent).requestId,
-                    error = ProtocolError.AccessDenied(path = "/etc/passwd", reason = "вне корня воркспейса"),
+    fun `клиент подключается, открывает воркспейс и получает дерево`() {
+        runBlocking {
+            val (connection, client) = newClient()
+            client.start()
+            awaitConnected(connection)
+
+            val opened = client.openWorkspace("/projects/aide")
+            assertEquals(workspaceId, opened)
+
+            val tree = client.fileTree().getOrThrow()
+            assertEquals(2, tree.entries.size)
+            assertEquals("src/auth/Login.kt", tree.entries.last().path)
+        }
+    }
+
+    @Test
+    fun `повтор запроса с тем же идентификатором не выполняет операцию дважды`() {
+        runBlocking {
+            val (connection, client) = newClient()
+            client.start()
+            awaitConnected(connection)
+            client.openWorkspace("/projects/aide")
+
+            val requestId = RequestId("dup-1")
+            val first = connection.request(ClientMessage.FileTree(requestId, workspaceId))
+            val second = connection.request(ClientMessage.FileTree(requestId, workspaceId))
+
+            assertIs<HostMessage.Tree>(first)
+            assertIs<HostMessage.Tree>(second)
+            assertEquals(first, second, "Повтор должен вернуть тот же ответ")
+            assertEquals(1, treeCalls.get(), "Обработчик должен выполниться ровно один раз")
+        }
+    }
+
+    @Test
+    fun `ошибка доступа доходит до клиента типизированной`() {
+        runBlocking {
+            val failing = ProtocolServer(
+                handler = ClientMessageHandler { message ->
+                    when (message) {
+                        is ClientMessage.OpenWorkspace ->
+                            HostMessage.WorkspaceOpened(message.requestId, workspaceId)
+
+                        is ClientMessage.FileContent -> HostMessage.Failure(
+                            requestId = message.requestId,
+                            error = ProtocolError.AccessDenied(path = "/etc/passwd", reason = "вне корня воркспейса"),
+                        )
+
+                        else -> HostMessage.Failure(
+                            requestId = RequestId("unexpected"),
+                            error = ProtocolError.NotImplemented("не нужен этому тесту"),
+                        )
+                    }
+                },
+                port = freeLoopbackPort(),
+            )
+            failing.start()
+            try {
+                val connection = KtorHostConnection(
+                    endpoint = failing.endpoint,
+                    scope = scope,
+                    httpClient = HttpClient { install(WebSockets) },
                 )
-            },
-            port = freeLoopbackPort(),
-        )
-        failing.start()
-        try {
-            val connection = KtorHostConnection(
-                endpoint = failing.endpoint,
-                scope = scope,
-                httpClient = HttpClient { install(WebSockets) },
-            )
-            val client = HostClient(connection, scope)
-            client.start()
-            withTimeoutOrNull(5_000) {
-                while (connection.state.value !is ConnectionState.Connected) kotlinx.coroutines.delay(20)
+                connections += connection
+                val client = HostClient(connection, scope)
+                client.start()
+                awaitConnected(connection)
+                client.openWorkspace("/projects/aide")
+
+                val error = client.fileContent("/etc/passwd").exceptionOrNull()
+                assertIs<HostCallException>(error)
+                assertEquals("/etc/passwd", assertIs<ProtocolError.AccessDenied>(error.error).path)
+            } finally {
+                failing.stop()
             }
-            client.openWorkspace("/projects/aide")
-            val result = client.fileContent("/etc/passwd")
-            val error = result.exceptionOrNull()
-            assertIs<dev.aide.client.state.HostCallException>(error)
-            assertIs<ProtocolError.AccessDenied>(error.error)
-        } finally {
-            failing.stop()
         }
     }
 
     @Test
-    fun `неизвестный тип сообщения от хоста не роняет клиента`() = runBlocking {
-        val noisy = ProtocolServer(
-            handler = ClientHandlerReturningUnknown(),
-            port = freeLoopbackPort(),
-        )
-        noisy.start()
-        try {
-            val connection = KtorHostConnection(
-                endpoint = noisy.endpoint,
+    fun `ответ неожиданного типа не роняет клиента`() {
+        runBlocking {
+            val noisy = ProtocolServer(handler = ClientHandlerReturningEvent(), port = freeLoopbackPort())
+            noisy.start()
+            try {
+                val connection = KtorHostConnection(
+                    endpoint = noisy.endpoint,
+                    scope = scope,
+                    httpClient = HttpClient { install(WebSockets) },
+                )
+                connections += connection
+                val client = HostClient(connection, scope)
+                client.start()
+                awaitConnected(connection)
+                client.openWorkspace("/projects/aide")
+
+                // Хост отвечает событием вместо ответа: запрос завершается таймаутом, но соединение живо.
+                repeat(3) { index ->
+                    val response = connection.request(
+                        ClientMessage.FileTree(RequestId("unexpected-$index"), workspaceId),
+                        timeoutMillis = 300,
+                    )
+                    assertNull(response, "Событие без requestId не должно закрывать ожидающий запрос")
+                }
+
+                // Следующий обычный запрос по-прежнему обслуживается: клиент не сломался.
+                val state = connection.request(
+                    ClientMessage.HostState(RequestId("after-events"), workspaceId),
+                    timeoutMillis = 2_000,
+                )
+                assertEquals("master", assertIs<HostMessage.State>(state).state.branch)
+                assertIs<ConnectionState.Connected>(connection.state.value)
+            } finally {
+                noisy.stop()
+            }
+        }
+    }
+
+    @Test
+    fun `клиент с несовместимой версией получает Incompatible, а не уходит в переподключения`() {
+        runBlocking {
+            val incompatible = KtorHostConnection(
+                endpoint = server.endpoint,
                 scope = scope,
                 httpClient = HttpClient { install(WebSockets) },
+                clientVersion = ProtocolVersion(major = 2, minor = 0),
+                initialRetryMillis = 50,
+                maxRetryMillis = 100,
             )
-            val client = HostClient(connection, scope)
-            client.start()
-            withTimeoutOrNull(5_000) {
-                while (connection.state.value !is ConnectionState.Connected) kotlinx.coroutines.delay(20)
-            }
-            client.openWorkspace("/projects/aide")
+            connections += incompatible
 
-            // Трижды просим дерево; хост отвечает неизвестным типом — клиент продолжает работать.
-            repeat(3) {
-                val result = client.fileTree()
-                assertTrue(result.isFailure, "Ответ неизвестного типа не должен считаться успехом")
-            }
+            val states = mutableListOf<ConnectionState>()
+            val watcher = scope.launch { incompatible.state.collect { states += it } }
+            try {
+                incompatible.start()
+                val reached = withTimeoutOrNull(5_000) {
+                    while (incompatible.state.value !is ConnectionState.Incompatible) delay(20)
+                    incompatible.state.value
+                }
+                assertIs<ConnectionState.Incompatible>(reached)
 
-            // …и следующее нормальное сообщение по-прежнему обслуживается.
-            val state = HostClient(connection, scope)
-            assertNotNull(withTimeoutOrNull(2_000) { connection.state.value })
-            assertTrue(connection.state.value !is ConnectionState.Closed)
-            assertTrue(state.session.value.workspaceId != null || true)
-        } finally {
-            noisy.stop()
+                delay(500)
+                watcher.cancelAndJoin()
+
+                val resumedAfterIncompatible = states
+                    .dropWhile { it !is ConnectionState.Incompatible }
+                    .drop(1)
+                    .any { it is ConnectionState.Connecting || it is ConnectionState.Reconnecting }
+                assertTrue(
+                    !resumedAfterIncompatible,
+                    "После несовместимости клиент не должен переподключаться, наблюдались состояния: $states",
+                )
+
+                // Сервер закрыл сессию по протоколу, поэтому запрос после этого не обслуживается.
+                assertNull(
+                    incompatible.request(
+                        ClientMessage.HostState(RequestId("after-incompatible"), workspaceId),
+                        timeoutMillis = 500,
+                    ),
+                    "Закрытая сессия не должна отвечать на запросы",
+                )
+            } finally {
+                watcher.cancel()
+            }
         }
     }
 }
 
-/** Обработчик, отвечающий типом сообщения, которого клиент не знает: так проверяется толерантность. */
-private class ClientHandlerReturningUnknown : ClientMessageHandler {
+/**
+ * Обработчик, отвечающий событием вместо ответа на запрос: так проверяется, что
+ * неожиданный тип ответа не роняет клиент и не закрывает соединение.
+ */
+private class ClientHandlerReturningEvent : ClientMessageHandler {
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
-        is ClientMessage.FileTree -> HostMessage.Event(dev.aide.protocol.HostEvent.HostShuttingDown)
-        is ClientMessage.OpenWorkspace -> HostMessage.WorkspaceOpened(message.requestId, WorkspaceId("ws-test"))
-        is ClientMessage.FileContent -> HostMessage.Event(dev.aide.protocol.HostEvent.HostShuttingDown)
-        is ClientMessage.HostState -> HostMessage.Event(dev.aide.protocol.HostEvent.HostShuttingDown)
-        is ClientMessage.Hello -> HostMessage.Event(dev.aide.protocol.HostEvent.HostShuttingDown)
+        is ClientMessage.OpenWorkspace ->
+            HostMessage.WorkspaceOpened(message.requestId, WorkspaceId("ws-test"))
+
+        is ClientMessage.FileTree -> HostMessage.Event(HostEvent.HostShuttingDown)
+
+        is ClientMessage.HostState -> HostMessage.State(
+            requestId = message.requestId,
+            state = HostStatePayload(
+                workspaceId = WorkspaceId("ws-test"),
+                rootPath = "/projects/aide",
+                branch = "master",
+                headCommit = "abc1234",
+                uptimeMillis = 1,
+                mode = HostMode.LOCAL,
+            ),
+        )
+
+        is ClientMessage.FileContent -> HostMessage.Failure(
+            requestId = message.requestId,
+            error = ProtocolError.NotImplemented("файл не нужен этому тесту"),
+        )
+
+        is ClientMessage.Hello -> HostMessage.Event(HostEvent.HostShuttingDown)
     }
 }
 ```
 
-**Замечание к последнему тесту.** Он проверяет ветку «ответ пришёл, но не тот, что ждали»: клиент получает событие вместо ответа и трактует вызов как неуспех, не роняясь. Настоящая толерантность к *неизвестному типу* проверена в `ProtocolCodecTest` (задача 8): там байты с чужим именем типа превращаются в `DecodeResult.Ignored`. Держать обе проверки раздельно честнее, чем имитировать неизвестный тип через известное сообщение.
+**Почему тела тестов — блочные: `fun x() { runBlocking { … } }`, а не `fun x() = runBlocking { … }`.** JUnit 5 запускает тестовый метод только тогда, когда его сигнатура возвращает `Unit`: метод с другим возвращаемым типом платформа считает не тестом, а вспомогательным, и молча пропускает — отчёт при этом остаётся зелёным, падать нечему. `fun x() = runBlocking { … }` возвращает значение последнего выражения блока, и пока это `Unit` (как у `assertEquals` и `assertTrue`), ошибка незаметна; но если последним окажется, например, `assertIs<…>(…)` или `assertNotNull(…)` (они возвращают проверенное значение), тип метода перестаёт быть `Unit` — и тест тихо исчезает из прогона. Блочная форма фиксирует возвращаемый тип `Unit` явно и от этого класса ошибок не зависит.
+
+**Замечание к тесту «ответ неожиданного типа не роняет клиента».** Он проверяет ветку «ответ пришёл, но не тот, что ждали»: клиент получает событие вместо ответа и не путает его с ответом, не роняясь. Настоящая толерантность к *неизвестному типу* проверена в `ProtocolCodecTest` (задача 8): там байты с чужим именем типа превращаются в `DecodeResult.Ignored`. Держать обе проверки раздельно честнее, чем имитировать неизвестный тип через известное сообщение.
 
 - [ ] **Шаг 11: написать тест на реконнект и актуальность состояния**
 
@@ -5725,6 +5922,7 @@ import dev.aide.protocol.FileTreeEntry
 import dev.aide.protocol.FileTreePayload
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.HostMode
+import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
@@ -5760,7 +5958,7 @@ class ReconnectTest {
 
             is ClientMessage.HostState -> HostMessage.State(
                 requestId = message.requestId,
-                state = dev.aide.protocol.HostStatePayload(
+                state = HostStatePayload(
                     workspaceId = workspaceId,
                     rootPath = "/projects/aide",
                     branch = branchName,
@@ -5795,90 +5993,91 @@ class ReconnectTest {
     }
 
     private lateinit var server: ProtocolServer
+    private var connection: KtorHostConnection? = null
 
     @AfterTest
     fun tearDown() {
+        runBlocking { connection?.let { runCatching { it.stop() } } }
         if (::server.isInitialized) server.stop()
         scope.cancel()
     }
 
     @Test
-    fun `клиент переживает обрыв и получает актуальное состояние после реконнекта`() = runBlocking {
-        server = ProtocolServer(handler = handler, port = port)
-        server.start()
+    fun `клиент переживает обрыв и получает актуальное состояние после реконнекта`() {
+        runBlocking {
+            server = ProtocolServer(handler = handler, port = port)
+            server.start()
 
-        val connection = KtorHostConnection(
-            endpoint = "ws://127.0.0.1:$port/ws",
-            scope = scope,
-            httpClient = HttpClient { install(WebSockets) },
-            initialRetryMillis = 50,
-            maxRetryMillis = 200,
-        )
-        val client = HostClient(connection, scope)
-        client.start()
+            val active = startClient()
+            val client = HostClient(active, scope)
+            client.start()
+            // 1. Первое подключение и рабочее состояние.
+            awaitState(active) { it is ConnectionState.Connected }
+            client.openWorkspace("/projects/aide")
+            assertEquals("master", client.hostState().getOrThrow().branch)
+            assertEquals("branch=master.kt", client.fileTree().getOrThrow().entries.single().path)
 
-        // 1. Первое подключение и рабочее состояние.
-        awaitState(connection) { it is ConnectionState.Connected }
-        client.openWorkspace("/projects/aide")
-        assertEquals("master", client.hostState().getOrThrow().branch)
-        assertEquals("branch=master.kt", client.fileTree().getOrThrow().entries.single().path)
+            val firstSession = assertIs<ConnectionState.Connected>(active.state.value).sessionId
 
-        val firstSession = assertIs<ConnectionState.Connected>(connection.state.value).sessionId
+            // 2. Хост сообщает новое состояние и уходит — это и есть обрыв с точки зрения клиента.
+            branchName = "feature/token"
+            server.stop()
 
-        // 2. Хост сообщает новое состояние и уходит — это и есть обрыв с точки зрения клиента.
-        branchName = "feature/token"
-        server.stop()
+            // 3. Клиент переходит в «переподключаюсь», не закрываясь окончательно.
+            awaitState(active) { it is ConnectionState.Reconnecting }
 
-        // 3. Клиент переходит в «переподключаюсь», не закрываясь окончательно.
-        awaitState(connection) { it is ConnectionState.Reconnecting }
+            // 4. Хост поднимается на том же порту и обслуживает сессию заново.
+            server = ProtocolServer(handler = handler, port = port)
+            server.start()
 
-        // 4. Хост поднимается на том же порту и обслуживает сессию заново.
-        server = ProtocolServer(handler = handler, port = port)
-        server.start()
+            awaitState(active) { it is ConnectionState.Connected && it.reconnected }
 
-        awaitState(connection) { it is ConnectionState.Connected && it.reconnected }
+            val secondSession = assertIs<ConnectionState.Connected>(active.state.value).sessionId
+            assertTrue(firstSession != secondSession, "Переподключение должно выдавать новую сессию")
 
-        val secondSession = assertIs<ConnectionState.Connected>(connection.state.value).sessionId
-        assertTrue(firstSession != secondSession, "Переподключение должно выдавать новую сессию")
+            // 5. Главная проверка: клиент не остался со старым состоянием.
+            val refreshed = withTimeoutOrNull(5_000) {
+                while (client.session.value.hostState?.branch != "feature/token") delay(50)
+                client.session.value.hostState
+            }
+            assertNotNull(refreshed, "После реконнекта состояние хоста должно обновиться автоматически")
+            assertEquals("feature/token", refreshed.branch)
 
-        // 5. Главная проверка: клиент не остался со старым состоянием.
-        val refreshed = withTimeoutOrNull(5_000) {
-            while (client.session.value.hostState?.branch != "feature/token") delay(50)
-            client.session.value.hostState
+            val tree = client.fileTree().getOrThrow()
+            assertEquals("branch=feature/token.kt", tree.entries.single().path)
         }
-        assertNotNull(refreshed, "После реконнекта состояние хоста должно обновиться автоматически")
-        assertEquals("feature/token", refreshed.branch)
-
-        val tree = client.fileTree().getOrThrow()
-        assertEquals("branch=feature/token.kt", tree.entries.single().path)
     }
 
     @Test
-    fun `после реконнекта запросы с прежними идентификаторами обслуживаются`() = runBlocking {
-        server = ProtocolServer(handler = handler, port = port)
-        server.start()
+    fun `после реконнекта запросы с прежними идентификаторами обслуживаются`() {
+        runBlocking {
+            server = ProtocolServer(handler = handler, port = port)
+            server.start()
 
-        val connection = KtorHostConnection(
-            endpoint = "ws://127.0.0.1:$port/ws",
-            scope = scope,
-            httpClient = HttpClient { install(WebSockets) },
-            initialRetryMillis = 50,
-            maxRetryMillis = 200,
-        )
-        val client = HostClient(connection, scope)
-        client.start()
-        awaitState(connection) { it is ConnectionState.Connected }
-        client.openWorkspace("/projects/aide")
+            val active = startClient()
+            val client = HostClient(active, scope)
+            client.start()
+            awaitState(active) { it is ConnectionState.Connected }
+            client.openWorkspace("/projects/aide")
 
-        server.stop()
-        awaitState(connection) { it is ConnectionState.Reconnecting }
-        server = ProtocolServer(handler = handler, port = port)
-        server.start()
-        awaitState(connection) { it is ConnectionState.Connected && it.reconnected }
+            server.stop()
+            awaitState(active) { it is ConnectionState.Reconnecting }
+            server = ProtocolServer(handler = handler, port = port)
+            server.start()
+            awaitState(active) { it is ConnectionState.Connected && it.reconnected }
 
-        val state = client.hostState()
-        assertTrue(state.isSuccess, "После реконнекта обычные запросы должны работать: ${state.exceptionOrNull()}")
+            val state = client.hostState()
+            assertTrue(state.isSuccess, "После реконнекта обычные запросы должны работать: ${state.exceptionOrNull()}")
+        }
     }
+
+    private fun startClient(): KtorHostConnection = KtorHostConnection(
+        endpoint = "ws://127.0.0.1:$port/ws",
+        scope = scope,
+        httpClient = HttpClient { install(WebSockets) },
+        initialRetryMillis = 50,
+        maxRetryMillis = 200,
+    ).also { connection = it }
 
     private suspend fun awaitState(
         connection: KtorHostConnection,
@@ -5886,7 +6085,7 @@ class ReconnectTest {
     ): ConnectionState = withTimeoutOrNull(10_000) {
         while (!predicate(connection.state.value)) delay(20)
         connection.state.value
-    }.also { requireNotNull(it) { "Состояние не достигнуто за 10 секунд, текущее: ${connection.state.value}" } }
+    } ?: error("Состояние не достигнуто за 10 секунд, текущее: ${connection.state.value}")
 }
 ```
 
@@ -5896,7 +6095,7 @@ class ReconnectTest {
 ./gradlew :protocol:jvmTest :host-core:test :client-state:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, `ProtocolServerTest` — 4 теста, `ReconnectTest` — 2 теста.
+Ожидаемо: `BUILD SUCCESSFUL`, `ProtocolServerTest` — 5 тестов, `ReconnectTest` — 2 теста.
 
 Если `ReconnectTest` падает на шаге «хост поднимается на том же порту» с `Address already in use` — увеличить ожидание между `stop()` и `start()`, вставив `delay(200)` перед созданием второго `ProtocolServer`: Netty освобождает порт не мгновенно.
 
@@ -6689,7 +6888,7 @@ class FileTreeBuilder(
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 25 тестов (`ProtocolServerTest` — 4, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6).
+Ожидаемо: `BUILD SUCCESSFUL`, 26 тестов (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6).
 
 - [ ] **Шаг 12: коммит**
 
@@ -7129,7 +7328,7 @@ class JGitRepository private constructor(
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 33 теста (`ProtocolServerTest` — 4, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8).
+Ожидаемо: `BUILD SUCCESSFUL`, 34 теста (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8).
 
 Если падает тест про переименование — JGit сообщает о переименовании через `status().call().renamed` только если включено отслеживание переименований. Если `renamed` пуст, переименование придёт как пара удаление+добавление, и тест это поймает: тогда переименование нужно распознавать по совпадению содержимого. Проверить фактические списки, напечатав их в тесте, и при необходимости заменить блок переименований на сопоставление удалённого и добавленного файла по совпадению blob-хеша:
 
@@ -7179,7 +7378,6 @@ git commit -m "feat(host): чтение состояния git через JGit �
 - Создать: `host-core/src/main/kotlin/dev/aide/host/HostApp.kt`
 - Создать: `host-core/src/main/kotlin/dev/aide/host/EmbeddedHost.kt`
 - Создать: `host-core/src/main/kotlin/dev/aide/host/server/StageZeroHandler.kt`
-- Изменить: `host-core/build.gradle.kts` (тестовая зависимость на `client-state`)
 - Изменить: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/App.kt`
 - Изменить: `desktopApp/src/main/kotlin/dev/aide/desktop/Main.kt`
 - Изменить: `androidApp/src/main/kotlin/dev/aide/android/MainActivity.kt`
@@ -7191,13 +7389,7 @@ git commit -m "feat(host): чтение состояния git через JGit �
 
 - [ ] **Шаг 1: написать падающий тест на поднятие и остановку хоста**
 
-Сначала тестовая зависимость. Тест импортирует `HostClient` и `KtorHostConnection` из `client-state`, то есть `host-core` нужно ребро `host-core → client-state`, и только в тестовой конфигурации: направление «хост знает клиента» в main-коде остаётся запрещённым. Исключение описано в задаче 4, шаг 1.
-
-`host-core/build.gradle.kts` — добавить в `dependencies`:
-
-```kotlin
-    testImplementation(project(":client-state"))
-```
+Тестовая зависимость `testImplementation(project(":client-state"))` уже добавлена в задаче 10, шаг 9: `ProtocolServerTest` ходит в хост настоящим клиентом (`HostClient`, `KtorHostConnection`). Здесь `host-core/build.gradle.kts` править не нужно.
 
 `host-core/src/test/kotlin/dev/aide/host/EmbeddedHostTest.kt`:
 
@@ -9468,7 +9660,7 @@ object DatabaseFactory {
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 50 тестов (`MigrationTest` — 3, `HostStoreTest` — 11, `ProtocolServerTest` — 4, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8, `EmbeddedHostTest` — 3).
+Ожидаемо: `BUILD SUCCESSFUL`, 51 тест (`MigrationTest` — 3, `HostStoreTest` — 11, `ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8, `EmbeddedHostTest` — 3).
 
 - [ ] **Шаг 11: проверить, что клиент не может обратиться к базе**
 
