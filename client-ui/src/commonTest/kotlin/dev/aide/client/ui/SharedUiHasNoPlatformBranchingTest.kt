@@ -29,13 +29,16 @@ class SharedUiHasNoPlatformBranchingTest {
     fun `общие экраны не содержат ветвлений по платформе`() {
         val root = sourceRoot
         val offenders = mutableListOf<String>()
+        var scanned = 0
         FileSystem.SYSTEM.listRecursively(root).forEach { path ->
             if (!path.name.endsWith(".kt")) return@forEach
+            scanned += 1
             val text = FileSystem.SYSTEM.read(path) { readUtf8() }
             forbidden.forEach { needle ->
                 if (text.contains(needle)) offenders += "${path.name}: $needle"
             }
         }
+        assertTrue(scanned > 0, "В $root не найдено ни одного .kt — проверка шла бы по пустоте")
         assertTrue(offenders.isEmpty(), "Платформенные ветвления в общем UI: $offenders")
     }
 }
