@@ -1,0 +1,19 @@
+# Настройки detekt поверх набора правил по умолчанию: `buildUponDefaultConfig = true`
+# в корневом build.gradle.kts, поэтому здесь перечислены только отклонения от умолчаний
+# линтера — остальное берётся из его версии.
+complexity:
+  LongMethod:
+    threshold: 80
+  TooManyFunctions:
+    thresholdInFiles: 25
+style:
+  MagicNumber:
+    active: true
+    ignoreNumbers: ['-1', '0', '1', '2', '100']
+  MaxLineLength:
+    maxLineLength: 120
+naming:
+  # Compose требует PascalCase у @Composable-функций: имя — часть контракта компилятора.
+  # Исключение ограничено аннотацией, поэтому обычные функции правило проверяет как раньше.
+  FunctionNaming:
+    ignoreAnnotated: ['Composable']

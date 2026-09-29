@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Лицензии Android SDK
+        run: yes | sdkmanager --licenses
+
+      - name: Платформа и инструменты Android
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Метаданные общего кода
+        run: ./gradlew :client-ui:compileCommonMainKotlinMetadata
+
+      - name: Юнит-тесты
+        run: ./gradlew :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest
+
+      - name: Линт
+        run: ./gradlew detekt
+
+      - name: Сборка Android
+        run: ./gradlew :androidApp:assembleDebug
+
+      - name: Сборка десктопа
+        run: ./gradlew :desktopApp:createDistributable
+
+      - name: Бюджет времени прогона
+        run: echo "Прогон без кэша не должен превышать 15 минут — ограничение задано job.timeout-minutes"
+
+  # Windows-дистрибутив Compose Desktop с Linux не собрать: `compose.desktop.currentOs`
+  # подставляет артефакты хоста. Поэтому Windows собирается на своём раннере —
+  # этот job и закрывает требование «Linux и Windows» из T-0.2.
+  desktop-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Сборка десктопа под Windows
+        shell: bash
+        run: ./gradlew :desktopApp:createDistributable
+
+      - name: Тесты JVM-модулей под Windows
+        shell: bash
+        run: ./gradlew :client-ui:jvmTest :client-state:jvmTest

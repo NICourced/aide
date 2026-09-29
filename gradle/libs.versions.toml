@@ -10,6 +10,7 @@ jgit = "6.10.0.202406032230-r"
 koin = "4.0.0"
 slf4j = "2.0.16"
 coroutines = "1.9.0"
+detekt = "1.23.7"
 androidMinSdk = "26"
 androidCompileSdk = "35"
 jvmTarget = "17"
@@ -48,3 +49,4 @@ androidLibrary = { id = "com.android.library", version.ref = "agp" }
 composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "compose" }
 composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }
+detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
