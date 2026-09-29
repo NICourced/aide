@@ -1285,9 +1285,10 @@ jobs:
 
 ```bash
 ./gradlew clean :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest detekt :androidApp:assembleDebug :desktopApp:createDistributable
+./gradlew -p build-logic test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`. Список задач тот же, что в workflow. Если хотя бы один тест KMP-модуля падает, прогон падает здесь, а не только в CI. Замерить время и сверить с измеренным CI: холодный `build` — 7m0s из 15 минут, тёплый прогон с прогретым кэшем — около 2m; локальный прогон без кэша должен укладываться в те же 15 минут. Если нет — включить `org.gradle.caching` и кэш `gradle/actions/setup-gradle` уже включены; при превышении разобрать, какая задача дольше всех, командой `./gradlew build --profile` и посмотреть `build/reports/profile/`.
+Ожидаемо: `BUILD SUCCESSFUL` в обоих прогонах. Набор задач тот же, что в workflow; тесты логики сборки идут отдельной командой, потому что `build-logic` — самостоятельная included-сборка и её `:test` не входит в корневой `check`. Если хотя бы один тест KMP-модуля падает, прогон падает здесь, а не только в CI. Замерить время и сверить с измеренным CI: холодный `build` — 7m0s из 15 минут, тёплый прогон с прогретым кэшем — около 2m; локальный прогон без кэша должен укладываться в те же 15 минут. Если нет — включить `org.gradle.caching` и кэш `gradle/actions/setup-gradle` уже включены; при превышении разобрать, какая задача дольше всех, командой `./gradlew build --profile` и посмотреть `build/reports/profile/`.
 
 - [ ] **Шаг 7: проверить, что прогон ловит падение теста KMP-модуля**
 
@@ -1334,9 +1335,12 @@ git commit -m "ci: сборка Android и десктопа, линт detekt и 
 
 **Файлы:**
 - Создать: `build-logic/src/main/kotlin/ModuleBoundariesTask.kt`
-- Изменить: `build-logic/build.gradle.kts` (зарегистрировать задачу в корневом проекте)
+- Создать: `build-logic/src/main/kotlin/aide.module-boundaries.gradle.kts`
+- Изменить: `build-logic/build.gradle.kts` (тестовая зависимость и запуск на JUnit Platform)
+- Изменить: `build.gradle.kts` (применить конвенцию `aide.module-boundaries`)
 - Изменить: `settings.gradle.kts` (ничего, если `includeBuild` уже есть)
-- Тест: `build-logic/src/test/kotlin/ModuleBoundariesTaskTest.kt`
+- Изменить: `.github/workflows/ci.yml` (шаги «Тесты логики сборки» и «Границы модулей»)
+- Тест: `build-logic/src/test/kotlin/ModuleBoundariesTest.kt`
 
 - [ ] **Шаг 1: написать падающий тест на сам чекер**
 
@@ -1347,12 +1351,18 @@ package aide.build
 
 /**
  * Правило границ: какие префиксы пакетов запрещены в каких модулях.
- * Проверяются только исходники модуля, объявленного в [module].
+ *
+ * Проверяются исходники только main-наборов модуля из [module]: в тестах ребро
+ * «хост знает клиента» легально (интеграционный тест поднимает хост и подключается
+ * к нему настоящим клиентом), в main-коде — нет.
  */
 data class ModuleBoundary(
     val module: String,
     val forbiddenPackagePrefixes: List<String>,
+    /** Почему запрещено: печатается в сообщении о нарушении. */
     val explanation: String,
+    /** Что делать нарушителю. У каждого модуля своё, поэтому это часть правила, а не общий совет. */
+    val action: String,
 )
 
 object ModuleBoundaries {
@@ -1361,11 +1371,13 @@ object ModuleBoundaries {
             module = "client-ui",
             forbiddenPackagePrefixes = listOf("dev.aide.host", "org.eclipse.jgit", "app.cash.sqldelight"),
             explanation = "Клиент не обращается к хосту, git и БД напрямую — только через API хоста (§ 3.2, § 8.1)",
+            action = "Перенести работу на сторону хоста и вызвать её через API хоста.",
         ),
         ModuleBoundary(
             module = "client-state",
             forbiddenPackagePrefixes = listOf("dev.aide.host", "org.eclipse.jgit", "app.cash.sqldelight"),
             explanation = "Состояние клиента не знает о реализации хоста (§ 8.1)",
+            action = "Перенести работу на сторону хоста и вызвать её через API хоста.",
         ),
         ModuleBoundary(
             module = "domain",
@@ -1373,11 +1385,19 @@ object ModuleBoundaries {
                 "androidx.compose", "org.jetbrains.compose", "io.ktor", "dev.aide.host", "dev.aide.client",
             ),
             explanation = "Домен не знает ни о UI, ни о транспорте, ни о хосте (§ 8.1)",
+            action = "Убрать из домена зависимость на UI, транспорт и хост: домен — это чистые данные и правила.",
         ),
         ModuleBoundary(
             module = "protocol",
             forbiddenPackagePrefixes = listOf("androidx.compose", "org.jetbrains.compose", "dev.aide.host", "dev.aide.client"),
             explanation = "Протокол не знает ни о UI, ни о реализации хоста (§ 8.1)",
+            action = "Оставить в протоколе только описание сообщений: UI и хост живут в своих модулях.",
+        ),
+        ModuleBoundary(
+            module = "host-core",
+            forbiddenPackagePrefixes = listOf("dev.aide.client", "androidx.compose", "org.jetbrains.compose"),
+            explanation = "Хост не знает о клиенте и его UI: направление «хост → клиент» запрещено (§ 3.2, § 8.1)",
+            action = "Перенести клиентский код в client-* и вызывать хост по протоколу; ребро host-core → client-state допустимо только в тестах (testImplementation).",
         ),
     )
 
@@ -1403,7 +1423,7 @@ object ModuleBoundaries {
             appendLine("Нарушены границы модуля '$module':")
             violations.forEach { appendLine("  - $it") }
             appendLine("Почему это запрещено: ${rule.explanation}")
-            appendLine("Что делать: перенести работу на сторону хоста и вызвать её через API хоста.")
+            appendLine("Что делать: ${rule.action}")
         }
     }
 }
@@ -1459,10 +1479,12 @@ class ModuleBoundariesTest {
 
 **Правило зависимостей: `api` или `implementation`.** Проверка выше смотрит на импорты, но половина границ держится на объявлении зависимостей, и здесь действует одно правило: **`api`, если тип виден в публичной сигнатуре модуля, иначе `implementation`.** В этом проекте это значит: `:domain` → `api(libs.kotlinx.datetime)`, `api(libs.kotlinx.serialization.core)`; `:protocol` → `api(project(":domain"))`; `:client-state` → `api(project(":protocol"))`; `:client-ui` → `api(project(":client-state"))`; `:platform-*` → `api(...)` на то, что они отдают в `androidApp` и `desktopApp`. Слишком широкий `api` размывает границу (потребитель видит лишнее), слишком узкий `implementation` ломает сборку у потребителя сообщением `Cannot access class '…'` — оба случая видны на компиляции, поэтому правило проверяемо, а не декларативно.
 
+**Почему у правила есть поле `action`.** Совет «что делать» у каждого модуля свой: `domain` не должен ничего переносить на хост — ему нужно убрать зависимость на UI или транспорт, и прежняя общая формулировка на этом модуле просто неверна. Поэтому текст действия — часть правила, а не константа в `message`. Тест `текст сообщения объясняет причину и действие` проверяет, что оба блока в сообщении есть.
+
 **Исключения, которые правило границ обязано пропускать.** Их два, и они не нарушения:
 
 1. `platform-desktop` → `host-core` — легально. Локальный режим (§ 3.3) означает, что хост живёт в том же процессе, и знает об этом ровно один модуль — `platform-desktop`; `client-state` и `client-ui` о хосте не знают. Поэтому в список проверяемых модулей входит `client-ui`, но не `platform-desktop`, и расширять правило на зависимости сборки без этого исключения нельзя.
-2. `host-core` → `client-state` **в тестовой конфигурации** — легально. Интеграционный тест `EmbeddedHostTest` (задача 13) подключается к поднятому хосту настоящим клиентом (`HostClient`, `KtorHostConnection`), то есть `host-core` нужен `testImplementation(project(":client-state"))`. Направление «хост знает клиента» в main-коде остаётся запрещённым: это ребро существует только для тестов.
+2. `host-core` → `client-state` **в тестовой конфигурации** — легально. Интеграционный тест `EmbeddedHostTest` (задача 13) подключается к поднятому хосту настоящим клиентом (`HostClient`, `KtorHostConnection`), то есть `host-core` нужен `testImplementation(project(":client-state"))`. Направление «хост знает клиента» в main-коде остаётся запрещённым, и это не декларация: `host-core` входит в список защищаемых модулей с запретом `dev.aide.client`, а сканирование ограничено main-наборами — тестовое ребро правило не видит, а импорт клиента в main-коде хоста валит проверку.
 
 - [ ] **Шаг 2: прогнать тест, убедиться что падает**
 
@@ -1480,9 +1502,9 @@ tasks.test { useJUnitPlatform() }
 ./gradlew -p build-logic test
 ```
 
-Ожидаемо на этом шаге: `BUILD FAILED` с `Unresolved reference: ModuleBoundaries` — потому что файл ещё не написан. Если файл уже написан (шаг 1), ожидаемо `BUILD SUCCESSFUL`.
+Ожидаемо: `BUILD SUCCESSFUL`, `ModuleBoundariesTest` — 4 пройденных теста. Если тест добавляется раньше реализации, прогон падает с `Unresolved reference: ModuleBoundaries`; но шаг 1 содержит и код чекера, поэтому при обычном порядке работы (тест и код пишутся вместе) здесь ожидается успех, а не падение.
 
-- [ ] **Шаг 3: зарегистрировать Gradle-задачу, которая применяет чекер к исходникам**
+- [ ] **Шаг 3: написать задачу `VerifyModuleBoundariesTask`**
 
 Добавить в конец `ModuleBoundariesTask.kt`:
 
@@ -1490,17 +1512,30 @@ tasks.test { useJUnitPlatform() }
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 
 abstract class VerifyModuleBoundariesTask : DefaultTask() {
 
+    /** Имя модуля, к которому применено правило; подставляется при регистрации задачи. */
     @get:Input
     abstract val module: Property<String>
+
+    /**
+     * Каталог модуля — нужен только для относительных путей в сообщении.
+     *
+     * Это свойство, а не `project.projectDir`: обращение к `Task.project` в момент
+     * выполнения запрещено при включённом configuration cache (а он включён в задаче 1),
+     * и сборка падает целиком с `invocation of 'Task.project' at execution time is unsupported`.
+     */
+    @get:Internal
+    abstract val projectDirectory: DirectoryProperty
 
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -1508,7 +1543,8 @@ abstract class VerifyModuleBoundariesTask : DefaultTask() {
 
     @TaskAction
     fun verify() {
-        val files = sources.files.associate { it.relativeTo(project.projectDir).path to it.readText() }
+        val root = projectDirectory.get().asFile
+        val files = sources.files.associate { it.relativeTo(root).path to it.readText() }
         val violations = ModuleBoundaries.findViolations(module.get(), files)
         if (violations.isNotEmpty()) {
             throw GradleException(ModuleBoundaries.message(module.get(), violations))
@@ -1518,27 +1554,53 @@ abstract class VerifyModuleBoundariesTask : DefaultTask() {
 }
 ```
 
-- [ ] **Шаг 4: подключить задачу ко всем модулям с правилом**
+- [ ] **Шаг 4: написать конвенцию `aide.module-boundaries` и применить её в корне**
 
-В корневом `build.gradle.kts` добавить:
+Регистрация задачи живёт в конвенционном плагине, а не в корневом `build.gradle.kts`: `pluginManagement { includeBuild("build-logic") }` отдаёт корневому скрипту только плагины, но не классы, поэтому `import aide.build.VerifyModuleBoundariesTask` в корне не собирается — падает с `Unresolved reference: aide`. Конвенция же лежит внутри `build-logic`, где класс задачи доступен напрямую.
+
+`build-logic/src/main/kotlin/aide.module-boundaries.gradle.kts`:
 
 ```kotlin
-val guardedModules = setOf("domain", "protocol", "client-ui", "client-state")
+import aide.build.VerifyModuleBoundariesTask
+
+// Имена main-наборов. Тестовые наборы не проверяются: в тестах ребро host-core → client-state
+// легально (интеграционный тест поднимает хост и подключается к нему настоящим клиентом).
+val mainSourceSetNames = listOf("commonMain", "jvmMain", "androidMain", "main")
+
+val guardedModules = setOf("domain", "protocol", "client-ui", "client-state", "host-core")
 
 subprojects {
-    if (name in guardedModules) {
-        val verify = tasks.register<aide.build.VerifyModuleBoundariesTask>("verifyModuleBoundaries") {
-            group = "verification"
-            description = "Проверяет границы модуля (T-0.4)"
-            module.set(name)
-            sources.from(fileTree("src") { include("**/*.kt") })
-        }
+    if (name !in guardedModules) return@subprojects
+
+    // Имя модуля нужно захватить здесь, в области подпроекта: внутри конфигурации задачи
+    // `name` — это уже имя самой задачи, и в сообщении печаталось бы 'verifyModuleBoundaries'.
+    val moduleName = name
+
+    val verify = tasks.register<VerifyModuleBoundariesTask>("verifyModuleBoundaries") {
+        group = "verification"
+        description = "Проверяет границы модуля (T-0.4)"
+        module.set(moduleName)
+        projectDirectory.set(layout.projectDirectory)
+        sources.from(fileTree("src") { mainSourceSetNames.forEach { include("$it/**/*.kt") } })
+    }
+
+    // Блок subprojects {} выполняется при конфигурации корня, то есть до применения плагинов
+    // подпроекта, и попытка привязаться к check прямо там падает с `Task with name 'check' not found`.
+    // Поэтому привязка отложенная: ждём, пока в подпроекте появится base-плагин.
+    plugins.withId("base") {
         tasks.named("check") { dependsOn(verify) }
     }
 }
 ```
 
-Импорт `aide.build.VerifyModuleBoundariesTask` доступен, потому что `build-logic` подключён через `includeBuild`; в `build.gradle.kts` добавить `import aide.build.VerifyModuleBoundariesTask`.
+В корневом `build.gradle.kts` остаётся одна строка — применить конвенцию:
+
+```kotlin
+plugins {
+    // … существующие alias'ы …
+    id("aide.module-boundaries")
+}
+```
 
 - [ ] **Шаг 5: проверить, что чистая сборка проходит**
 
@@ -1546,11 +1608,11 @@ subprojects {
 ./gradlew verifyModuleBoundaries
 ```
 
-Ожидаемо: для каждого из четырёх модулей строка `Границы модуля '<имя>' соблюдены (проверено файлов: N)`, `BUILD SUCCESSFUL`.
+Ожидаемо: для каждого из пяти модулей строка `Границы модуля '<имя>' соблюдены (проверено файлов: N)` — имена `domain`, `protocol`, `client-ui`, `client-state`, `host-core`, — и `BUILD SUCCESSFUL`. Если `host-core` в выводе нет, значит правило для хоста не подключено, и заявленный запрет «хост не знает клиента» ничем не обеспечен.
 
 - [ ] **Шаг 6: проверить намеренным нарушением**
 
-Добавить в `client-ui/src/commonMain/kotlin/dev/aide/client/ui/App.kt` строку `import dev.aide.host.HostApp` и запустить:
+Добавить в `client-ui/src/commonMain/kotlin/dev/aide/client/ui/App.kt` строку `import dev.aide.host.HostApp` — именно в main-набор: тестовые наборы правило не сканирует — и запустить:
 
 ```bash
 ./gradlew :client-ui:verifyModuleBoundaries
@@ -1562,19 +1624,26 @@ subprojects {
 Нарушены границы модуля 'client-ui':
   - src/commonMain/kotlin/dev/aide/client/ui/App.kt: dev.aide.host → dev.aide.host.HostApp
 Почему это запрещено: Клиент не обращается к хосту, git и БД напрямую — только через API хоста (§ 3.2, § 8.1)
-Что делать: перенести работу на сторону хоста и вызвать её через API хоста.
+Что делать: Перенести работу на сторону хоста и вызвать её через API хоста.
 ```
 
 Удалить нарушающую строку.
 
-- [ ] **Шаг 7: добавить проверку в CI**
+- [ ] **Шаг 7: добавить проверки в CI**
 
 В `.github/workflows/ci.yml` в Linux-job'е `build` после шага линта добавить:
 
 ```yaml
+      - name: Тесты логики сборки
+        run: ./gradlew -p build-logic test
+
       - name: Границы модулей
         run: ./gradlew verifyModuleBoundaries
 ```
+
+Тесты `build-logic` не выполняются основной сборкой: `build-logic` — отдельная included-сборка, и её `:test` не входит ни в корневой `check`, ни в `./gradlew build`, поэтому в CI она запускается явно.
+
+**Две известные дыры, которые сейчас не закрываются.** Первая: `build-logic` не линтуется detekt — корневой `subprojects { detekt }` до included-сборки не достаёт, поэтому новый код правил границ линт не проходит. Если это станет проблемой, понадобится отдельная detekt-задача внутри самой included-сборки; отдельного шага на это в плане нет намеренно. Вторая: правило не проверялось на Windows — job `desktop-windows` не вызывает `check`, поэтому `verifyModuleBoundaries` там не выполняется; проверка есть только в Linux-job'е.
 
 - [ ] **Шаг 8: коммит**
 
@@ -10468,9 +10537,10 @@ adb shell am start -n dev.aide.android/.MainActivity
 
 ```bash
 ./gradlew clean :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest detekt verifyModuleBoundaries :androidApp:assembleDebug :desktopApp:createDistributable
+./gradlew -p build-logic test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`. Затем:
+Ожидаемо: `BUILD SUCCESSFUL` в обоих прогонах (вторая команда — тесты конвенций сборки: они живут в отдельной included-сборке и в корневой `check` не входят). Затем:
 
 ```bash
 git add client-state client-ui androidApp desktopApp platform-android platform-desktop docs/tasks/01-foundation.md
