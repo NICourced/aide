@@ -63,7 +63,7 @@ aide/
 │       │   ├── AgentRun.kt                AgentRun, RunState, Cost
 │       │   ├── ToolCall.kt                ToolCall, ToolOutcome, ApprovalDecision, ToolPermission
 │       │   ├── ChangePacket.kt            ChangePacket, FileChange, Hunk, HunkLine, TestStatus
-│       │   ├── Review.kt                  ReviewDecision, DecisionScope, DecisionValue
+│       │   ├── ReviewDecision.kt          ReviewDecision, DecisionScope, DecisionValue
 │       │   ├── Snapshot.kt                Snapshot, SnapshotTrigger
 │       │   ├── Invariants.kt              DomainViolation + проверки инвариантов 1 и 5 (T-0.6)
 │       │   └── risk/RiskEvaluator.kt      чистая функция RiskLevel (T-0.7)
@@ -1663,7 +1663,7 @@ git commit -m "build: правило границ модулей как Gradle-�
 - Создать: `domain/src/commonMain/kotlin/dev/aide/domain/AgentRun.kt`
 - Создать: `domain/src/commonMain/kotlin/dev/aide/domain/ToolCall.kt`
 - Создать: `domain/src/commonMain/kotlin/dev/aide/domain/ChangePacket.kt`
-- Создать: `domain/src/commonMain/kotlin/dev/aide/domain/Review.kt`
+- Создать: `domain/src/commonMain/kotlin/dev/aide/domain/ReviewDecision.kt`
 - Создать: `domain/src/commonMain/kotlin/dev/aide/domain/Snapshot.kt`
 - Удалить: `domain/src/commonMain/kotlin/dev/aide/domain/PackageMarker.kt`
 - Удалить: `domain/src/commonTest/kotlin/dev/aide/domain/DomainModuleSmokeTest.kt`
@@ -2151,7 +2151,7 @@ data class TestStatus(
 
 - [ ] **Шаг 6: написать `ReviewDecision` и `Snapshot`**
 
-`domain/src/commonMain/kotlin/dev/aide/domain/Review.kt`:
+`domain/src/commonMain/kotlin/dev/aide/domain/ReviewDecision.kt` — имя файла совпадает с именем единственной top-level декларации: если назвать файл иначе, detekt падает на правиле `MatchingDeclarationName` с текстом `The file name '…' does not match the name of the single top-level declaration 'ReviewDecision'`. Имена типов при этом не меняются — `ReviewDecision`, `DecisionScope`, `DecisionValue` остаются контрактом для остальных задач:
 
 ```kotlin
 package dev.aide.domain
@@ -2369,7 +2369,10 @@ object DomainFixtures {
 ```kotlin
 package dev.aide.domain
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.cbor.Cbor
+import kotlinx.serialization.decodeFromByteArray
+import kotlinx.serialization.encodeToByteArray
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -2378,7 +2381,14 @@ import kotlin.test.assertTrue
 /**
  * Round-trip: сериализация и обратный разбор дают равный объект (T-0.5).
  * Формат — CBOR, тот же, что поедет по сети в задаче 8.
+ *
+ * `@OptIn` нужен из-за `Cbor { … }`: настройка формата числится экспериментальной
+ * и без этого даёт три предупреждения `needs opt-in for 'ExperimentalSerializationApi'`.
+ * Импорты `encodeToByteArray` и `decodeFromByteArray` — top-level расширения
+ * `kotlinx.serialization`, а не члены `BinaryFormat`: без них компилятор выбирает
+ * перегрузку, требующую сериализатор, и падает с `Argument type mismatch`.
  */
+@OptIn(ExperimentalSerializationApi::class)
 class DomainRoundTripTest {
 
     private val cbor = Cbor { ignoreUnknownKeys = true }
@@ -2440,7 +2450,7 @@ class DomainRoundTripTest {
     fun `ChangePacket с вложенными hunk-ами переживает round-trip`() {
         val decoded = roundTrip(DomainFixtures.packet)
         assertEquals(DomainFixtures.packet, decoded)
-        assertEquals(1, decoded.files.size.coerceAtMost(2))
+        assertEquals(2, decoded.files.size)
         assertEquals(DomainFixtures.hunk, decoded.files.first().hunks.first())
     }
 
@@ -2500,8 +2510,11 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.kotlinx.serialization.core)
-            implementation(libs.kotlinx.datetime)
+            // api, а не implementation: Instant и @Serializable входят в публичные сигнатуры
+            // моделей (Task.createdAt, AgentRun.startedAt, ReviewDecision.decidedAt), поэтому
+            // потребителю нужен доступ к этим типам — правило из задачи 4.
+            api(libs.kotlinx.serialization.core)
+            api(libs.kotlinx.datetime)
         }
         commonTest.dependencies {
             implementation(libs.kotlinx.serialization.cbor)
@@ -2514,7 +2527,11 @@ tasks.named<Test>("jvmTest") {
 }
 ```
 
-Добавить в каталог: `dokka = "2.0.0"` и `dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }`.
+Добавить в каталог: `dokka = "2.1.0"` и `dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }`.
+
+Версия именно **2.1.0**, а не 2.0.0, и откатывать её нельзя. С Dokka 2.0.0 при Kotlin 2.1.0 плагин работает в legacy-режиме DGP v1: задачи называются `dokkaHtml` и `dokkaGfm`, задачи `dokkaGenerate` в проекте просто нет, а `:domain:dokkaHtml` рушит запись configuration cache (`cannot serialize object of type 'DefaultUnlockedConfiguration'`, `Configuration cache entry discarded with 2 problems`) — то есть конфликтует с `org.gradle.configuration-cache=true`, который включён в задаче 1. В Dokka 2.1.0 режим DGP v2 — режим по умолчанию: есть ровно задача `dokkaGenerate`, configuration cache сохраняется, документация кладётся в `domain/build/dokka/html`, предупреждений о несовместимости с Kotlin 2.1.0 нет.
+
+`import org.gradle.api.tasks.testing.Test` в этом build-файле не нужен: тип входит в default-импорты Kotlin DSL, поэтому в листинге его нет — это не пропуск. Реализация может оставить его как самодокументируемый, на сборку и смысл это не влияет.
 
 - [ ] **Шаг 12: написать тест, что у каждого публичного поля есть документирующий комментарий**
 
@@ -2535,7 +2552,7 @@ import kotlin.test.assertTrue
 class PublicFieldsAreDocumentedTest {
 
     private val modelFiles = listOf(
-        "Task.kt", "AgentRun.kt", "ToolCall.kt", "ChangePacket.kt", "Review.kt", "Snapshot.kt",
+        "Task.kt", "AgentRun.kt", "ToolCall.kt", "ChangePacket.kt", "ReviewDecision.kt", "Snapshot.kt",
     )
 
     @Test
@@ -2572,22 +2589,26 @@ class PublicFieldsAreDocumentedTest {
 }
 ```
 
+Почему в списке шесть файлов, а не восемь: `Ids.kt` и `Enums.kt` тест не проверяет, и это осознанно — там `value class` и enum-константы, а их поля не начинаются с четырёх пробелов и `val`, поэтому правило «перед полем стоит `*/`» к ним неприменимо. Проверяются файлы с data-классами.
+
+**Пометка на будущее.** Тест ищет «предыдущую значимую строку» и ждёт, что она заканчивается на `*/`. Если между KDoc и `val` появится аннотация (`@Transient`, `@Deprecated`), предыдущей значимой строкой станет она, и тест даст ложное срабатывание — так и происходит на временных правках. Сейчас аннотированных полей нет, но задачи 6 и дальше могут их добавить: при первом же таком поле тест нужно уточнить (пропускать строки, начинающиеся с `@`), а не отключать.
+
 - [ ] **Шаг 13: прогнать тест документации и сборку документации**
 
 ```bash
 ./gradlew :domain:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 16 тестов пройдено. Затем убедиться, что тест действительно ловит нарушение: временно удалить KDoc-строку над `val branch: String` в `Task.kt`, повторить команду — ожидаемо `FAILED` со строкой `Task.kt:14 → val branch: String`. Вернуть KDoc.
+Ожидаемо: `BUILD SUCCESSFUL`, 16 тестов пройдено. Затем убедиться, что тест действительно ловит нарушение: временно удалить KDoc-строку над `val branch: String` в `Task.kt`, повторить команду — ожидаемо `FAILED` со строкой `Task.kt:15 → val branch: String`. Вернуть KDoc.
 
 ```bash
 ./gradlew :domain:dokkaGenerate
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, появился каталог `domain/build/dokka/html` с документацией. Если Gradle сообщает, что задачи `dokkaGenerate` нет, посмотреть доступные имена:
+Ожидаемо: `BUILD SUCCESSFUL`, появился каталог `domain/build/dokka/html` с документацией. Если Gradle сообщает, что задачи `dokkaGenerate` нет, посмотреть доступные имена — задачи документации лежат в группе `Dokka tasks` и в обычном выводе `tasks` не показываются, поэтому нужен `--all`:
 
 ```bash
-./gradlew :domain:tasks --group documentation
+./gradlew :domain:tasks --all
 ```
 
 и использовать имя оттуда, заменив его в этом шаге и в CI (задача 3, шаг 3).
