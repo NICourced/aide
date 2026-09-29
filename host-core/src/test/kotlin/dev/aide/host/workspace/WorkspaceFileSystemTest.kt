@@ -76,6 +76,31 @@ class WorkspaceFileSystemTest {
         }
     }
 
+    /**
+     * Цель внутри уводящего каталога-симлинка не существует, поэтому проверка обязана идти
+     * по канонизации родителя, а не по строке: иначе путь `link-dir/missing.kt` нормализуется
+     * обратно в симлинковый и сойдёт за «внутри корня».
+     */
+    @Test
+    fun `несуществующий файл под симлинком-каталогом наружу запрещён`() {
+        val outsideDir = Files.createTempDirectory("aide-outside-dir-")
+        try {
+            fixture.createEscapingSymlink("link-dir", outsideDir)
+            assertTrue(
+                Files.isDirectory(fixture.root.resolve("link-dir")),
+                "Симлинк должен вести на каталог, иначе вектор вырожден",
+            )
+            assertFalse(
+                Files.exists(outsideDir.resolve("missing.kt")),
+                "Файла-цели быть не должно: проверяется именно несуществующий путь",
+            )
+            val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("link-dir/missing.kt") }
+            assertIs<ProtocolError.AccessDenied>(error.error)
+        } finally {
+            outsideDir.toFile().deleteRecursively()
+        }
+    }
+
     @Test
     fun `симлинк внутрь воркспейса разрешён`() {
         Files.createSymbolicLink(fixture.root.resolve("link-in.kt"), fixture.root.resolve("src/auth/Login.kt"))
