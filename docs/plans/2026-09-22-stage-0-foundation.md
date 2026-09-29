@@ -6200,11 +6200,13 @@ package dev.aide.host.workspace
 
 import dev.aide.protocol.ProtocolError
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -6231,13 +6233,28 @@ class WorkspaceFileSystemTest {
     }
 
     @Test
+    fun `подъём по каталогам к существующему файлу вне корня запрещён`() {
+        val sibling = Files.createTempFile(fixture.root.parent, "aide-secret-", ".txt")
+        sibling.writeText("секрет\n")
+        assertTrue(Files.isReadable(sibling), "Цель атаки должна быть реально читаемой — иначе проверка вырождена")
+        try {
+            val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("../${sibling.fileName}") }
+            assertIs<ProtocolError.AccessDenied>(error.error)
+        } finally {
+            Files.deleteIfExists(sibling)
+        }
+    }
+
+    @Test
     fun `вложенный подъём по каталогам запрещён`() {
+        assertTrue(Files.isReadable(Path.of("/etc/passwd")), "Цель атаки должна быть читаемой")
         val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("src/auth/../../../etc/passwd") }
         assertIs<ProtocolError.AccessDenied>(error.error)
     }
 
     @Test
     fun `абсолютный путь вне корня запрещён`() {
+        assertTrue(Files.isReadable(Path.of("/etc/passwd")), "Цель атаки должна быть читаемой")
         val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("/etc/passwd") }
         assertIs<ProtocolError.AccessDenied>(error.error)
     }
@@ -6246,13 +6263,39 @@ class WorkspaceFileSystemTest {
     fun `симлинк, ведущий наружу, запрещён`() {
         val outside = Files.createTempFile("aide-outside-", ".txt")
         outside.writeText("секрет\n")
+        assertTrue(Files.isReadable(outside), "Цель симлинка должна быть реально читаемой — иначе атака вырождена")
         try {
             fixture.createEscapingSymlink("link-out.txt", outside)
             val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("link-out.txt") }
-            assertIs<ProtocolError.AccessDenied>(error.error)
-            assertTrue(error.error.reason.contains("симлинк", ignoreCase = true))
+            val denied = assertIs<ProtocolError.AccessDenied>(error.error)
+            assertTrue(denied.reason.contains("симлинк", ignoreCase = true))
         } finally {
             Files.deleteIfExists(outside)
+        }
+    }
+
+    /**
+     * Цель внутри уводящего каталога-симлинка не существует, поэтому проверка обязана идти
+     * по канонизации родителя, а не по строке: иначе путь `link-dir/missing.kt` нормализуется
+     * обратно в симлинковый и сойдёт за «внутри корня».
+     */
+    @Test
+    fun `несуществующий файл под симлинком-каталогом наружу запрещён`() {
+        val outsideDir = Files.createTempDirectory("aide-outside-dir-")
+        try {
+            fixture.createEscapingSymlink("link-dir", outsideDir)
+            assertTrue(
+                Files.isDirectory(fixture.root.resolve("link-dir")),
+                "Симлинк должен вести на каталог, иначе вектор вырожден",
+            )
+            assertFalse(
+                Files.exists(outsideDir.resolve("missing.kt")),
+                "Файла-цели быть не должно: проверяется именно несуществующий путь",
+            )
+            val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("link-dir/missing.kt") }
+            assertIs<ProtocolError.AccessDenied>(error.error)
+        } finally {
+            outsideDir.toFile().deleteRecursively()
         }
     }
 
@@ -6271,16 +6314,46 @@ class WorkspaceFileSystemTest {
     @Test
     fun `каталог вместо файла даёт понятную ошибку`() {
         val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("src/auth") }
-        assertIs<ProtocolError.NotFound>(error.error)
-        assertTrue(error.error.what.contains("каталог", ignoreCase = true))
+        val notFound = assertIs<ProtocolError.NotFound>(error.error)
+        assertTrue(notFound.what.contains("каталог", ignoreCase = true))
     }
 
     @Test
     fun `файл больше лимита обрезается с пометкой`() {
-        fixture.createLargeFile("big.txt", bytes = WorkspaceFileSystem.MAX_DISPLAY_BYTES + 1_024)
+        val limit = WorkspaceFileSystem.MAX_DISPLAY_BYTES
+        fixture.createLargeFile("big.txt", bytes = limit + 1_024)
         val content = fs.readFile("big.txt")
         assertTrue(content.truncated, "Файл больше лимита должен быть помечен как обрезанный")
-        assertEquals(WorkspaceFileSystem.MAX_DISPLAY_BYTES, content.sizeBytes, "sizeBytes — это размер отданного текста")
+        assertEquals(limit.toLong(), content.sizeBytes, "sizeBytes — это размер отданного текста")
+        assertEquals(limit, content.text.length, "Отданный текст обрезан ровно по лимиту")
+        assertTrue(content.sizeBytes < limit + 1_024L, "Отдано меньше, чем лежит в файле")
+    }
+
+    @Test
+    fun `файл ровно по лимиту не считается обрезанным`() {
+        val limit = WorkspaceFileSystem.MAX_DISPLAY_BYTES
+        fixture.createLargeFile("exact.txt", bytes = limit)
+        val content = fs.readFile("exact.txt")
+        assertFalse(content.truncated, "Файл ровно по лимиту не обрезан")
+        assertEquals(limit.toLong(), content.sizeBytes)
+        assertEquals(limit, content.text.length)
+    }
+
+    @Test
+    fun `UTF-8 с кириллицей читается как текст`() {
+        fixture.root.resolve("src/auth/Text.kt").writeText("// привет, мир\nval еж = \"ёж\"\n")
+        val content = fs.readFile("src/auth/Text.kt")
+        assertEquals("// привет, мир\nval еж = \"ёж\"\n", content.text)
+        assertEquals("kotlin", content.language)
+        assertFalse(content.truncated)
+    }
+
+    @Test
+    fun `файл не в UTF-8 не показывается как текст`() {
+        val file = fixture.root.resolve("src/auth/Latin1.kt")
+        Files.write(file, byteArrayOf(0xC0.toByte(), 0xC1.toByte(), 0x0A))
+        val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("src/auth/Latin1.kt") }
+        assertIs<ProtocolError.NotImplemented>(error.error)
     }
 
     @Test
@@ -6292,7 +6365,11 @@ class WorkspaceFileSystemTest {
 
     @Test
     fun `файл без прав на чтение даёт ошибку доступа`() {
-        fixture.createUnreadableFile("src/auth/Secret.kt")
+        val file = fixture.createUnreadableFile("src/auth/Secret.kt")
+        assertFalse(
+            Files.isReadable(file),
+            "Тест требует непривилегированного пользователя: под root права на файл игнорируются",
+        )
         val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("src/auth/Secret.kt") }
         assertIs<ProtocolError.AccessDenied>(error.error)
     }
@@ -6300,7 +6377,8 @@ class WorkspaceFileSystemTest {
     @Test
     fun `листинг каталога остаётся внутри воркспейса`() {
         val entries = fs.listChildren("src")
-        assertEquals(listOf("auth", "net"), entries.map { it.path }.sorted())
+        assertEquals(listOf("src/auth", "src/net"), entries.map { it.path }.sorted())
+        assertTrue(entries.all { it.isDirectory })
     }
 
     @Test
@@ -6312,6 +6390,10 @@ class WorkspaceFileSystemTest {
     }
 }
 ```
+
+**Почему вектор под уводящим симлинком-каталогом — отдельный тест.** Он закрывает реальную дыру изоляции, а не теоретическую: без лексической канонизации несуществующий путь под таким симлинком нормализовался обратно в симлинковый и считался внутри корня. Отдельное имя нужно, чтобы при следующей правке `canonicalizeMissing` именно этот тест показал, что защита пропала.
+
+**Зачем в тестах атаки гвард `assertTrue(Files.isReadable(...))`.** Без него отказ мог бы оказаться вырожденным: цель просто недоступна процессу, и тест зелёный независимо от того, работает ли изоляция. Гвард подтверждает, что цель реально читаема, и отказ даёт именно проверка пути. Симметрично в тесте «файл без прав на чтение» стоит `assertFalse(Files.isReadable(file), ...)`: под root права игнорируются, и без этой проверки тест молча проходил бы ложно.
 
 - [ ] **Шаг 3: прогнать тест, убедиться что падает**
 
@@ -6354,15 +6436,15 @@ class Workspace private constructor(
         /** Открывает каталог как воркспейс. */
         fun open(path: Path): Workspace {
             if (!path.exists()) {
-                throw WorkspaceAccessException(ProtocolError.NotFound("путь не существует: $path"))
+                notFound("путь не существует: $path")
             }
             if (!path.isDirectory()) {
-                throw WorkspaceAccessException(ProtocolError.NotFound("путь не является каталогом: $path"))
+                notFound("путь не является каталогом: $path")
             }
             val canonical = try {
                 path.toRealPath()
             } catch (error: IOException) {
-                throw WorkspaceAccessException(ProtocolError.Internal("не удалось определить путь: $path", error.message))
+                internalError("не удалось определить путь: $path", error.message)
             }
             return Workspace(id = WorkspaceId(UUID.randomUUID().toString()), root = canonical)
         }
@@ -6371,6 +6453,12 @@ class Workspace private constructor(
 
 /** Ошибка доступа к воркспейсу, несущая типизированную причину из протокола. */
 class WorkspaceAccessException(val error: ProtocolError) : Exception(error.toString())
+
+private fun notFound(what: String): Nothing =
+    throw WorkspaceAccessException(ProtocolError.NotFound(what))
+
+private fun internalError(message: String, detail: String?): Nothing =
+    throw WorkspaceAccessException(ProtocolError.Internal(message, detail))
 ```
 
 - [ ] **Шаг 5: написать определение языка**
@@ -6430,16 +6518,15 @@ import dev.aide.host.workspace.WorkspaceFileSystem.Companion.MAX_DISPLAY_BYTES
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.ProtocolError
 import java.io.IOException
-import java.nio.charset.MalformedInputException
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
 import java.nio.file.Files
-import java.nio.file.LinkOption
 import java.nio.file.Path
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.name
 import kotlin.io.path.notExists
 import kotlin.io.path.readBytes
-import kotlin.io.path.readText
 
 /** Прочитанный файл вместе с тем, что о нём нужно знать UI. */
 data class FileContent(
@@ -6478,62 +6565,23 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
     /** Читает файл по пути относительно корня. */
     fun readFile(relativePath: String): FileContent {
         val resolved = resolveInside(relativePath)
-
-        if (resolved.notExists()) {
-            throw WorkspaceAccessException(ProtocolError.NotFound("файл не найден: $relativePath"))
-        }
-        if (resolved.isDirectory()) {
-            throw WorkspaceAccessException(
-                ProtocolError.NotFound("по пути '$relativePath' находится каталог, а не файл"),
-            )
-        }
-        if (!resolved.isRegularFile()) {
-            throw WorkspaceAccessException(
-                ProtocolError.NotFound("по пути '$relativePath' не обычный файл"),
-            )
-        }
+        ensureRegularFile(relativePath, resolved)
         if (!Files.isReadable(resolved)) {
-            throw WorkspaceAccessException(
-                ProtocolError.AccessDenied(path = relativePath, reason = "нет прав на чтение файла"),
-            )
+            denied(relativePath, "нет прав на чтение файла")
         }
 
-        val size = Files.size(resolved)
-        val bytes = try {
-            if (size > MAX_DISPLAY_BYTES) {
-                Files.newInputStream(resolved).use { it.readNBytes(MAX_DISPLAY_BYTES) }
-            } else {
-                resolved.readBytes()
-            }
-        } catch (error: IOException) {
-            throw WorkspaceAccessException(
-                ProtocolError.AccessDenied(path = relativePath, reason = "ошибка чтения: ${error.message}"),
-            )
-        }
-
+        val size = sizeOf(relativePath, resolved)
+        val bytes = readBytes(relativePath, resolved, size)
         if (looksBinary(bytes)) {
-            throw WorkspaceAccessException(
-                ProtocolError.NotImplemented("показ бинарных файлов появится в следующем этапе"),
-            )
+            notImplemented("показ бинарных файлов появится в следующем этапе")
         }
-
-        val text = try {
-            if (size > MAX_DISPLAY_BYTES) {
-                String(bytes, Charsets.UTF_8)
-            } else {
-                resolved.readText()
-            }
-        } catch (error: MalformedInputException) {
-            throw WorkspaceAccessException(
-                ProtocolError.NotImplemented("файл не в UTF-8 и пока не показывается"),
-            )
-        }
+        val truncated = size > MAX_DISPLAY_BYTES
 
         return FileContent(
             path = relativePath,
-            text = text,
+            text = decode(bytes, truncated),
             sizeBytes = bytes.size.toLong(),
-            truncated = size > MAX_DISPLAY_BYTES,
+            truncated = truncated,
             language = LanguageDetector.detect(relativePath),
         )
     }
@@ -6542,7 +6590,7 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
     fun listChildren(relativePath: String): List<DirectoryEntry> {
         val resolved = resolveInside(relativePath)
         if (resolved.notExists() || !resolved.isDirectory()) {
-            throw WorkspaceAccessException(ProtocolError.NotFound("каталог не найден: $relativePath"))
+            notFound("каталог не найден: $relativePath")
         }
         return try {
             Files.list(resolved).use { stream ->
@@ -6552,9 +6600,7 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
                     .toList()
             }
         } catch (error: IOException) {
-            throw WorkspaceAccessException(
-                ProtocolError.AccessDenied(path = relativePath, reason = "ошибка чтения каталога: ${error.message}"),
-            )
+            denied(relativePath, "ошибка чтения каталога: ${error.message}")
         }
     }
 
@@ -6568,16 +6614,6 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
         language = file.language,
     )
 
-    private fun Path.toDirectoryEntry(parentRelative: String): DirectoryEntry {
-        val relative = if (parentRelative.isEmpty()) name else "$parentRelative/$name"
-        val directory = isDirectory()
-        return DirectoryEntry(
-            path = relative,
-            isDirectory = directory,
-            sizeBytes = if (directory) null else runCatching { Files.size(this) }.getOrNull(),
-        )
-    }
-
     /**
      * Приводит путь к каноническому виду и убеждается, что он внутри корня воркспейса.
      *
@@ -6587,7 +6623,7 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
      */
     internal fun resolveInside(relativePath: String): Path {
         if (relativePath.isBlank()) {
-            throw WorkspaceAccessException(ProtocolError.AccessDenied(path = relativePath, reason = "пустой путь"))
+            denied(relativePath, "пустой путь")
         }
 
         val raw = if (Path.of(relativePath).isAbsolute) {
@@ -6598,41 +6634,89 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
         }
 
         val isSymlink = Files.isSymbolicLink(raw)
-        val canonical = when {
-            raw.notExists() -> canonicalizeMissing(raw)
-            isSymlink -> try {
-                raw.toRealPath()
-            } catch (error: IOException) {
-                throw WorkspaceAccessException(
-                    ProtocolError.AccessDenied(path = relativePath, reason = "битый симлинк: ${error.message}"),
-                )
-            }
-            else -> raw.toRealPath()
+        val canonical = if (raw.notExists()) {
+            canonicalizeMissing(relativePath, raw)
+        } else {
+            realPathOf(relativePath, raw, isSymlink)
         }
 
         if (!canonical.startsWith(workspace.root)) {
-            val reason = if (isSymlink) {
-                "симлинк ведёт за пределы воркспейса"
-            } else {
-                "вне корня воркспейса"
-            }
-            throw WorkspaceAccessException(ProtocolError.AccessDenied(path = relativePath, reason = reason))
+            val reason = if (isSymlink) "симлинк ведёт за пределы воркспейса" else "вне корня воркспейса"
+            denied(relativePath, reason)
         }
         return canonical
     }
 
-    /** Канонизирует несуществующий путь по ближайшему существующему родителю. */
-    private fun canonicalizeMissing(raw: Path): Path {
-        var parent = raw.parent
-        while (parent != null && parent.notExists()) parent = parent.parent
-        val canonicalParent = parent?.toRealPath() ?: workspace.root
-        val tail = canonicalParent.relativize(raw.toAbsolutePath().normalize())
-        return canonicalParent.resolve(tail).normalize()
+    private fun ensureRegularFile(relativePath: String, resolved: Path) {
+        if (resolved.notExists()) {
+            notFound("файл не найден: $relativePath")
+        }
+        if (resolved.isDirectory()) {
+            notFound("по пути '$relativePath' находится каталог, а не файл")
+        }
+        if (!resolved.isRegularFile()) {
+            notFound("по пути '$relativePath' не обычный файл")
+        }
     }
 
-    private fun looksBinary(bytes: ByteArray): Boolean {
-        val sample = bytes.take(BINARY_SNIFF_BYTES)
-        return sample.any { it == 0.toByte() }
+    private fun sizeOf(relativePath: String, resolved: Path): Long = try {
+        Files.size(resolved)
+    } catch (error: IOException) {
+        denied(relativePath, "не удалось определить размер файла: ${error.message}")
+    }
+
+    private fun readBytes(relativePath: String, resolved: Path, size: Long): ByteArray = try {
+        if (size > MAX_DISPLAY_BYTES) {
+            Files.newInputStream(resolved).use { it.readNBytes(MAX_DISPLAY_BYTES) }
+        } else {
+            resolved.readBytes()
+        }
+    } catch (error: IOException) {
+        denied(relativePath, "ошибка чтения: ${error.message}")
+    }
+
+    /**
+     * Декодирует байты в UTF-8. Обрезанный файл декодируется мягко: лимит мог разрезать
+     * многобайтовый символ, и строгий декодер отверг бы валидный UTF-8 из-за хвоста.
+     */
+    private fun decode(bytes: ByteArray, truncated: Boolean): String {
+        if (truncated) {
+            return String(bytes, Charsets.UTF_8)
+        }
+        return try {
+            Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString()
+        } catch (ignored: CharacterCodingException) {
+            notImplemented("файл не в UTF-8 и пока не показывается")
+        }
+    }
+
+    private fun realPathOf(relativePath: String, raw: Path, isSymlink: Boolean): Path = try {
+        raw.toRealPath()
+    } catch (error: IOException) {
+        val reason = if (isSymlink) {
+            "битый симлинк: ${error.message}"
+        } else {
+            "не удалось определить путь: ${error.message}"
+        }
+        denied(relativePath, reason)
+    }
+
+    /**
+     * Канонизирует несуществующий путь по ближайшему существующему родителю.
+     * Хвост считается лексически от того же родителя, поэтому симлинк в середине
+     * пути не подменяет собою корень.
+     */
+    private fun canonicalizeMissing(relativePath: String, raw: Path): Path {
+        val absolute = raw.toAbsolutePath().normalize()
+        var parent = absolute.parent
+        while (parent != null && parent.notExists()) parent = parent.parent
+        val existing = parent ?: return absolute
+        val canonicalParent = try {
+            existing.toRealPath()
+        } catch (error: IOException) {
+            denied(relativePath, "не удалось определить путь: ${error.message}")
+        }
+        return canonicalParent.resolve(existing.relativize(absolute))
     }
 
     companion object {
@@ -6643,9 +6727,39 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
         const val BINARY_SNIFF_BYTES: Int = 8 * 1024
     }
 }
+
+private fun Path.toDirectoryEntry(parentRelative: String): DirectoryEntry {
+    val relative = if (parentRelative.isEmpty()) name else "$parentRelative/$name"
+    val directory = isDirectory()
+    return DirectoryEntry(
+        path = relative,
+        isDirectory = directory,
+        sizeBytes = if (directory) null else runCatching { Files.size(this) }.getOrNull(),
+    )
+}
+
+/** Бинарность определяется по NUL в первых килобайтах: текстовые UTF-8 файлы NUL не содержат. */
+private fun looksBinary(bytes: ByteArray): Boolean {
+    val sample = minOf(bytes.size, WorkspaceFileSystem.BINARY_SNIFF_BYTES)
+    for (index in 0 until sample) {
+        if (bytes[index] == 0.toByte()) return true
+    }
+    return false
+}
+
+private fun denied(path: String, reason: String): Nothing =
+    throw WorkspaceAccessException(ProtocolError.AccessDenied(path = path, reason = reason))
+
+private fun notFound(what: String): Nothing =
+    throw WorkspaceAccessException(ProtocolError.NotFound(what))
+
+private fun notImplemented(what: String): Nothing =
+    throw WorkspaceAccessException(ProtocolError.NotImplemented(what))
 ```
 
-Добавить в `Workspace.kt` экспорт `LinkOption` не нужен — импорт `java.nio.file.LinkOption` в `WorkspaceFileSystem.kt` не используется, его нужно убрать, иначе detekt сообщит о неиспользуемом импорте.
+**Почему относительный хвост считается лексически.** Для несуществующего пути канонизируется ближайший существующий предок, но хвост берётся от него без нормализации: `existing.relativize(raw.toAbsolutePath())`, и лишь затем результат прикладывается к каноническому родителю. Если нормализовать хвост после `relativize` от канонического родителя, путь под симлинком-каталогом, ведущим наружу, возвращается к симлинковому виду и снова выглядит «внутри корня» — именно так несуществующий файл под таким симлинком раньше проходил проверку.
+
+**Почему файл читается один раз.** Байты читаются один раз (`readBytes`), и из них же декодируется текст: отдельный `readText` был бы лишним вводом-выводом и окном TOCTOU (между чтением и декодированием содержимое могло измениться). Декодирование при этом асимметрично: полный файл — строгим UTF-8-декодером (не-UTF-8 честно отвергается), обрезанный — мягким `String(bytes, UTF_8)`, потому что лимит мог разрезать многобайтовый символ и строгий декодер отверг бы валидный UTF-8 из-за хвоста.
 
 - [ ] **Шаг 7: прогнать тесты файловой системы**
 
@@ -6653,7 +6767,7 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
 ./gradlew :host-core:test --tests 'dev.aide.host.workspace.WorkspaceFileSystemTest'
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 13 тестов. Если падает тест «симлинк внутрь воркспейса разрешён» — проверить, что `canonicalizeMissing` не вызывается для существующих симлинков: порядок ветвлений в `resolveInside` важен, `isSymlink` проверяется раньше `notExists`.
+Ожидаемо: `BUILD SUCCESSFUL`, 18 тестов. Если падает тест «симлинк внутрь воркспейса разрешён» — проверить, что существующий симлинк разворачивается через `toRealPath()`, а не через канонизацию несуществующего пути: в `resolveInside` первой стоит ветка `raw.notExists()`, и лишь затем вызывается `realPathOf`. Для валидного симлинка `notExists()` ложна (она следует по ссылке), поэтому порядок ветвлений на корректность не влияет, а флаг `isSymlink` нужен только для выбора текста причины в отказе.
 
 - [ ] **Шаг 8: написать падающий тест обхода дерева**
 
@@ -6691,6 +6805,8 @@ class FileTreeBuilderTest {
         assertTrue(paths.contains("docs/readme.md"))
         assertTrue(tree.entries.first { it.path == "src" }.isDirectory)
         assertFalse(tree.entries.first { it.path == "docs/readme.md" }.isDirectory)
+        assertFalse(tree.truncated, "Маленькое дерево не должно считаться обрезанным")
+        assertEquals(0, tree.skippedEntries, "Без обрезки пропущенных записей нет")
     }
 
     @Test
@@ -6716,8 +6832,11 @@ class FileTreeBuilderTest {
         try {
             outside.resolve("secret.txt").writeText("секрет")
             fixture.createEscapingSymlink("link-out", outside)
-            val paths = builder().build().entries.map { it.path }
+            val tree = builder().build()
+            val paths = tree.entries.map { it.path }
             assertFalse(paths.any { it.startsWith("link-out") }, "Симлинк наружу не должен раскрывать содержимое")
+            assertFalse(tree.truncated)
+            assertEquals(0, tree.skippedEntries, "Отсечение симлинка — не обрезка по лимиту")
         } finally {
             outside.toFile().deleteRecursively()
         }
@@ -6793,70 +6912,59 @@ class FileTreeBuilder(
     /** Строит дерево воркспейса. */
     fun build(): FileTreePayload {
         val collected = mutableListOf<FileTreeEntry>()
-        var skipped = 0
-        var truncated = false
+        val pending = ArrayDeque<Pair<Path, String>>()
+        pending += workspace.root to ""
 
-        fun visit(directory: Path, relative: String) {
-            if (truncated) return
-
-            val children = runCatching {
-                Files.list(directory).use { it.sorted(Comparator.comparing(Path::name)).toList() }
-            }.getOrElse { return }
-
-            for (child in children) {
-                if (truncated) return
-
+        while (pending.isNotEmpty()) {
+            val (directory, relative) = pending.removeFirst()
+            for (child in childrenOf(directory)) {
                 val childRelative = if (relative.isEmpty()) child.name else "$relative/${child.name}"
-                if (isIgnored(childRelative, child)) continue
-
-                if (Files.isSymbolicLink(child)) {
-                    // Симлинк показываем только если он остаётся внутри воркспейса.
-                    val inside = runCatching { fileSystem.resolveInside(childRelative) }.isSuccess
-                    if (!inside) {
-                        skipped += 1
-                        continue
-                    }
-                }
-
+                if (isIgnored(childRelative, child) || isEscapingSymlink(child, childRelative)) continue
                 if (collected.size >= maxEntries) {
-                    truncated = true
-                    skipped += 1
-                    return
+                    return payload(collected, truncated = true, skippedEntries = 1)
                 }
 
                 val directoryChild = child.isDirectory()
                 collected += FileTreeEntry(
                     path = childRelative,
                     isDirectory = directoryChild,
-                    sizeBytes = if (directoryChild) null else runCatching { Files.size(child) }.getOrNull(),
+                    sizeBytes = if (directoryChild) null else sizeOf(child),
                 )
-
-                if (directoryChild) visit(child, childRelative)
+                if (directoryChild) pending += child to childRelative
             }
         }
-
-        visit(workspace.root, "")
-
-        return FileTreePayload(
-            workspaceId = workspace.id,
-            rootPath = workspace.root.toString(),
-            entries = collected.sortedBy { it.path },
-            truncated = truncated,
-            skippedEntries = skipped,
-        )
+        return payload(collected, truncated = false, skippedEntries = 0)
     }
+
+    private fun payload(entries: List<FileTreeEntry>, truncated: Boolean, skippedEntries: Int) = FileTreePayload(
+        workspaceId = workspace.id,
+        rootPath = workspace.root.toString(),
+        entries = entries.sortedBy { it.path },
+        truncated = truncated,
+        skippedEntries = skippedEntries,
+    )
+
+    /** Дети каталога, отсортированные по имени; недоступный каталог даёт пустой список, а не срыв обхода. */
+    private fun childrenOf(directory: Path): List<Path> = runCatching {
+        Files.list(directory).use { it.sorted(Comparator.comparing(Path::name)).toList() }
+    }.getOrDefault(emptyList())
+
+    private fun sizeOf(file: Path): Long? = runCatching { Files.size(file) }.getOrNull()
+
+    /** Симлинк показываем только если он остаётся внутри воркспейса. */
+    private fun isEscapingSymlink(child: Path, childRelative: String): Boolean =
+        Files.isSymbolicLink(child) && runCatching { fileSystem.resolveInside(childRelative) }.isFailure
 
     private fun isIgnored(relativePath: String, path: Path): Boolean {
         val name = path.name
-        if (name == GIT_DIRECTORY) return true
-        if (relativePath.split('/').any { it in alwaysIgnoredDirectories }) return true
-
-        // Записи .gitignore трактуются упрощённо: имя каталога или путь в начале строки.
-        return ignorePatterns.any { pattern ->
-            relativePath == pattern || relativePath.startsWith("$pattern/") || name == pattern
-        }
+        return name == GIT_DIRECTORY ||
+            relativePath.split('/').any { it in alwaysIgnoredDirectories } ||
+            ignorePatterns.any { pattern ->
+                relativePath == pattern || relativePath.startsWith("$pattern/") || name == pattern
+            }
     }
 
+    /** Записи `.gitignore` трактуются упрощённо: имя каталога или путь в начале строки, без шаблонов. */
     private val ignorePatterns: Set<String> by lazy {
         val gitignore = workspace.root.resolve(GITIGNORE_FILE)
         runCatching { Files.readAllLines(gitignore) }.getOrDefault(emptyList())
@@ -6882,13 +6990,17 @@ class FileTreeBuilder(
 }
 ```
 
+**Чего тесты обхода не покрывают.** Симлинк *внутрь* воркспейса, указывающий на каталог (в том числе образующий цикл), отдельным тестом не покрыт: обход ограничен `maxEntries`, поэтому зацикливания не будет, но явной защиты от повторного захода по одному и тому же каталогу нет. Пометка нужна, чтобы при следующем касании обхода дерева об этом помнили.
+
+**Про `skippedEntries`.** Счётчик отражает только обрезку по лимиту: при `truncated = false` он равен нулю, а отсечённые изоляцией симлинки в него не попадают — так документировано поле `FileTreePayload.skippedEntries` (задача 8). Расширять поле ради видимости отфильтрованного сейчас не нужно; если понадобится показать «сколько скрыто», это отдельное изменение протокола на потом.
+
 - [ ] **Шаг 11: прогнать все тесты хоста**
 
 ```bash
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 26 тестов (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6).
+Ожидаемо: `BUILD SUCCESSFUL`, 31 тест (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6).
 
 - [ ] **Шаг 12: коммит**
 
@@ -7328,7 +7440,7 @@ class JGitRepository private constructor(
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 34 теста (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8).
+Ожидаемо: `BUILD SUCCESSFUL`, 39 тестов (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8).
 
 Если падает тест про переименование — JGit сообщает о переименовании через `status().call().renamed` только если включено отслеживание переименований. Если `renamed` пуст, переименование придёт как пара удаление+добавление, и тест это поймает: тогда переименование нужно распознавать по совпадению содержимого. Проверить фактические списки, напечатав их в тесте, и при необходимости заменить блок переименований на сопоставление удалённого и добавленного файла по совпадению blob-хеша:
 
@@ -9660,7 +9772,7 @@ object DatabaseFactory {
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 51 тест (`MigrationTest` — 3, `HostStoreTest` — 11, `ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 13, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8, `EmbeddedHostTest` — 3).
+Ожидаемо: `BUILD SUCCESSFUL`, 56 тестов (`MigrationTest` — 3, `HostStoreTest` — 11, `ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8, `EmbeddedHostTest` — 3).
 
 - [ ] **Шаг 11: проверить, что клиент не может обратиться к базе**
 
