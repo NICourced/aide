@@ -125,6 +125,27 @@ class JGitRepositoryTest {
     }
 
     @Test
+    fun `переименование в рабочем каталоге совпадает с git status как удаление и новый файл`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        Files.move(root.resolve("src/Api.kt"), root.resolve("src/Renamed.kt"))
+
+        // git не ищет переименования в рабочем каталоге: без индексации он видит удаление
+        // старого файла и новый файл. Если бы хост сопоставлял переименования по рабочему
+        // дереву, здесь он разошёлся бы с git status.
+        assertEquals(
+            listOf(" D src/Api.kt", " M src/Login.kt", "?? src/New.kt", "?? src/Renamed.kt"),
+            GitCliFixture.porcelainLines(root),
+        )
+
+        JGitRepository.open(root).use { repository ->
+            val changed = repository.changedFiles()
+            assertEquals(expectedFromGitStatus(root), actualFromJGit(repository))
+            assertEquals(FileChangeKind.DELETED, changed.single { it.path == "src/Api.kt" }.changeKind)
+            assertEquals(FileChangeKind.ADDED, changed.single { it.path == "src/Renamed.kt" }.changeKind)
+        }
+    }
+
+    @Test
     fun `переименование и удаление различаются и совпадают с git status`() {
         val root = GitCliFixture.createRepo(tempDir("aide-git-"))
         GitCliFixture.run(listOf("git", "mv", "src/Api.kt", "src/Renamed.kt"), root)
