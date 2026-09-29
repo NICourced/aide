@@ -1,14 +1,24 @@
 package dev.aide.host.store
 
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+import dev.aide.domain.ClientPlatform
+import dev.aide.domain.DecisionValue
+import dev.aide.domain.HunkId
+import dev.aide.domain.PacketId
+import dev.aide.domain.Permission
+import dev.aide.domain.RunId
+import dev.aide.domain.RunState
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.ToolOutcome
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.absolutePathString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+import kotlinx.datetime.Instant
 
 class DatabaseFactoryTest {
 
@@ -55,16 +65,11 @@ class DatabaseFactoryTest {
         val directory = Files.createTempDirectory("aide-store-legacy-")
         val path = directory.resolve("host.db")
         try {
-            // База версии 1: схема без payload, запись и метка версии.
+            // База версии 1: схема без payload, по записи в каждую таблицу и метка версии.
             val legacyDriver = JdbcSqliteDriver("jdbc:sqlite:${path.absolutePathString()}")
             try {
                 StoreTestSupport.createLegacyDatabase(legacyDriver)
-                legacyDriver.execute(
-                    null,
-                    "INSERT INTO task(id, title, prompt, branch, status, created_at) " +
-                        "VALUES ('t-legacy', 'Старая задача', 'текст', 'ai/t-legacy', 'REVIEW', 1758535200000)",
-                    0,
-                )
+                StoreTestSupport.insertLegacyRows(legacyDriver)
                 assertEquals(1L, StoreTestSupport.userVersion(legacyDriver))
             } finally {
                 legacyDriver.close()
@@ -76,7 +81,29 @@ class DatabaseFactoryTest {
                 assertEquals("Старая задача", task.title)
                 assertEquals(TaskStatus.REVIEW, task.status)
                 assertEquals("ai/t-legacy", task.branch)
+                assertEquals(Instant.fromEpochMilliseconds(1_758_535_200_000), task.createdAt)
 
+                val run = assertNotNull(store.runs.load(RunId("r-legacy")))
+                assertEquals(TaskId("t-legacy"), run.taskId)
+                assertEquals(RunState.FINISHED, run.state)
+                assertEquals(12_500, run.cost.amountMicros)
+                assertTrue(run.cost.known)
+
+                val call = store.toolCalls.forRun(RunId("r-legacy")).single()
+                assertEquals("fs.write", call.tool)
+                assertEquals(ToolOutcome.SUCCESS, call.outcome)
+                assertTrue(call.requiredApproval)
+
+                val decision = store.decisions.forPacket(PacketId("p-legacy")).single()
+                assertEquals(DecisionValue.ACCEPTED, decision.value)
+                assertEquals(ClientPlatform.ANDROID, decision.clientPlatform)
+                assertEquals(HunkId("h-1"), decision.targetHunkId)
+
+                val permission = assertNotNull(store.permissions.load("fs.read"))
+                assertEquals(Permission.ALLOW, permission.read)
+                assertEquals(Permission.DENY, permission.write)
+
+                // Колонка payload, появившаяся миграцией, работает: новая запись читается вместе со старой.
                 store.tasks.save(StoreFixtures.queuedTask)
                 assertEquals(2L, store.tasks.count())
             }

@@ -28,6 +28,35 @@ internal object StoreTestSupport {
         driver.execute(null, "PRAGMA user_version = 1", 0)
     }
 
+    /** По одной записи в каждую таблицу схемы версии 1 — у них ещё нет колонки `payload`. */
+    fun insertLegacyRows(driver: JdbcSqliteDriver) {
+        val inserts = listOf(
+            """
+            INSERT INTO task(id, title, prompt, branch, status, created_at)
+            VALUES ('t-legacy', 'Старая задача', 'текст', 'ai/t-legacy', 'REVIEW', 1758535200000)
+            """,
+            """
+            INSERT INTO agent_run(
+                id, task_id, state, mode, started_at, finished_at, elapsed_millis, cost_micros, cost_known
+            ) VALUES ('r-legacy', 't-legacy', 'FINISHED', 'ASK_BEFORE_CHANGES', 1758535200000, 1758535260000, 60000, 12500, 1)
+            """,
+            """
+            INSERT INTO tool_call(id, run_id, tool, outcome, required_approval, duration_millis, at)
+            VALUES ('tc-legacy', 'r-legacy', 'fs.write', 'SUCCESS', 1, 42, 1758535260000)
+            """,
+            """
+            INSERT INTO review_decision(
+                packet_id, packet_revision, scope, target_hunk_id, value, client_platform, decided_at
+            ) VALUES ('p-legacy', 1, 'HUNK', 'h-1', 'ACCEPTED', 'ANDROID', 1758535260000)
+            """,
+            """
+            INSERT INTO tool_permission(tool, read_permission, write_permission)
+            VALUES ('fs.read', 'ALLOW', 'DENY')
+            """,
+        )
+        inserts.forEach { driver.execute(null, it.trimIndent(), 0) }
+    }
+
     /** Версия схемы, записанная в базе. */
     fun userVersion(driver: SqlDriver): Long = long(driver, "PRAGMA user_version")
 
