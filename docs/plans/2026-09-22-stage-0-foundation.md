@@ -3489,9 +3489,9 @@ git commit -m "feat(domain): RiskEvaluator как чистая функция п
 
 **Про транспортный конверт.** Сообщения кодируются в два слоя: внешний `WireEnvelope` с именем типа и внутренняя полезная нагрузка в CBOR. Так неизвестный тип сообщения становится обычным значением, а не исключением: хост логирует его и продолжает работу, не роняя сессию (это проверяется тестом на три неизвестных типа подряд).
 
-- [ ] **Шаг 1: написать идентификаторы протокола**
+- [ ] **Шаг 1: написать идентификаторы и версию протокола**
 
-`protocol/src/commonMain/kotlin/dev/aide/protocol/ProtocolIds.kt`:
+`protocol/src/commonMain/kotlin/dev/aide/protocol/ProtocolIds.kt` — три идентификатора:
 
 ```kotlin
 package dev.aide.protocol
@@ -3513,6 +3513,14 @@ value class WorkspaceId(val value: String)
 @Serializable
 @JvmInline
 value class SessionId(val value: String)
+```
+
+`protocol/src/commonMain/kotlin/dev/aide/protocol/ProtocolVersion.kt` — версия живёт отдельным файлом: это не идентификатор, и правил у неё больше (совместимость версий — задача 9):
+
+```kotlin
+package dev.aide.protocol
+
+import kotlinx.serialization.Serializable
 
 /** Версия протокола. */
 @Serializable
@@ -3878,6 +3886,7 @@ sealed interface HostMessage {
 package dev.aide.protocol
 
 import kotlinx.serialization.DeserializationStrategy
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.Cbor
@@ -3932,7 +3941,14 @@ object HostMessageType {
  *
  * Неизвестный тип сообщения не бросает исключение наружу: он возвращается как
  * [DecodeResult.Ignored], чтобы вызывающая сторона записала его в лог и продолжила работу.
+ *
+ * CBOR и бинарные `encodeToByteArray`/`decodeFromByteArray` помечены в kotlinx.serialization
+ * экспериментальными — отсюда opt-in на весь объект, а не только на построитель [Cbor].
+ *
+ * Сборка конверта (`envelope`) намеренно `internal`: это деталь реализации кодека, а не часть
+ * контракта протокола. Публично сообщение задаётся парой `encode`/`decode…Message`.
  */
+@OptIn(ExperimentalSerializationApi::class)
 object ProtocolCodec {
 
     private val cbor = Cbor {
@@ -3994,8 +4010,11 @@ object ProtocolCodec {
     }
 
     /** Собирает конверт, который клиент или хост может прочитать, даже не зная тип сообщения. */
-    fun <T> envelope(type: String, serializer: SerializationStrategy<T>, value: T): ByteArray =
-        cbor.encodeToByteArray(WireEnvelope.serializer(), WireEnvelope(type, cbor.encodeToByteArray(serializer, value)))
+    internal fun <T> envelope(type: String, serializer: SerializationStrategy<T>, value: T): ByteArray =
+        cbor.encodeToByteArray(
+            WireEnvelope.serializer(),
+            WireEnvelope(type, cbor.encodeToByteArray(serializer, value)),
+        )
 
     /** Возвращает имя типа из сырых байтов, не разбирая нагрузку; null, если конверт нечитаем. */
     fun peekType(bytes: ByteArray): String? = readEnvelope(bytes)?.type
@@ -4010,6 +4029,14 @@ object ProtocolCodec {
         )
 }
 ```
+
+Почему `@OptIn` стоит на всём объекте, а не на построителе `Cbor { }`: в kotlinx.serialization 1.7.3 экспериментальными помечены не только настройки формата, но и члены `BinaryFormat` — `encodeToByteArray`/`decodeFromByteArray`. Без opt-in на объект компилятор выдаёт восемь предупреждений, а не одно.
+
+Почему `envelope` объявлен `internal`: он нужен самому кодексу и тестам (тесты видят `internal`-декларации своего модуля), а его подпись упоминает типы `kotlinx-serialization-core` (`SerializationStrategy`). Публичной такая функция при `implementation(libs.kotlinx.serialization.core)` быть не может: у внешнего потребителя она компилировалась бы только случайно, за счёт того, что `domain` отдаёт ту же библиотеку через `api`.
+
+Почему `encodeDefaults = true` остаётся, хотя теста на него нет: флаг задаёт, попадают ли значения по умолчанию в байты CBOR. На текущих payload'ах разницы не видно — и с флагом, и без него сборка и все тесты зелёные, — но для потребителя сырого CBOR она есть: без флага получатель не увидит поле, которого отправитель не писал. Пометка нужна, чтобы флаг не приняли за случайность: он осознанный, но непроверенный.
+
+Про `ClientMessageType.HELLO == HostMessageType.HELLO == "hello"`: это не ошибка и не дублирование. Имена типов клиента и хоста живут в разных пространствах — направление известно по тому, кто читает поток, — поэтому константы разведены двумя объектами, а разбор — двумя функциями (`decodeClientMessage` для `"hello"` ждёт `clientVersion`, `decodeHostMessage` — `sessionId`). Тест на «нагрузку чужого типа» это фиксирует: приветствие хоста, попавшее в разбор клиентских сообщений, возвращается как `Ignored`, а не разбирается частично.
 
 - [ ] **Шаг 6: подключить CBOR к модулю**
 
@@ -4029,11 +4056,14 @@ kotlin {
             api(project(":domain"))
             implementation(libs.kotlinx.serialization.core)
             implementation(libs.kotlinx.serialization.cbor)
-            implementation(libs.kotlinx.datetime)
         }
     }
 }
 ```
+
+`kotlinx.datetime` здесь не нужен: ни один тип протокола не несёт времени — проверено поиском по `protocol/src`, `Instant` не встречается. Зависимость добавят вместе с первым типом, который её использует.
+
+`implementation(libs.kotlinx.serialization.core)` при этом остаётся правильным: публичный API модуля типов serialization не упоминает. `encode` возвращает `ByteArray`, `decodeClientMessage`/`decodeHostMessage` — `DecodeResult<Message>`, `peekType` — `String?`, а сам конверт `WireEnvelope` объявлен `internal`. Одна оговорка: плагин `@Serializable` генерирует у публичных типов companion-функцию `serializer()`, возвращающую `KSerializer` — то есть формально тип serialization в публичном API есть; потребители её не вызывают (по проводу едут байты), поэтому зависимость остаётся `implementation`, но если кому-то за пределами модуля понадобится `serializer()`, её придётся поднять до `api`.
 
 - [ ] **Шаг 7: написать тесты кодека**
 
@@ -4046,6 +4076,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -4053,6 +4084,13 @@ class ProtocolCodecTest {
 
     private val workspaceId = WorkspaceId("ws-1")
     private val requestId = RequestId("req-1")
+    private val sessionId = SessionId("s-1")
+
+    private fun hostMessage(bytes: ByteArray): HostMessage =
+        assertIs<DecodeResult.Message<HostMessage>>(ProtocolCodec.decodeHostMessage(bytes)).message
+
+    private fun clientMessage(bytes: ByteArray): ClientMessage =
+        assertIs<DecodeResult.Message<ClientMessage>>(ProtocolCodec.decodeClientMessage(bytes)).message
 
     @Test
     fun `сообщение клиента переживает round-trip`() {
@@ -4081,10 +4119,17 @@ class ProtocolCodecTest {
                 skippedEntries = 17,
             ),
         )
-        val decoded = assertIs<DecodeResult.Message<HostMessage>>(
-            ProtocolCodec.decodeHostMessage(ProtocolCodec.encode(message)),
-        ).message
+        val decoded = hostMessage(ProtocolCodec.encode(message))
         assertEquals(message, decoded)
+
+        // Ни одно поле нагрузки не потерялось при кодировании: обрезка, счётчик и null у директории.
+        val tree = assertIs<HostMessage.Tree>(decoded).tree
+        assertEquals(3, tree.entries.size)
+        assertEquals(17, tree.skippedEntries)
+        assertTrue(tree.truncated)
+        assertNull(tree.entries[0].sizeBytes)
+        assertEquals(2048L, tree.entries[2].sizeBytes)
+        assertTrue(tree.entries[2].isDirectory.not())
     }
 
     @Test
@@ -4093,19 +4138,13 @@ class ProtocolCodecTest {
             requestId = requestId,
             error = ProtocolError.AccessDenied(path = "/etc/passwd", reason = "вне корня воркспейса"),
         )
-        val decoded = assertIs<DecodeResult.Message<HostMessage>>(
-            ProtocolCodec.decodeHostMessage(ProtocolCodec.encode(message)),
-        ).message
-        assertEquals(message, decoded)
+        assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
     }
 
     @Test
     fun `событие хоста переживает round-trip`() {
         val message = HostMessage.Event(HostEvent.WorkspaceChanged(workspaceId))
-        val decoded = assertIs<DecodeResult.Message<HostMessage>>(
-            ProtocolCodec.decodeHostMessage(ProtocolCodec.encode(message)),
-        ).message
-        assertEquals(message, decoded)
+        assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
     }
 
     @Test
@@ -4124,20 +4163,40 @@ class ProtocolCodecTest {
     @Test
     fun `три неизвестных типа подряд разбираются как три Ignored и работа продолжается`() {
         val unknowns = listOf("a", "b", "c").map { name ->
-            ProtocolCodec.envelope(name, HostMessage.Hello.serializer(), HostMessage.Hello(ProtocolVersion.CURRENT, SessionId("s")))
+            ProtocolCodec.envelope(
+                type = name,
+                serializer = HostMessage.Hello.serializer(),
+                value = HostMessage.Hello(ProtocolVersion.CURRENT, SessionId("s")),
+            )
         }
         val results = unknowns.map { ProtocolCodec.decodeHostMessage(it) }
         assertEquals(listOf("a", "b", "c"), results.map { assertIs<DecodeResult.Ignored>(it).rawType })
+        // Ни одно из неизвестных сообщений не превратилось в разобранное.
+        results.forEach { assertIs<DecodeResult.Ignored>(it) }
 
         // …и следующее известное сообщение после них по-прежнему разбирается.
         val known = ProtocolCodec.encode(HostMessage.Hello(ProtocolVersion.CURRENT, SessionId("s-2")))
-        assertIs<DecodeResult.Message<HostMessage>>(ProtocolCodec.decodeHostMessage(known))
+        assertEquals(
+            HostMessage.Hello(ProtocolVersion.CURRENT, SessionId("s-2")),
+            hostMessage(known),
+        )
     }
 
     @Test
     fun `битые байты дают Ignored, а не исключение`() {
         val result = ProtocolCodec.decodeClientMessage(byteArrayOf(0x00, 0x01, 0x02))
         assertIs<DecodeResult.Ignored>(result)
+    }
+
+    @Test
+    fun `нагрузка чужого типа пропускается, а не падает`() {
+        // Имя типа совпадает («hello»), но нагрузка — приветствие хоста: обязательного
+        // clientVersion в ней нет, поэтому сообщение пропускается с указанием типа.
+        val hostHello = ProtocolCodec.encode(HostMessage.Hello(ProtocolVersion.CURRENT, sessionId))
+        val result = ProtocolCodec.decodeClientMessage(hostHello)
+        val ignored = assertIs<DecodeResult.Ignored>(result)
+        assertEquals(ClientMessageType.HELLO, ignored.rawType)
+        assertTrue(ignored.reason.contains("полезная нагрузка не разобрана"))
     }
 
     @Test
@@ -4148,20 +4207,167 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun `имя типа читается и у неизвестного сообщения`() {
+        val unknown = ProtocolCodec.envelope(
+            type = "quantumTeleport",
+            serializer = ClientMessage.Hello.serializer(),
+            value = ClientMessage.Hello(ProtocolVersion.CURRENT),
+        )
+        assertEquals("quantumTeleport", ProtocolCodec.peekType(unknown))
+    }
+
+    @Test
     fun `кодирование одного сообщения дважды даёт одинаковые байты`() {
         val message = ClientMessage.OpenWorkspace(requestId, "/projects/aide")
         assertContentEquals(ProtocolCodec.encode(message), ProtocolCodec.encode(message))
     }
 
     @Test
+    fun `кодек пишет CBOR, а не текст`() {
+        val bytes = ProtocolCodec.encode(ClientMessage.HostState(requestId, workspaceId))
+        // Первый байт — заголовок карты CBOR (major type 5), а не '{' текстового формата.
+        assertEquals(5, (bytes[0].toInt() shr 5) and 0x07)
+        // Внутри есть байты вне печатаемого ASCII: строковая сериализация их не порождает.
+        assertTrue(bytes.any { it < 0x20 || it > 0x7E }, "конверт должен быть бинарным: ${bytes.toList()}")
+    }
+
+    @Test
+    fun `конверт сравнивается по содержимому, а не по ссылке`() {
+        val first = WireEnvelope(type = "hello", payload = byteArrayOf(1, 2, 3))
+        val same = WireEnvelope(type = "hello", payload = byteArrayOf(1, 2, 3))
+        val otherPayload = WireEnvelope(type = "hello", payload = byteArrayOf(1, 2, 4))
+        val otherType = WireEnvelope(type = "tree", payload = byteArrayOf(1, 2, 3))
+
+        assertEquals(first, same)
+        assertEquals(first.hashCode(), same.hashCode())
+        assertNotEquals(first, otherPayload)
+        assertNotEquals(first, otherType)
+    }
+
+    @Test
     fun `версия протокола участвует в приветствии`() {
         val hello = ClientMessage.Hello(clientVersion = ProtocolVersion.CURRENT, lastEventSeq = 7)
-        val decoded = assertIs<DecodeResult.Message<ClientMessage>>(
-            ProtocolCodec.decodeClientMessage(ProtocolCodec.encode(hello)),
-        ).message
+        val decoded = clientMessage(ProtocolCodec.encode(hello))
         assertEquals(ProtocolVersion.CURRENT, assertIs<ClientMessage.Hello>(decoded).clientVersion)
         assertEquals(7, assertIs<ClientMessage.Hello>(decoded).lastEventSeq)
     }
+
+    @Test
+    fun `версия печатается как major,minor`() {
+        assertEquals("1.0", ProtocolVersion.CURRENT.toString())
+        assertEquals("2.5", ProtocolVersion(2, 5).toString())
+    }
+
+    @Test
+    fun `все варианты ClientMessage переживают round-trip`() {
+        val messages = listOf(
+            ClientMessage.Hello(clientVersion = ProtocolVersion.CURRENT),
+            ClientMessage.Hello(clientVersion = ProtocolVersion.CURRENT, lastEventSeq = 42),
+            ClientMessage.OpenWorkspace(requestId, "/projects/aide"),
+            ClientMessage.FileTree(requestId, workspaceId),
+            ClientMessage.FileContent(requestId, workspaceId, "src/auth/Login.kt"),
+            ClientMessage.HostState(requestId, workspaceId),
+        )
+        messages.forEach { message ->
+            assertEquals(message, clientMessage(ProtocolCodec.encode(message)))
+        }
+    }
+
+    @Test
+    fun `все варианты HostMessage переживают round-trip`() {
+        val tree = FileTreePayload(
+            workspaceId = workspaceId,
+            rootPath = "/projects/aide",
+            entries = listOf(FileTreeEntry("src", isDirectory = true)),
+            truncated = false,
+        )
+        val content = FileContentPayload(
+            workspaceId = workspaceId,
+            path = "src/Main.kt",
+            text = "fun main() {}",
+            sizeBytes = 13,
+            truncated = false,
+            language = "kotlin",
+        )
+        val state = HostStatePayload(
+            workspaceId = workspaceId,
+            rootPath = "/projects/aide",
+            branch = "main",
+            headCommit = "abc1234",
+            uptimeMillis = 1000,
+            mode = HostMode.LOCAL,
+        )
+        val messages: List<HostMessage> = listOf(
+            HostMessage.Hello(ProtocolVersion.CURRENT, sessionId),
+            HostMessage.WorkspaceOpened(requestId, workspaceId),
+            HostMessage.Tree(requestId, tree),
+            HostMessage.Content(requestId, content),
+            HostMessage.State(requestId, state),
+            HostMessage.State(requestId, state.copy(mode = HostMode.REMOTE)),
+            HostMessage.Failure(requestId, ProtocolError.NotFound("src/Main.kt")),
+            HostMessage.Incompatible(IncompatibilityReason.HOST_OUTDATED, ProtocolVersion(2, 0)),
+            HostMessage.Event(HostEvent.WorkspaceChanged(workspaceId)),
+            HostMessage.Event(HostEvent.HostShuttingDown),
+        )
+        messages.forEach { message ->
+            assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
+        }
+    }
+
+    @Test
+    fun `каждый вариант ProtocolError переживает round-trip`() {
+        val internalWithoutDetail = ProtocolError.Internal(message = "внутренняя ошибка")
+        val errors = listOf(
+            ProtocolError.AccessDenied(path = "/etc/passwd", reason = "вне корня воркспейса"),
+            ProtocolError.NotFound(what = "src/Main.kt"),
+            ProtocolError.NotAGitRepository(path = "/projects/aide"),
+            ProtocolError.WorkspaceClosed(workspaceId = workspaceId),
+            ProtocolError.NotImplemented(what = "поиск по символам"),
+            internalWithoutDetail,
+            ProtocolError.Internal(message = "внутренняя ошибка", detail = "trace: …"),
+        )
+        errors.forEach { error ->
+            val message = HostMessage.Failure(requestId, error)
+            assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
+        }
+
+        // Ошибка без detail остаётся без detail: клиент различает «детали нет» и «деталь пуста».
+        val decoded = hostMessage(ProtocolCodec.encode(HostMessage.Failure(requestId, internalWithoutDetail)))
+        assertNull(assertIs<ProtocolError.Internal>(assertIs<HostMessage.Failure>(decoded).error).detail)
+    }
+
+    @Test
+    fun `каждый вариант IncompatibilityReason переживает round-trip`() {
+        IncompatibilityReason.entries.forEach { reason ->
+            val message = HostMessage.Incompatible(reason, ProtocolVersion(2, 5))
+            assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
+        }
+    }
+
+    @Test
+    fun `каждый режим хоста и каждое событие переживают round-trip`() {
+        HostMode.entries.forEach { mode ->
+            val message = HostMessage.State(requestId, statePayload(mode))
+            assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
+        }
+        val events: List<HostEvent> = listOf(
+            HostEvent.WorkspaceChanged(workspaceId),
+            HostEvent.HostShuttingDown,
+        )
+        events.forEach { event ->
+            val message = HostMessage.Event(event)
+            assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
+        }
+    }
+
+    private fun statePayload(mode: HostMode) = HostStatePayload(
+        workspaceId = workspaceId,
+        rootPath = "/projects/aide",
+        branch = "main",
+        headCommit = "",
+        uptimeMillis = 1,
+        mode = mode,
+    )
 }
 ```
 
@@ -4171,7 +4377,9 @@ class ProtocolCodecTest {
 ./gradlew :protocol:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 10 тестов пройдено. Если не компилируется `WireEnvelope` — проверить, что у него переопределены `equals` и `hashCode`: массив в `data class` сравнивается по ссылке, и без переопределения тест round-trip на дереве упадёт неочевидным образом.
+Ожидаемо: `BUILD SUCCESSFUL`, 20 тестов пройдено — round-trip на каждый вариант `ClientMessage`, `HostMessage`, `ProtocolError` (включая сохранение `detail = null`), оба режима хоста, оба `HostEvent` и все `IncompatibilityReason`, плюс толерантность к неизвестным типам, бинарность формата и сравнение конверта по содержимому.
+
+Почему нужен отдельный тест на `WireEnvelope`: round-trip тесты сравнивают разобранные **сообщения**, а не сам конверт, поэтому переопределение `equals`/`hashCode` они не проверяют. Проверено мутацией: если удалить эти методы, падает ровно один тест — `конверт сравнивается по содержимому, а не по ссылке`, — а остальные 19 остаются зелёными. Именно поэтому утверждение про конверт вынесено в собственный тест, а не в примечание.
 
 - [ ] **Шаг 9: коммит**
 
