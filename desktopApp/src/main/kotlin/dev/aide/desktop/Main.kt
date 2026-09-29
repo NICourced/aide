@@ -6,6 +6,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import dev.aide.client.state.KtorHostConnection
 import dev.aide.client.ui.App
+import dev.aide.client.ui.strings.Strings
 import dev.aide.host.EmbeddedHost
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +31,11 @@ fun main() = application {
         }
     }
 
-    Window(onCloseRequest = ::exitApplication, title = "AI Studio") {
+    // Заголовок окна — та же ресурсная строка, что и имя приложения внутри (NFR-13):
+    // переименование продукта не требует правок в коде. Strings.text — @Composable,
+    // а лямбда `application` даёт composable-контекст.
+    val windowTitle = Strings.text(Strings.appName)
+    Window(onCloseRequest = ::exitApplication, title = windowTitle) {
         App(connection = connection)
     }
 }

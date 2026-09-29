@@ -4,6 +4,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import dev.aide.client.state.KtorHostConnection
+import dev.aide.client.state.settings.SettingsStore
+import dev.aide.client.state.settings.createKeyValueStore
+import dev.aide.client.state.settings.initKeyValueStore
 import dev.aide.client.ui.App
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,8 +20,9 @@ import kotlinx.coroutines.cancel
  * из настроек. Автоматическое обнаружение хоста и сопряжение устройств появятся
  * в T-1.51 и на этапе 5 (T-5.11) — до тех пор адрес вводится вручную.
  *
- * Настроек ещё нет, поэтому адрес берётся из константы; связывание переедет
- * в `AndroidClientRuntime`, когда появится хранилище настроек.
+ * Настройки уже есть (T-0.14), но экран, который их меняет, появится в задаче 16.
+ * Пока адрес берётся из хранилища, а если его там нет — из значения по умолчанию:
+ * пустое хранилище не должно ронять запуск.
  */
 class MainActivity : ComponentActivity() {
 
@@ -27,7 +31,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val connection = KtorHostConnection(endpoint = DEFAULT_ENDPOINT, scope = scope)
+        // Контекст задаётся до первой фабрики хранилища, иначе она падает: молчаливая
+        // потеря настроек хуже явной ошибки при старте.
+        initKeyValueStore(applicationContext)
+        val endpoint = SettingsStore(createKeyValueStore()).hostEndpoint ?: DEFAULT_ENDPOINT
+        val connection = KtorHostConnection(endpoint = endpoint, scope = scope)
 
         setContent {
             App(connection = connection)

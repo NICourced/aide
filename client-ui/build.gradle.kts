@@ -34,9 +34,22 @@ kotlin {
     }
 }
 
-// NoLocalityBranchingTest читает исходники файловой системой (T-0.13). Путь передаётся
-// системным свойством как абсолютный: при запуске из IDE и из корня сборки рабочий
-// каталог разный. Тестовый набор `jvmTest` наследует `kotlin("test")` из `commonTest`.
+// Строки интерфейса объявляются ресурсами, а не литералами (NFR-13). Класс доступа
+// генерируется в собственный пакет: имя `dev.aide.client.ui.resources.Res` не совпадает
+// ни с чем в проекте, и импорт в Strings.kt читается однозначно.
+compose.resources {
+    publicResClass = false
+    packageOfResClass = "dev.aide.client.ui.resources"
+    generateResClass = always
+}
+
+// NoLocalityBranchingTest и NoLiteralUiStringsTest читают исходники файловой системой
+// (T-0.13, T-0.14). Пути передаются системными свойствами как абсолютные: при запуске
+// из IDE и из корня сборки рабочий каталог разный. Тестовый набор `jvmTest` наследует
+// `kotlin("test")` из `commonTest`.
 tasks.named<Test>("jvmTest") {
     systemProperty("clientUiSourcesDir", layout.projectDirectory.dir("src").asFile.path)
+    // EntryPointStringsTest живёт здесь, а сканирует заголовок окна desktopApp и манифест
+    // androidApp — до соседних модулей путь к `src` этого модуля не достаёт.
+    systemProperty("repoRootDir", rootProject.layout.projectDirectory.asFile.path)
 }
