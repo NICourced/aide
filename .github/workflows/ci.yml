@@ -33,9 +33,6 @@ jobs:
       - name: Платформа и инструменты Android
         run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Метаданные общего кода
-        run: ./gradlew :client-ui:compileCommonMainKotlinMetadata
-
       - name: Юнит-тесты
         run: ./gradlew :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest
 
