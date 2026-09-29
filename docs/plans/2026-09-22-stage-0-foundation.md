@@ -7029,39 +7029,51 @@ git commit -m "feat(host): воркспейс, чтение файлов с пр
 ```kotlin
 package dev.aide.host.git
 
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 
-/** Обёртка над командной строкой git: нужна и для подготовки фикстуры, и для сверки результатов. */
+/** Обёртка над командной строкой git: готовит фикстуру и даёт эталон для сверки результатов JGit. */
 object GitCliFixture {
 
+    private const val GIT = "git"
+    private const val RENAME_ARROW = " -> "
+    private const val GIT_MISSING =
+        "Для этих тестов нужен git в PATH: критерий T-0.12 требует сверки с выводом git status и git log"
+
     /** Проверяет, что git доступен, и падает с понятным сообщением, если нет. */
-    fun requireGit(): String {
-        val result = run(listOf("git", "--version"), workingDir = null)
-        check(result.exitCode == 0) {
-            "Для этих тестов нужен git в PATH: критерий T-0.12 требует сверки с выводом git status и git log"
+    fun requireGit() {
+        val result = try {
+            run(listOf(GIT, "--version"), workingDir = null)
+        } catch (error: IOException) {
+            throw IllegalStateException(GIT_MISSING, error)
         }
-        return result.stdout.trim()
+        check(result.exitCode == 0) { GIT_MISSING }
     }
 
-    /** Создаёт репозиторий с двумя коммитами и одним незакоммиченным изменением. */
+    /** Создаёт репозиторий с двумя коммитами, изменённым отслеживаемым файлом и новым файлом вне индекса. */
     fun createRepo(root: Path): Path {
         requireGit()
         Files.createDirectories(root)
-        run(listOf("git", "init", "-b", "master"), root)
-        run(listOf("git", "config", "user.email", "test@aide.dev"), root)
-        run(listOf("git", "config", "user.name", "Aide Test"), root)
+        run(listOf(GIT, "init", "-b", "master"), root)
+        run(listOf(GIT, "config", "user.email", "test@aide.dev"), root)
+        run(listOf(GIT, "config", "user.name", "Aide Test"), root)
+        // Локально: глобальная подпись коммитов сделала бы фикстуру зависимой от настроек машины.
+        run(listOf(GIT, "config", "commit.gpgsign", "false"), root)
+        // Переименования сверяются явно, поэтому поиск переименований в status включается
+        // локально: глобальный diff.renames=false иначе развёл бы git и JGit на фикстуре.
+        run(listOf(GIT, "config", "status.renames", "true"), root)
 
         root.resolve("src").createDirectories()
         root.resolve("src/Login.kt").writeText("fun login() = Unit\n")
-        run(listOf("git", "add", "."), root)
-        run(listOf("git", "commit", "-m", "первый коммит"), root)
+        run(listOf(GIT, "add", "."), root)
+        run(listOf(GIT, "commit", "-m", "первый коммит"), root)
 
         root.resolve("src/Api.kt").writeText("class Api\n")
-        run(listOf("git", "add", "."), root)
-        run(listOf("git", "commit", "-m", "второй коммит"), root)
+        run(listOf(GIT, "add", "."), root)
+        run(listOf(GIT, "commit", "-m", "второй коммит"), root)
 
         // Незакоммиченное изменение и новый файл — то, что должен увидеть git status.
         root.resolve("src/Login.kt").writeText("fun login() = \"token\"\n")
@@ -7074,40 +7086,70 @@ object GitCliFixture {
     fun createEmptyRepo(root: Path): Path {
         requireGit()
         Files.createDirectories(root)
-        run(listOf("git", "init", "-b", "master"), root)
+        run(listOf(GIT, "init", "-b", "master"), root)
         return root
     }
 
-    /** `git status --porcelain=v1` в виде пар «код, путь». */
-    fun statusPorcelain(root: Path): List<Pair<String, String>> =
-        run(listOf("git", "status", "--porcelain=v1"), root).stdout
+    /**
+     * Запись `git status --porcelain=v1`: двухсимвольный код и путь.
+     *
+     * Для переименования в выводе стоит суффикс «старый -> новый», а в [path] попадает новый путь,
+     * в [previousPath] — старый: так запись сравнивается с JGit по конечному расположению файла.
+     */
+    data class StatusEntry(val code: String, val path: String, val previousPath: String? = null)
+
+    /** `git status --porcelain=v1`, разобранный по строкам. */
+    fun status(root: Path): List<StatusEntry> = porcelainLines(root).map { line ->
+        val code = line.substring(0, 2).trim()
+        val payload = line.substring(2).trim()
+        if (code == "R") {
+            val (old, new) = payload.split(RENAME_ARROW).map { it.trim() }
+            StatusEntry(code = code, path = new, previousPath = old)
+        } else {
+            StatusEntry(code = code, path = payload)
+        }
+    }
+
+    /** Строки `git status --porcelain=v1` как есть: нужны там, где важен код строки, а не разобранная запись. */
+    fun porcelainLines(root: Path): List<String> =
+        run(listOf(GIT, "status", "--porcelain=v1"), root).output
             .lines()
             .filter { it.isNotBlank() }
-            .map { line -> line.substring(0, 2).trim() to line.substring(3).trim() }
 
-    /** Сообщения последних коммитов в порядке от нового к старому. */
-    fun logMessages(root: Path, limit: Int): List<String> =
-        run(listOf("git", "log", "--format=%s", "-n", limit.toString()), root).stdout
+    /** Значения одного поля `git log` для последних коммитов, от нового к старому. */
+    fun logField(root: Path, format: String, limit: Int): List<String> =
+        run(listOf(GIT, "log", "--format=$format", "-n", limit.toString()), root).output
             .lines()
             .filter { it.isNotBlank() }
 
-    /** Текущая ветка. */
+    /**
+     * Имя текущей ветки.
+     *
+     * `symbolic-ref --short HEAD`, а не `rev-parse --abbrev-ref HEAD`: на репозитории
+     * без коммитов rev-parse не находит HEAD, печатает «HEAD» и падает с кодом 128,
+     * а symbolic-ref отдаёт имя ещё не созданной ветки — то есть то же, что должен вернуть хост.
+     */
     fun currentBranch(root: Path): String =
-        run(listOf("git", "rev-parse", "--abbrev-ref", "HEAD"), root).stdout.trim()
+        run(listOf(GIT, "symbolic-ref", "--short", "HEAD"), root).output.trim()
 
-    data class CliResult(val exitCode: Int, val stdout: String, val stderr: String)
+    /** Короткий хеш HEAD по версии git. */
+    fun headShortHash(root: Path): String =
+        run(listOf(GIT, "rev-parse", "--short", "HEAD"), root).output.trim()
+
+    data class CliResult(val exitCode: Int, val output: String)
 
     fun run(command: List<String>, workingDir: Path?): CliResult {
         val process = ProcessBuilder(command)
             .apply {
                 if (workingDir != null) directory(workingDir.toFile())
-                redirectErrorStream(false)
+                // stdout и stderr слиты: последовательное чтение двух пайпов взаимно блокируется,
+                // когда git пишет больше буфера в поток, который в этот момент не читают.
+                redirectErrorStream(true)
             }
             .start()
-        val stdout = process.inputStream.bufferedReader().readText()
-        val stderr = process.errorStream.bufferedReader().readText()
+        val output = process.inputStream.bufferedReader().readText()
         val exitCode = process.waitFor()
-        return CliResult(exitCode, stdout, stderr)
+        return CliResult(exitCode, output)
     }
 }
 ```
@@ -7117,6 +7159,8 @@ object GitCliFixture {
 ```kotlin
 package dev.aide.host.git
 
+import dev.aide.domain.FileChangeKind
+import dev.aide.protocol.ProtocolError
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -7126,12 +7170,18 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
+private const val LOG_LIMIT = 10
+private const val MILLIS_PER_SECOND = 1_000L
+
 class JGitRepositoryTest {
 
     private val tempDirs = mutableListOf<Path>()
 
-    private fun tempDir(prefix: String): Path =
-        Files.createTempDirectory(prefix).also { tempDirs += it }
+    private fun tempDir(prefix: String): Path {
+        val dir = Files.createTempDirectory(prefix)
+        tempDirs.add(dir)
+        return dir
+    }
 
     @AfterTest
     fun tearDown() {
@@ -7141,61 +7191,87 @@ class JGitRepositoryTest {
     @Test
     fun `текущая ветка совпадает с выводом git`() {
         val root = GitCliFixture.createRepo(tempDir("aide-git-"))
-        JGitRepository.open(root).use { repo ->
-            assertEquals(GitCliFixture.currentBranch(root), repo.currentBranch())
+        JGitRepository.open(root).use { repository ->
+            assertEquals("master", GitCliFixture.currentBranch(root))
+            assertEquals(GitCliFixture.currentBranch(root), repository.currentBranch())
         }
     }
 
     @Test
     fun `список изменённых файлов совпадает с git status`() {
         val root = GitCliFixture.createRepo(tempDir("aide-git-"))
-        JGitRepository.open(root).use { repo ->
-            val fromJGit = repo.changedFiles().map { it.path to it.changeKind.name }.sortedBy { it.first }
-            val fromCli = GitCliFixture.statusPorcelain(root)
-                .map { (code, path) -> path to cliCodeToKind(code) }
-                .sortedBy { it.first }
 
-            // `--porcelain=v1` кодирует файл вне индекса как `??`; проверяем код явно, а не полагаемся на разбор.
-            assertTrue(
-                porcelainLines(root).any { it.startsWith("?? src/New.kt") },
-                "git status должен отдавать новый файл вне индекса с кодом `??`",
-            )
+        // Коды git на этой фикстуре зафиксированы явно: без этого совпадение списков
+        // не доказывало бы, что разобраны именно «изменён в рабочем каталоге» и «вне индекса».
+        assertEquals(
+            listOf(" M src/Login.kt", "?? src/New.kt"),
+            GitCliFixture.porcelainLines(root),
+        )
+        assertEquals(
+            listOf("src/Login.kt" to FileChangeKind.MODIFIED, "src/New.kt" to FileChangeKind.ADDED),
+            expectedFromGitStatus(root),
+        )
 
-            assertEquals(fromCli, fromJGit, "JGit и git status должны давать один список")
-            assertEquals(
-                listOf("src/Login.kt" to "MODIFIED", "src/New.kt" to "ADDED"),
-                fromJGit,
-            )
+        JGitRepository.open(root).use { repository ->
+            assertEquals(expectedFromGitStatus(root), actualFromJGit(repository))
+        }
+    }
+
+    @Test
+    fun `изменения в индексе совпадают с git status`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        GitCliFixture.run(listOf("git", "add", "-A"), root)
+
+        assertEquals(
+            listOf("M  src/Login.kt", "A  src/New.kt"),
+            GitCliFixture.porcelainLines(root),
+        )
+        assertEquals(
+            listOf("src/Login.kt" to FileChangeKind.MODIFIED, "src/New.kt" to FileChangeKind.ADDED),
+            expectedFromGitStatus(root),
+        )
+
+        JGitRepository.open(root).use { repository ->
+            assertEquals(expectedFromGitStatus(root), actualFromJGit(repository))
         }
     }
 
     @Test
     fun `история коммитов совпадает с git log`() {
         val root = GitCliFixture.createRepo(tempDir("aide-git-"))
-        JGitRepository.open(root).use { repo ->
-            val fromJGit = repo.commitLog(limit = 10).map { it.message }
-            assertEquals(GitCliFixture.logMessages(root, limit = 10), fromJGit)
-            assertEquals(listOf("второй коммит", "первый коммит"), fromJGit)
+        JGitRepository.open(root).use { repository ->
+            val commits = repository.commitLog(limit = LOG_LIMIT)
+
+            assertEquals(listOf("второй коммит", "первый коммит"), commits.map { it.message })
+            assertEquals(GitCliFixture.logField(root, "%s", LOG_LIMIT), commits.map { it.message })
+            assertEquals(GitCliFixture.logField(root, "%H", LOG_LIMIT), commits.map { it.hash })
+            assertEquals(GitCliFixture.logField(root, "%h", LOG_LIMIT), commits.map { it.shortHash })
+            assertEquals(GitCliFixture.logField(root, "%an <%ae>", LOG_LIMIT), commits.map { it.author })
+            assertEquals(
+                GitCliFixture.logField(root, "%ct", LOG_LIMIT).map { it.toLong() * MILLIS_PER_SECOND },
+                commits.map { it.committedAtEpochMillis },
+            )
         }
     }
 
     @Test
     fun `короткий хеш HEAD непустой и совпадает с git rev-parse`() {
         val root = GitCliFixture.createRepo(tempDir("aide-git-"))
-        JGitRepository.open(root).use { repo ->
-            val expected = GitCliFixture.run(listOf("git", "rev-parse", "--short", "HEAD"), root).stdout.trim()
-            assertEquals(expected, repo.headCommit())
+        JGitRepository.open(root).use { repository ->
+            assertTrue(repository.headCommit().isNotEmpty())
+            assertEquals(GitCliFixture.headShortHash(root), repository.headCommit())
         }
     }
 
     @Test
     fun `репозиторий без коммитов не падает и отдаёт пустую историю`() {
         val root = GitCliFixture.createEmptyRepo(tempDir("aide-git-empty-"))
-        JGitRepository.open(root).use { repo ->
-            assertEquals("master", repo.currentBranch())
-            assertTrue(repo.commitLog(limit = 10).isEmpty())
-            assertEquals("", repo.headCommit(), "У репозитория без коммитов нет HEAD")
-            assertTrue(repo.changedFiles().isEmpty())
+        JGitRepository.open(root).use { repository ->
+            assertEquals(GitCliFixture.currentBranch(root), repository.currentBranch())
+            assertEquals("master", repository.currentBranch())
+            assertTrue(repository.commitLog(limit = LOG_LIMIT).isEmpty())
+            assertEquals("", repository.headCommit(), "У репозитория без коммитов нет HEAD")
+            assertTrue(repository.changedFiles().isEmpty())
         }
     }
 
@@ -7203,19 +7279,54 @@ class JGitRepositoryTest {
     fun `каталог без git даёт типизированную ошибку`() {
         val root = tempDir("aide-nogit-")
         val error = assertFailsWith<GitAccessException> { JGitRepository.open(root) }
-        assertIs<dev.aide.protocol.ProtocolError.NotAGitRepository>(error.error)
+        val typed = assertIs<ProtocolError.NotAGitRepository>(error.error)
+        assertEquals(root.toString(), typed.path)
     }
 
     @Test
-    fun `переименование и удаление различаются`() {
+    fun `переименование в рабочем каталоге совпадает с git status как удаление и новый файл`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        Files.move(root.resolve("src/Api.kt"), root.resolve("src/Renamed.kt"))
+
+        // git не ищет переименования в рабочем каталоге: без индексации он видит удаление
+        // старого файла и новый файл. Если бы хост сопоставлял переименования по рабочему
+        // дереву, здесь он разошёлся бы с git status.
+        assertEquals(
+            listOf(" D src/Api.kt", " M src/Login.kt", "?? src/New.kt", "?? src/Renamed.kt"),
+            GitCliFixture.porcelainLines(root),
+        )
+
+        JGitRepository.open(root).use { repository ->
+            val changed = repository.changedFiles()
+            assertEquals(expectedFromGitStatus(root), actualFromJGit(repository))
+            assertEquals(FileChangeKind.DELETED, changed.single { it.path == "src/Api.kt" }.changeKind)
+            assertEquals(FileChangeKind.ADDED, changed.single { it.path == "src/Renamed.kt" }.changeKind)
+        }
+    }
+
+    @Test
+    fun `переименование и удаление различаются и совпадают с git status`() {
         val root = GitCliFixture.createRepo(tempDir("aide-git-"))
         GitCliFixture.run(listOf("git", "mv", "src/Api.kt", "src/Renamed.kt"), root)
-        Files.deleteIfExists(root.resolve("src/New.kt"))
+        // Удаляем отслеживаемый файл: удаление файла вне индекса git статусом не показывается вовсе.
+        Files.delete(root.resolve("src/Login.kt"))
 
-        JGitRepository.open(root).use { repo ->
-            val kinds = repo.changedFiles().associate { it.path to it.changeKind }
-            assertEquals(FileChangeKindCompat.RENAMED, kinds["src/Renamed.kt"])
-            assertEquals(FileChangeKindCompat.DELETED, kinds["src/New.kt"])
+        assertEquals(
+            listOf(" D src/Login.kt", "R  src/Api.kt -> src/Renamed.kt", "?? src/New.kt"),
+            GitCliFixture.porcelainLines(root),
+        )
+
+        JGitRepository.open(root).use { repository ->
+            val changed = repository.changedFiles()
+            assertEquals(expectedFromGitStatus(root), actualFromJGit(repository))
+
+            val renamed = changed.single { it.path == "src/Renamed.kt" }
+            assertEquals(FileChangeKind.RENAMED, renamed.changeKind)
+            assertEquals("src/Api.kt", renamed.previousPath)
+
+            val deleted = changed.single { it.path == "src/Login.kt" }
+            assertEquals(FileChangeKind.DELETED, deleted.changeKind)
+            assertEquals(null, deleted.previousPath)
         }
     }
 
@@ -7225,36 +7336,42 @@ class JGitRepositoryTest {
         GitCliFixture.run(listOf("git", "mv", "src/Api.kt", "src/Renamed.kt"), root)
 
         // Строка переименования в `--porcelain=v1` выглядит как `R  старый путь -> новый путь`.
-        val renameLine = porcelainLines(root).single { it.startsWith("R") }
-        val paths = renameLine.substring(3).split(" -> ").map { it.trim() }
-        assertEquals(listOf("src/Api.kt", "src/Renamed.kt"), paths)
+        assertEquals(
+            "R  src/Api.kt -> src/Renamed.kt",
+            GitCliFixture.porcelainLines(root).single { it.startsWith("R") },
+        )
+        val rename = GitCliFixture.status(root).single { it.code == "R" }
+        assertEquals("src/Renamed.kt", rename.path)
+        assertEquals("src/Api.kt", rename.previousPath)
 
-        JGitRepository.open(root).use { repo ->
-            val renamed = repo.changedFiles().single { it.path == paths.last() }
-            assertEquals(FileChangeKindCompat.RENAMED, renamed.changeKind.name)
-            assertEquals(paths.first(), renamed.previousPath)
+        JGitRepository.open(root).use { repository ->
+            val renamed = repository.changedFiles().single { it.path == rename.path }
+            assertEquals(FileChangeKind.RENAMED, renamed.changeKind)
+            assertEquals(rename.previousPath, renamed.previousPath)
         }
     }
 
-    /** Строки `git status --porcelain=v1` как есть: нужны там, где важен код строки, а не разобранная пара. */
-    private fun porcelainLines(root: Path): List<String> =
-        GitCliFixture.run(listOf("git", "status", "--porcelain=v1"), root).stdout
-            .lines()
-            .filter { it.isNotBlank() }
+    /** Изменения по данным JGit в том же виде, в каком их даёт разбор `git status`. */
+    private fun actualFromJGit(repository: GitRepository): List<Pair<String, FileChangeKind>> =
+        repository.changedFiles().map { it.path to it.changeKind }.sortedBy { it.first }
 
-    /** Коды `--porcelain=v1`, достижимые в фикстуре: `??` — новый файл вне индекса, `A` — добавленный в индекс, `M` — изменённый, `D` — удалённый. */
-    private fun cliCodeToKind(code: String): String = when (code) {
-        "??", "A" -> "ADDED"
-        "M" -> "MODIFIED"
-        "D" -> "DELETED"
-        else -> code
-    }
-}
-
-/** Псевдоним, чтобы тест читался без импорта домена: значения совпадают с [dev.aide.domain.FileChangeKind]. */
-private object FileChangeKindCompat {
-    const val RENAMED = "RENAMED"
-    const val DELETED = "DELETED"
+    /**
+     * Ожидаемые изменения по выводу `git status`.
+     *
+     * Сравнение идёт по тем кодам, которые git печатает на фикстуре; неизвестный код роняет
+     * тест, а не превращается в строку, которая заведомо не совпадёт с элементом домена.
+     */
+    private fun expectedFromGitStatus(root: Path): List<Pair<String, FileChangeKind>> =
+        GitCliFixture.status(root).map { entry ->
+            val kind = when (entry.code) {
+                "??", "A" -> FileChangeKind.ADDED
+                "M" -> FileChangeKind.MODIFIED
+                "D" -> FileChangeKind.DELETED
+                "R" -> FileChangeKind.RENAMED
+                else -> throw AssertionError("неизвестный код git status «${entry.code}» для ${entry.path}")
+            }
+            entry.path to kind
+        }.sortedBy { it.first }
 }
 ```
 
@@ -7341,7 +7458,10 @@ package dev.aide.host.git
 import dev.aide.domain.FileChangeKind
 import dev.aide.protocol.ProtocolError
 import java.nio.file.Path
+import kotlin.io.path.exists
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.diff.DiffEntry
+import org.eclipse.jgit.diff.RenameDetector
 import org.eclipse.jgit.lib.Repository
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 
@@ -7357,31 +7477,28 @@ class JGitRepository private constructor(
     private val git: Git,
 ) : GitRepository {
 
-    override fun currentBranch(): String = repository.branch ?: UNKNOWN_BRANCH
+    override fun currentBranch(): String = repository.branch ?: DETACHED_HEAD
 
     override fun headCommit(): String =
-        runCatching { repository.resolve(HEAD).name }.getOrNull()?.take(SHORT_HASH_LENGTH).orEmpty()
+        runCatching { repository.resolve(HEAD) }.getOrNull()?.name?.take(SHORT_HASH_LENGTH).orEmpty()
 
     override fun changedFiles(): List<ChangedFile> {
         val status = runCatching { git.status().call() }.getOrElse { error ->
             throw GitAccessException(ProtocolError.Internal("не удалось прочитать состояние git", error.message))
         }
+        val renamed = stagedRenames()
         return buildList {
-            status.added.forEach { add(ChangedFile(it, FileChangeKind.ADDED)) }
+            status.added.filterNot { it in renamed.values }.forEach { add(ChangedFile(it, FileChangeKind.ADDED)) }
+            status.untracked.forEach { add(ChangedFile(it, FileChangeKind.ADDED)) }
             status.changed.forEach { add(ChangedFile(it, FileChangeKind.MODIFIED)) }
             status.modified.forEach { add(ChangedFile(it, FileChangeKind.MODIFIED)) }
-            status.removed.forEach { add(ChangedFile(it, FileChangeKind.DELETED)) }
-            status.missing.forEach { add(ChangedFile(it, FileChangeKind.DELETED)) }
-            status.untracked.forEach { add(ChangedFile(it, FileChangeKind.ADDED)) }
             status.conflicting.forEach { add(ChangedFile(it, FileChangeKind.MODIFIED)) }
-
-            // Переименования: JGit отдаёт их как пару «удалён старый — добавлен новый».
-            status.renamed.forEach { (old, new) ->
-                removeAll { it.path == old }
-                add(ChangedFile(path = new, changeKind = FileChangeKind.RENAMED, previousPath = old))
+            status.removed.filterNot { it in renamed.keys }.forEach { add(ChangedFile(it, FileChangeKind.DELETED)) }
+            status.missing.forEach { add(ChangedFile(it, FileChangeKind.DELETED)) }
+            renamed.forEach { (oldPath, newPath) ->
+                add(ChangedFile(path = newPath, changeKind = FileChangeKind.RENAMED, previousPath = oldPath))
             }
-        }.distinctBy { it.path }
-            .sortedBy { it.path }
+        }.distinctBy { it.path }.sortedBy { it.path }
     }
 
     override fun commitLog(limit: Int): List<CommitInfo> {
@@ -7393,7 +7510,7 @@ class JGitRepository private constructor(
                     shortHash = commit.name.take(SHORT_HASH_LENGTH),
                     message = commit.fullMessage.lineSequence().first().trim(),
                     author = "${commit.authorIdent.name} <${commit.authorIdent.emailAddress}>",
-                    committedAtEpochMillis = commit.commitTime.toLong() * 1_000,
+                    committedAtEpochMillis = commit.commitTime.toLong() * MILLIS_PER_SECOND,
                 )
             }
         }.getOrElse { error ->
@@ -7402,34 +7519,63 @@ class JGitRepository private constructor(
     }
 
     override fun close() {
+        // `Git` владеет `Repository` и закрывает её вместе с собой.
         git.close()
-        repository.close()
+    }
+
+    /**
+     * Переименования, уже зафиксированные в индексе.
+     *
+     * `git status` показывает переименование только между HEAD и индексом: переименование
+     * в рабочем каталоге он отдаёт как удаление старого файла и новый файл вне индекса.
+     * Поэтому сопоставление идёт по разнице HEAD → индекс, а не по рабочему дереву,
+     * иначе результат разошёлся бы с `git status` на незакоммиченном `mv`.
+     */
+    private fun stagedRenames(): Map<String, String> {
+        if (headCommit().isEmpty()) return emptyMap()
+        return runCatching {
+            val entries = git.diff().setCached(true).call()
+            val detector = RenameDetector(repository)
+            // Порог сходства как у git по умолчанию, иначе переименования с правкой
+            // содержимого распознавались бы реже, чем их показывает `git status`.
+            detector.renameScore = GIT_RENAME_SCORE
+            detector.addAll(entries)
+            detector.compute()
+                .filter { it.changeType == DiffEntry.ChangeType.RENAME }
+                .associate { it.oldPath to it.newPath }
+        }.getOrElse { error ->
+            throw GitAccessException(ProtocolError.Internal("не удалось сопоставить переименования", error.message))
+        }
     }
 
     companion object {
         private const val HEAD = "HEAD"
+        private const val GIT_DIR = ".git"
         private const val SHORT_HASH_LENGTH = 7
-        private const val UNKNOWN_BRANCH = "HEAD"
+        private const val MILLIS_PER_SECOND = 1_000L
+        private const val GIT_RENAME_SCORE = 50
+        private const val DETACHED_HEAD = "HEAD"
 
         /** Открывает репозиторий по пути к рабочему каталогу. */
         fun open(workTree: Path): JGitRepository {
-            val gitDir = workTree.resolve(".git")
-            if (!gitDir.toFile().exists()) {
-                throw GitAccessException(ProtocolError.NotAGitRepository(workTree.toString()))
+            val gitDir = workTree.resolve(GIT_DIR)
+            if (!gitDir.exists()) {
+                notAGitRepository(workTree)
             }
-            val repository = try {
+            val repository = runCatching {
                 FileRepositoryBuilder()
                     .setWorkTree(workTree.toFile())
                     .setGitDir(gitDir.toFile())
                     .readEnvironment()
                     .build()
-            } catch (error: Exception) {
-                throw GitAccessException(ProtocolError.NotAGitRepository(workTree.toString()))
-            }
+            }.getOrElse { notAGitRepository(workTree) }
             return JGitRepository(repository, Git(repository))
         }
     }
 }
+
+private fun notAGitRepository(workTree: Path): Nothing =
+    throw GitAccessException(ProtocolError.NotAGitRepository(workTree.toString()))
 ```
 
 - [ ] **Шаг 5: подключить JGit и прогнать тесты**
@@ -7440,26 +7586,11 @@ class JGitRepository private constructor(
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 39 тестов (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8).
+Ожидаемо: `BUILD SUCCESSFUL`, 41 тест (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 10).
 
-Если падает тест про переименование — JGit сообщает о переименовании через `status().call().renamed` только если включено отслеживание переименований. Если `renamed` пуст, переименование придёт как пара удаление+добавление, и тест это поймает: тогда переименование нужно распознавать по совпадению содержимого. Проверить фактические списки, напечатав их в тесте, и при необходимости заменить блок переименований на сопоставление удалённого и добавленного файла по совпадению blob-хеша:
+**Почему переименования сопоставляются по индексу, а не по рабочему дереву.** Настоящий `git` ищет переименования только между HEAD и индексом: после `git mv` он печатает `R  src/Api.kt -> src/Renamed.kt`, а обычный `mv` без индексации — ` D src/Api.kt` плюс `?? src/Renamed.kt`. Поэтому хост берёт переименования из `git.diff().setCached(true)` и прогоняет их через `RenameDetector`. Если бы он сопоставлял переименования по рабочему дереву, на незакоммиченном `mv` он разошёлся бы с `git status`, а критерий `T-0.12` требует совпадения. Порог сходства выставлен 50 — как у git по умолчанию (у JGit по умолчанию 60), иначе переименования с правкой содержимого распознавались бы реже, чем их показывает `git status`.
 
-```kotlin
-    /** Сопоставляет удалённые и добавленные файлы с одинаковым содержимым — так JGit отдаёт переименование без опции отслеживания. */
-    private fun detectRenames(status: org.eclipse.jgit.api.Status): List<ChangedFile> {
-        val removed = (status.removed + status.missing).sorted()
-        val added = status.untracked + status.added
-        return removed.flatMap { old ->
-            added.filter { new -> sameContentIgnoringPath(new, old) }
-                .map { new -> ChangedFile(path = new, changeKind = FileChangeKind.RENAMED, previousPath = old) }
-        }
-    }
-
-    private fun sameContentIgnoringPath(candidate: String, removedPath: String): Boolean =
-        candidate.substringAfterLast('/') == removedPath.substringAfterLast('/')
-```
-
-Если этот путь не понадобился — удалить обе вспомогательные функции, чтобы не оставлять мёртвый код.
+Оба поведения закреплены тестами: staged `git mv` — «переименование и удаление различаются и совпадают с git status», незакоммиченный `mv` — «переименование в рабочем каталоге совпадает с git status как удаление и новый файл».
 
 - [ ] **Шаг 6: проверить, что тест ловит расхождение с git**
 
@@ -7481,6 +7612,12 @@ class JGitRepository private constructor(
 git add host-core
 git commit -m "feat(host): чтение состояния git через JGit со сверкой с git status и git log"
 ```
+
+**Известные ограничения (не шагами).**
+- `.git` как **файл** (git-worktree, сабмодуль) и bare-репозиторий дают `NotAGitRepository`: `open()` требует именно каталог `.git`. Контракт этого не оговаривает — пометка как известное ограничение.
+- Разбор `--porcelain=v1` наивный: пути с пробелами (git их квотирует) и код `C` (копирование) не обрабатываются; на фикстуре пути без пробелов, поэтому тесты этого не ловят.
+- `shortHash` — это `hash.take(7)`; git удлиняет сокращённый хеш при неоднозначности префиксов, поэтому в большом репозитории возможно расхождение.
+- Переименования со значительной правкой содержимого тестом не покрыты: порог выставлен 50, но алгоритм сходства у JGit и git разный, на границе возможно расхождение.
 
 ---
 
@@ -9772,7 +9909,7 @@ object DatabaseFactory {
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 56 тестов (`MigrationTest` — 3, `HostStoreTest` — 11, `ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 8, `EmbeddedHostTest` — 3).
+Ожидаемо: `BUILD SUCCESSFUL`, 58 тестов (`MigrationTest` — 3, `HostStoreTest` — 11, `ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 10, `EmbeddedHostTest` — 3).
 
 - [ ] **Шаг 11: проверить, что клиент не может обратиться к базе**
 
