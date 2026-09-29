@@ -175,10 +175,8 @@ ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "kto
 ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 sqldelight-runtime = { module = "app.cash.sqldelight:runtime", version.ref = "sqldelight" }
 sqldelight-jdbc = { module = "app.cash.sqldelight:sqlite-driver", version.ref = "sqldelight" }
-sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions", version.ref = "sqldelight" }
 jgit = { module = "org.eclipse.jgit:org.eclipse.jgit", version.ref = "jgit" }
 koin-core = { module = "io.insert-koin:koin-core", version.ref = "koin" }
-koin-android = { module = "io.insert-koin:koin-android", version.ref = "koin" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -599,7 +597,7 @@ kotlin {
 }
 ```
 
-`client-ui/build.gradle.kts` (зависимости от Compose и от `:domain` добавляет шаг 1 задачи 2):
+`client-ui/build.gradle.kts` (зависимости от Compose добавляет шаг 1 задачи 2):
 
 ```kotlin
 plugins {
@@ -848,7 +846,6 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation(project(":domain"))
             // api, а не implementation (правило шага 7 задачи 1): параметры App — HostConnection
             // и SettingsStore — объявлены в client-state, поэтому точки входа видят эти типы
             // только через api. Сейчас App() параметров не имеет: они появятся вместе
@@ -2641,7 +2638,7 @@ git commit -m "feat(domain): 11 моделей домена, round-trip тест
 
 **Что именно проверяемо на уровне домена.** Из шести инвариантов § 4.1 конструктором или валидатором закрываются только два: 1 (принадлежность hunk → file → packet) и 5 (риск пакета не ниже максимума по hunk'ам). Остальные четыре — свойства процесса и проверяются в задачах хоста: 2 (неизменяемость пакета) — `T-1.24`, 3 (снапшот до и после) — `T-1.19`, 4 (автор в истории git) — `T-1.11`, 6 (решения ревью не теряются) — `T-1.37`.
 
-**Чего валидатор не закрывает — и почему это важно дальше.** Формулировка инварианта 1 «каждый `FileChange` принадлежит ровно одному `ChangePacket`» конструктором не закрывается в принципе: у `FileChange` и `Hunk` нет обратной ссылки на пакет, поэтому одно и то же значение можно положить в два разных пакета, и ни один из них этого не заметит. Валидатор закрывает только проверяемую часть: уникальность пути внутри пакета и совпадение `hunk.filePath` с путём своего файла; сверх § 4.1 добавлено осознанное усиление — у файла, кроме `DELETED`, должен быть хотя бы один hunk (на него есть тест). `Hunk` и `FileChange` остаются публичными data-классами без валидации: вне пакета их можно собрать как угодно, и инвариант 1 не считается обеспеченным полностью — ни в этой задаче, ни в следующих.
+**Чего валидатор не закрывает — и почему это важно дальше.** Формулировка инварианта 1 «каждый `FileChange` принадлежит ровно одному `ChangePacket`» конструктором не закрывается в принципе: у `FileChange` и `Hunk` нет обратной ссылки на пакет, поэтому одно и то же значение можно положить в два разных пакета, и ни один из них этого не заметит. Валидатор закрывает только проверяемую часть: уникальность пути внутри пакета и совпадение `hunk.filePath` с путём своего файла; сверх § 4.1 добавлено осознанное усиление — у файла, содержимое которого меняется (`ADDED`, `MODIFIED`), обязан быть хотя бы один hunk, а `DELETED` и чистое `RENAMED` обходятся без hunk'ов (на оба случая есть тесты). `Hunk` и `FileChange` остаются публичными data-классами без валидации: вне пакета их можно собрать как угодно, и инвариант 1 не считается обеспеченным полностью — ни в этой задаче, ни в следующих.
 
 - [ ] **Шаг 1: написать падающие тесты на оба инварианта**
 
@@ -2685,15 +2682,19 @@ class InvariantsTest {
     }
 
     @Test
-    fun `файл без hunk-ов отвергается, кроме удаления файла`() {
-        val violation = assertFailsWith<DomainViolation> {
-            DomainFixtures.packet.copy(
-                files = listOf(DomainFixtures.fileChange.copy(hunks = emptyList())),
-            )
+    fun `файл с изменяемым содержимым без hunk-ов отвергается`() {
+        listOf(FileChangeKind.MODIFIED, FileChangeKind.ADDED).forEach { kind ->
+            val violation = assertFailsWith<DomainViolation> {
+                DomainFixtures.packet.copy(
+                    files = listOf(DomainFixtures.fileChange.copy(changeKind = kind, hunks = emptyList())),
+                )
+            }
+            assertEquals(DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE, violation.invariant, "вид: $kind")
         }
-        assertEquals(DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE, violation.invariant)
+    }
 
-        // Удаление файла — единственный случай, когда hunk-ов может не быть.
+    @Test
+    fun `удаление файла без hunk-ов разрешено`() {
         val deleted = DomainFixtures.packet.copy(
             files = listOf(
                 DomainFixtures.fileChange.copy(
@@ -2705,6 +2706,23 @@ class InvariantsTest {
             risk = RiskLevel.RISKY,
         )
         assertEquals(FileChangeKind.DELETED, deleted.files.single().changeKind)
+    }
+
+    @Test
+    fun `чистое переименование без hunk-ов создаётся и оставляет счётчики строк нулевыми`() {
+        val renamed = DomainFixtures.packet.copy(
+            files = listOf(
+                DomainFixtures.fileChangeRenamed.copy(hunks = emptyList(), addedLines = 0, removedLines = 0),
+            ),
+        )
+
+        val file = renamed.files.single()
+        assertEquals(FileChangeKind.RENAMED, file.changeKind)
+        assertEquals("src/auth/Login.kt", file.previousPath)
+        assertEquals(0, file.addedLines)
+        assertEquals(0, file.removedLines)
+        assertEquals(0, renamed.addedLines)
+        assertEquals(0, renamed.removedLines)
     }
 
     @Test
@@ -2798,6 +2816,11 @@ class DomainViolation(
  * Проверяет инварианты 1 и 5 § 4.1. Вызывается из `init`-блока [ChangePacket],
  * поэтому некорректный пакет нельзя ни создать, ни разобрать из сериализованного вида.
  *
+ * Помимо § 4.1 проверяется усиление: файл, чьё содержимое меняется
+ * ([FileChangeKind.ADDED], [FileChangeKind.MODIFIED]), обязан иметь хотя бы один
+ * hunk. Пустой список hunk'ов допустим только там, где содержимое не меняется:
+ * [FileChangeKind.DELETED] и [FileChangeKind.RENAMED] (чистый `git mv`).
+ *
  * Проверки разнесены по функциям с одним `throw` каждая: detekt ограничивает число
  * `throw` в функции, а исключение здесь — единственный способ сообщить о нарушении.
  */
@@ -2818,9 +2841,17 @@ private fun requireUniquePaths(files: List<FileChange>) {
     }
 }
 
-/** Инвариант 1: у hunk'а тот же файл, что у [FileChange], и изменённый файл не пуст. */
+/**
+ * Инвариант 1: у hunk'а тот же файл, что у [FileChange], и файл с изменяемым
+ * содержимым не пуст.
+ *
+ * Пустой список hunk'ов допустим только для [FileChangeKind.DELETED] (файл удалён
+ * целиком) и [FileChangeKind.RENAMED] (чистый `git mv`: путь меняется, содержимое —
+ * нет). Для [FileChangeKind.ADDED] и [FileChangeKind.MODIFIED] отсутствие hunk'ов —
+ * ошибка: изменённый файл обязан объяснить, что именно изменилось.
+ */
 private fun requireHunksBelongToFile(file: FileChange) {
-    if (file.changeKind != FileChangeKind.DELETED && file.hunks.isEmpty()) {
+    if (file.changeKind.requiresHunks() && file.hunks.isEmpty()) {
         throw DomainViolation(
             DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE,
             "Файл '${file.path}' изменён (${file.changeKind}), но не содержит ни одного hunk'а",
@@ -2832,6 +2863,12 @@ private fun requireHunksBelongToFile(file: FileChange) {
         "Hunk '${foreign.id.value}' указывает файл '${foreign.filePath}', " +
             "но лежит в FileChange '${file.path}'",
     )
+}
+
+/** Меняет ли этот вид изменения содержимое: только тогда пакет обязан нести hunk'и. */
+private fun FileChangeKind.requiresHunks(): Boolean = when (this) {
+    FileChangeKind.ADDED, FileChangeKind.MODIFIED -> true
+    FileChangeKind.DELETED, FileChangeKind.RENAMED -> false
 }
 
 /** Инвариант 5: риск пакета не ниже риска самого опасного его hunk'а. */
@@ -2877,7 +2914,7 @@ private fun requireRiskNotBelowHunks(files: List<FileChange>, risk: RiskLevel) {
 ./gradlew :domain:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 24 теста пройдено (`InvariantsTest` — 8, `DomainRoundTripTest` — 15, `PublicFieldsAreDocumentedTest` — 1).
+Ожидаемо: `BUILD SUCCESSFUL`, 26 тестов пройдено (`InvariantsTest` — 10, `DomainRoundTripTest` — 15, `PublicFieldsAreDocumentedTest` — 1).
 
 Обратить внимание: round-trip на `emptyPacket` и `packetLevelDecision` должны остаться зелёными — валидация не должна отвергать пакет без файлов.
 
@@ -2964,7 +3001,7 @@ private fun requireRiskNotBelowHunks(files: List<FileChange>, risk: RiskLevel) {
 ./gradlew :domain:jvmTest --tests 'dev.aide.domain.DomainRoundTripTest'
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, `DomainRoundTripTest` — 17 тестов; всего по домену после этого шага 26 (`DomainRoundTripTest` — 17, `InvariantsTest` — 8, `PublicFieldsAreDocumentedTest` — 1). Тест на инвариант настоящий: если снять `requireRiskNotBelowHunks`, он краснеет — разбор проходит успешно, и `assertFailsWith` не находит ожидаемого исключения, то есть проверяется именно валидация, а не разбор формата.
+Ожидаемо: `BUILD SUCCESSFUL`, `DomainRoundTripTest` — 17 тестов; всего по домену после этого шага 28 (`DomainRoundTripTest` — 17, `InvariantsTest` — 10, `PublicFieldsAreDocumentedTest` — 1). Тест на инвариант настоящий: если снять `requireRiskNotBelowHunks`, он краснеет — разбор проходит успешно, и `assertFailsWith` не находит ожидаемого исключения, то есть проверяется именно валидация, а не разбор формата.
 
 - [ ] **Шаг 7: коммит**
 
@@ -3365,7 +3402,7 @@ object RiskEvaluator {
 ./gradlew :domain:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 46 тестов пройдено (26 по домену до этой задачи — `DomainRoundTripTest` 17, `InvariantsTest` 8, `PublicFieldsAreDocumentedTest` 1 — плюс 20 из `RiskEvaluatorTest`).
+Ожидаемо: `BUILD SUCCESSFUL`, 48 тестов пройдено (28 по домену до этой задачи — `DomainRoundTripTest` 17, `InvariantsTest` 10, `PublicFieldsAreDocumentedTest` 1 — плюс 20 из `RiskEvaluatorTest`).
 
 - [ ] **Шаг 5: проверить, что LLM не может понизить риск**
 
@@ -3464,7 +3501,7 @@ class RiskEvaluatorContractTest {
 ./gradlew :domain:jvmTest --tests 'dev.aide.domain.risk.RiskEvaluatorContractTest'
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 2 теста. Полный прогон домена после этого шага — 48 тестов (26 прежних + 20 в `RiskEvaluatorTest` + 2 здесь).
+Ожидаемо: `BUILD SUCCESSFUL`, 2 теста. Полный прогон домена после этого шага — 50 тестов (28 прежних + 20 в `RiskEvaluatorTest` + 2 здесь).
 
 - [ ] **Шаг 6: коммит**
 
@@ -4398,7 +4435,7 @@ git commit -m "feat(protocol): бинарный CBOR-кодек, типизир�
 
 **Правило совместимости.** Несовпадение `major` означает несовместимость в любую сторону: частично работающий UI запрещён (§ 8.4), соединение закрывается, клиент показывает требование обновления. При совпадающем `major` хост обслуживает клиента с `minor` не выше своего; клиент с более высоким `minor` получает требование обновить хост.
 
-**Почему `HostMessage.Incompatible` не несёт текст для пользователя.** Сообщение протокола содержит только машиночитаемые данные — `reason` и `hostVersion`; `userMessage` из результата `check` по сети не передаётся. Потери данных здесь нет: `check` — чистая детерминированная функция, поэтому клиент, получив `Incompatible(reason, hostVersion)`, вызывает **ту же** `check(clientVersion, hostVersion)` с версией хоста из сообщения и получает ровно тот же текст. Так текст для пользователя строится одной реализацией и имеет один источник, а по проводу едут только версии и причина — их достаточно, чтобы любая сторона построила сообщение сама. `userMessage` существует как часть результата `check`, а не как поле протокола; если `check` на стороне клиента вернёт `Compatible` (хост закрыл соединение по другой причине), клиент показывает резервный текст с версией хоста. Именно так это и сделано в задаче 10 в `KtorHostConnection`.
+**Почему `HostMessage.Incompatible` не несёт текст для пользователя.** Сообщение протокола содержит только машиночитаемые данные — `reason` и `hostVersion`, — и текста для пользователя в слое протокола нет вообще. Причина не только в экономии: NFR-13 запрещает держать пользовательские строки вне ресурсного слоя, а `ProtocolCompatibility` — это протокол, поэтому `check` возвращает лишь `reason` и обе версии (`clientVersion`, `hostVersion`), а понятный текст клиент строит из ресурсов по причине и версиям (файл `client-ui/src/commonMain/kotlin/dev/aide/client/ui/strings/StateMessage.kt`, задача 16). Потери данных нет: по `reason` и версиям сторона строит ровно то же сообщение, а по проводу едут только причина и версия хоста — версию клиента клиент знает сам. Именно так это и сделано в задаче 10: `KtorHostConnection` по `HostMessage.Incompatible(reason, hostVersion)` кладёт в `ConnectionState.Incompatible(reason, clientVersion, hostVersion)`, а `Header` в `App.kt` показывает текст через `incompatibleMessage` и `stateMessageText`.
 
 - [ ] **Шаг 1: написать падающие тесты**
 
@@ -4410,7 +4447,6 @@ package dev.aide.protocol
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertTrue
 
 class ProtocolCompatibilityTest {
 
@@ -4438,7 +4474,6 @@ class ProtocolCompatibilityTest {
             ProtocolCompatibility.check(client = ProtocolVersion(1, 0), host = ProtocolVersion(2, 0)),
         )
         assertEquals(IncompatibilityReason.CLIENT_OUTDATED, result.reason)
-        assertTrue(result.userMessage.contains("обновите приложение", ignoreCase = true))
     }
 
     @Test
@@ -4447,7 +4482,6 @@ class ProtocolCompatibilityTest {
             ProtocolCompatibility.check(client = ProtocolVersion(3, 1), host = ProtocolVersion(2, 9)),
         )
         assertEquals(IncompatibilityReason.HOST_OUTDATED, result.reason)
-        assertTrue(result.userMessage.contains("обновите хост", ignoreCase = true))
     }
 
     @Test
@@ -4459,21 +4493,21 @@ class ProtocolCompatibilityTest {
     }
 
     @Test
-    fun `сообщение несовместимости содержит обе версии, чтобы пользователь видел, что обновлять`() {
+    fun `результат несовместимости несёт обе версии, чтобы UI показал, что обновлять`() {
         val result = assertIs<ProtocolCompatibility.Incompatible>(
             ProtocolCompatibility.check(client = ProtocolVersion(1, 5), host = ProtocolVersion(1, 2)),
         )
-        assertTrue(result.userMessage.contains("1.5"))
-        assertTrue(result.userMessage.contains("1.2"))
+        assertEquals(ProtocolVersion(1, 5), result.clientVersion)
+        assertEquals(ProtocolVersion(1, 2), result.hostVersion)
     }
 
     @Test
-    fun `сообщение о несовпадении major называет обе версии`() {
+    fun `несовпадение major тоже называет обе версии`() {
         val result = assertIs<ProtocolCompatibility.Incompatible>(
             ProtocolCompatibility.check(client = ProtocolVersion(1, 0), host = ProtocolVersion(2, 0)),
         )
-        assertTrue(result.userMessage.contains("1.0"))
-        assertTrue(result.userMessage.contains("2.0"))
+        assertEquals(ProtocolVersion(1, 0), result.clientVersion)
+        assertEquals(ProtocolVersion(2, 0), result.hostVersion)
     }
 
     @Test
@@ -4481,7 +4515,8 @@ class ProtocolCompatibilityTest {
         val incompatible = ProtocolCompatibility.toHostMessage(
             result = ProtocolCompatibility.Incompatible(
                 reason = IncompatibilityReason.CLIENT_OUTDATED,
-                userMessage = "Обновите приложение",
+                clientVersion = ProtocolVersion(1, 0),
+                hostVersion = ProtocolVersion(2, 0),
             ),
             hostVersion = ProtocolVersion(2, 0),
         )
@@ -4519,33 +4554,30 @@ object ProtocolCompatibility {
     /** Версии совместимы. */
     data object Compatible : ProtocolCompatibilityResult
 
-    /** Версии несовместимы; [userMessage] показывается пользователю как есть. */
+    /** Версии несовместимы; текста здесь нет — его строит UI по [reason] и версиям (NFR-13). */
     data class Incompatible(
         /** Машинночитаемая причина. */
         val reason: IncompatibilityReason,
-        /** Текст для пользователя: что обновить и до чего. */
-        val userMessage: String,
+        /** Версия клиента на момент проверки. */
+        val clientVersion: ProtocolVersion,
+        /** Версия хоста на момент проверки. */
+        val hostVersion: ProtocolVersion,
     ) : ProtocolCompatibilityResult
 
-    /** Сравнивает версии клиента и хоста. */
+    /**
+     * Сравнивает версии клиента и хоста.
+     *
+     * Возвращает только машиночитаемую причину и версии: понятный пользователю текст
+     * строит клиентский UI из ресурсов (NFR-13), поэтому по сети он не передаётся —
+     * [HostMessage.Incompatible] несёт лишь причину и версию хоста.
+     */
     fun check(client: ProtocolVersion, host: ProtocolVersion): ProtocolCompatibilityResult = when {
-        client.major < host.major -> Incompatible(
-            reason = IncompatibilityReason.CLIENT_OUTDATED,
-            userMessage = "Версия протокола не поддерживается: обновите приложение " +
-                "(клиент $client, хост $host).",
-        )
+        client.major < host.major -> Incompatible(IncompatibilityReason.CLIENT_OUTDATED, client, host)
 
         // После первой ветки major у клиента не меньше, чем у хоста, значит эта ветка — про «клиент новее».
-        client.major > host.major -> Incompatible(
-            reason = IncompatibilityReason.HOST_OUTDATED,
-            userMessage = "Версия протокола не поддерживается: обновите хост " +
-                "(клиент $client, хост $host).",
-        )
+        client.major > host.major -> Incompatible(IncompatibilityReason.HOST_OUTDATED, client, host)
 
-        client.minor > host.minor -> Incompatible(
-            reason = IncompatibilityReason.HOST_OUTDATED,
-            userMessage = "Клиент новее хоста: обновите хост (клиент $client, хост $host).",
-        )
+        client.minor > host.minor -> Incompatible(IncompatibilityReason.HOST_OUTDATED, client, host)
 
         else -> Compatible
     }
@@ -4587,6 +4619,7 @@ git commit -m "feat(protocol): проверка совместимости ве�
 - Создать: `client-state/src/commonMain/kotlin/dev/aide/client/state/HostConnection.kt`
 - Создать: `client-state/src/commonMain/kotlin/dev/aide/client/state/KtorHostConnection.kt`
 - Создать: `client-state/src/commonMain/kotlin/dev/aide/client/state/HostClient.kt`
+- Тест: `client-state/src/jvmTest/kotlin/dev/aide/client/state/HostClientRequestIdTest.kt`
 - Создать: `host-core/src/main/kotlin/dev/aide/host/server/ProtocolServer.kt`
 - Создать: `host-core/src/main/kotlin/dev/aide/host/server/ClientSession.kt`
 - Создать: `host-core/src/main/kotlin/dev/aide/host/server/Ports.kt`
@@ -4594,7 +4627,7 @@ git commit -m "feat(protocol): проверка совместимости ве�
 - Тест: `host-core/src/test/kotlin/dev/aide/host/server/ReconnectTest.kt`
 - Изменить: `client-state/build.gradle.kts`, `host-core/build.gradle.kts`
 
-**Три требования, которые здесь закрываются:** клиент переживает обрыв сети и восстанавливает сессию без перезапуска приложения; после реконнекта клиент получает актуальное состояние, а не продолжает с устаревшим; повтор изменяющего запроса с тем же `RequestId` не выполняет операцию второй раз.
+**Четыре требования, которые здесь закрываются:** клиент переживает обрыв сети и восстанавливает сессию без перезапуска приложения; после реконнекта клиент получает актуальное состояние — состояние хоста, дерево и открытый файл, — а не продолжает с устаревшим; повтор изменяющего запроса с тем же `RequestId` не выполняет операцию второй раз, причём в том числе после обрыва связи; события хоста без запроса (`WorkspaceChanged`, `HostShuttingDown`) доходят до клиента и меняют то, что он показывает.
 
 - [ ] **Шаг 1: написать падающий тест на кэш идемпотентности**
 
@@ -4744,6 +4777,8 @@ class RequestDedupCache(private val capacity: Int = DEFAULT_CAPACITY) {
 ```kotlin
 package dev.aide.client.state
 
+import dev.aide.protocol.IncompatibilityReason
+import dev.aide.protocol.ProtocolVersion
 import dev.aide.protocol.SessionId
 
 /**
@@ -4774,10 +4809,14 @@ sealed interface ConnectionState {
         val nextRetryMillis: Long,
     ) : ConnectionState
 
-    /** Версии протокола несовместимы; UI показывает [userMessage] и не даёт работать. */
+    /** Версии протокола несовместимы; UI строит [ConnectionState.Incompatible] текст из ресурсов. */
     data class Incompatible(
-        /** Что обновить и до какой версии. */
-        val userMessage: String,
+        /** Машинночитаемая причина: какую сторону и почему нужно обновить. */
+        val reason: IncompatibilityReason,
+        /** Версия клиента этой сборки. */
+        val clientVersion: ProtocolVersion,
+        /** Версия хоста, полученная при подключении. */
+        val hostVersion: ProtocolVersion,
     ) : ConnectionState
 
     /** Соединение закрыто окончательно: остановлено пользователем или хост отверг сессию. */
@@ -4841,7 +4880,6 @@ import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.DecodeResult
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolCodec
-import dev.aide.protocol.ProtocolCompatibility
 import dev.aide.protocol.ProtocolVersion
 import dev.aide.protocol.RequestId
 import io.ktor.client.HttpClient
@@ -5018,14 +5056,11 @@ class KtorHostConnection(
                     }
 
                     is HostMessage.Incompatible -> {
-                        val userMessage = ProtocolCompatibility.check(
-                            client = clientVersion,
-                            host = message.hostVersion,
-                        ).let { result ->
-                            (result as? ProtocolCompatibility.Incompatible)?.userMessage
-                                ?: "Версии протокола несовместимы (хост ${message.hostVersion})"
-                        }
-                        _state.value = ConnectionState.Incompatible(userMessage)
+                        _state.value = ConnectionState.Incompatible(
+                            reason = message.reason,
+                            clientVersion = clientVersion,
+                            hostVersion = message.hostVersion,
+                        )
                     }
 
                     else -> {
@@ -5089,11 +5124,13 @@ package dev.aide.client.state
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreePayload
+import dev.aide.protocol.HostEvent
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
+import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -5106,6 +5143,10 @@ data class HostSession(
     val workspaceId: WorkspaceId? = null,
     /** Состояние хоста: ветка, корень, режим. */
     val hostState: HostStatePayload? = null,
+    /** Последнее загруженное дерево воркспейса; null, пока дерево не запрошено. */
+    val tree: FileTreePayload? = null,
+    /** Последний открытый файл; null, если файл не выбран. */
+    val openFile: FileContentPayload? = null,
     /** Последняя ошибка запроса; null, если ошибок нет. */
     val lastError: ProtocolError? = null,
 )
@@ -5115,26 +5156,56 @@ data class HostSession(
  *
  * Отдельно решает задачу «после реконнекта клиент получает актуальное состояние»:
  * при переходе соединения в [ConnectionState.Connected] с признаком `reconnected`
- * клиент заново запрашивает состояние открытого воркспейса, а не полагается на
- * данные, полученные до обрыва.
+ * клиент заново запрашивает состояние открытого воркспейса, дерево и открытый файл,
+ * а не полагается на данные, полученные до обрыва.
+ *
+ * @param requestIdPrefix префикс идентификаторов запросов этой сессии клиента. Счётчик
+ *   внутри одного запуска обеспечивает уникальность запросов, а префикс — уникальность
+ *   между запусками: кэш ответов живёт столько же, сколько хост, и без префикса новый
+ *   процесс клиента повторил бы чужой `req-1` и получил чужой ответ. По умолчанию
+ *   случайный; в тестах задаётся явно.
  */
 class HostClient(
     private val connection: HostConnection,
     private val scope: CoroutineScope,
+    private val requestIdPrefix: String = newRequestIdPrefix(),
 ) {
 
     private val _session = MutableStateFlow(HostSession())
     val session: StateFlow<HostSession> = _session.asStateFlow()
 
+    private val _hostShuttingDown = MutableStateFlow(false)
+
+    /** true, если хост прислал [HostEvent.HostShuttingDown]; сбрасывается после реконнекта. */
+    val hostShuttingDown: StateFlow<Boolean> = _hostShuttingDown.asStateFlow()
+
     private var sequence = 0
 
-    /** Подписывается на состояние соединения и выполняет дозапрос после реконнекта. */
+    /**
+     * Подписывается на состояние соединения и события хоста.
+     *
+     * Событие [HostEvent.WorkspaceChanged] заставляет перезапросить состояние открытого
+     * воркспейса; [HostEvent.HostShuttingDown] сразу помечает сессию, чтобы UI перешёл
+     * в состояние «нет связи», не дожидаясь закрытия сокета.
+     */
     fun start() {
         connection.start()
         scope.launch {
             connection.state.collect { state ->
                 if (state is ConnectionState.Connected && state.reconnected) {
-                    refreshAfterReconnect()
+                    refreshWorkspace()
+                }
+            }
+        }
+        scope.launch {
+            connection.events.collect { message ->
+                val event = (message as? HostMessage.Event)?.event ?: return@collect
+                when (event) {
+                    is HostEvent.WorkspaceChanged -> {
+                        if (event.workspaceId == _session.value.workspaceId) refreshWorkspace()
+                    }
+
+                    HostEvent.HostShuttingDown -> _hostShuttingDown.value = true
                 }
             }
         }
@@ -5159,7 +5230,7 @@ class HostClient(
         }
     }
 
-    /** Запрашивает дерево файлов открытого воркспейса. */
+    /** Запрашивает дерево файлов открытого воркспейса; результат сохраняется в [session]. */
     suspend fun fileTree(): Result<FileTreePayload> = call { workspaceId ->
         val requestId = nextRequestId()
         when (val response = connection.request(ClientMessage.FileTree(requestId, workspaceId))) {
@@ -5167,9 +5238,9 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос дерева")))
         }
-    }
+    }.onSuccess { tree -> _session.value = _session.value.copy(tree = tree) }
 
-    /** Запрашивает содержимое файла. */
+    /** Запрашивает содержимое файла; результат сохраняется в [session] как открытый файл. */
     suspend fun fileContent(path: String): Result<FileContentPayload> = call { workspaceId ->
         val requestId = nextRequestId()
         when (val response = connection.request(ClientMessage.FileContent(requestId, workspaceId, path))) {
@@ -5177,9 +5248,14 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос файла")))
         }
+    }.onSuccess { content -> _session.value = _session.value.copy(openFile = content) }
+
+    /** Закрывает выбранный файл: после этого реконнект его уже не перезапрашивает. */
+    fun closeFile() {
+        _session.value = _session.value.copy(openFile = null)
     }
 
-    /** Запрашивает состояние хоста: ветку, корень, режим. */
+    /** Запрашивает состояние хоста: ветку, корень, режим; результат сохраняется в [session]. */
     suspend fun hostState(): Result<HostStatePayload> = call { workspaceId ->
         val requestId = nextRequestId()
         when (val response = connection.request(ClientMessage.HostState(requestId, workspaceId))) {
@@ -5187,27 +5263,50 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос состояния")))
         }
-    }
+    }.onSuccess { state -> _session.value = _session.value.copy(hostState = state, lastError = null) }
 
     private suspend fun <T> call(block: suspend (WorkspaceId) -> Result<T>): Result<T> {
         val workspaceId = _session.value.workspaceId
-            ?: return Result.failure(HostCallException(ProtocolError.NotFound("воркспейс не открыт")))
+            ?: return Result.failure(HostCallException(ProtocolError.Internal("воркспейс не открыт")))
         return block(workspaceId).onFailure { error ->
             if (error is HostCallException) _session.value = _session.value.copy(lastError = error.error)
         }
     }
 
-    private suspend fun refreshAfterReconnect() {
-        val workspaceId = _session.value.workspaceId ?: return
-        hostState().onSuccess { _session.value = _session.value.copy(hostState = it, lastError = null) }
+    /**
+     * Дозапрашивает состояние хоста, дерево и открытый файл.
+     *
+     * Нужно и после реконнекта, и по событию [HostEvent.WorkspaceChanged]: пока связи
+     * не было или воркспейс менялся, дерево и содержимое открытого файла могли устареть,
+     * и экран показал бы старый кэш (T-0.10).
+     */
+    private suspend fun refreshWorkspace() {
+        if (_session.value.workspaceId == null) return
+        _hostShuttingDown.value = false
+        hostState()
+        fileTree()
+        _session.value.openFile?.path?.let { path -> fileContent(path) }
     }
 
-    private fun nextRequestId(): RequestId = RequestId("req-${++sequence}")
+    private fun nextRequestId(): RequestId = RequestId("$requestIdPrefix-${++sequence}")
+
+    companion object {
+        /** Основание системы счисления для короткого префикса. */
+        private const val HEX_RADIX = 16
+
+        /**
+         * Случайный префикс запуска клиента: делает идентификаторы запросов уникальными
+         * между перезапусками процесса, пока живёт кэш ответов на хосте.
+         */
+        private fun newRequestIdPrefix(): String = "req-" + Random.nextLong().toULong().toString(HEX_RADIX)
+    }
 }
 
 /** Ошибка вызова хоста, несущая типизированную причину из протокола. */
 class HostCallException(val error: ProtocolError) : Exception(error.toString())
 ```
+
+**Почему клиент держит дерево и открытый файл в `HostSession`.** После реконнекта данные нужно обновить, но `App` не знает, когда это произошло: `fileTree()` и `fileContent()` могли быть вызваны не пользователем, а самим `HostClient` — `refreshWorkspace()` по признаку `reconnected` или по событию `WorkspaceChanged`. Поэтому успешные ответы оседают в `HostClient.session`, а `App` подписывается на неё (`client.session.collect { state.onHostSession(it) }`) — это единственный канал, по которому обновления доходят до экрана. `onHostSession` сравнивает данные по ссылке, чтобы повторная публикация сессии по другому поводу не затирала показанную ошибку. `hostState()` тоже пишет результат в сессию: без этого ветка в шапке не обновилась бы после реконнекта, и сквозной тест этапа завис бы в ожидании «Ветка: …». `closeFile()` сбрасывает открытый файл, чтобы реконнект его больше не перезапрашивал, а `refreshWorkspace()` дозапрашивает состояние хоста, дерево и открытый файл — именно этого требует «актуальное состояние после обрыва».
 
 - [ ] **Шаг 8: написать серверную часть протокола**
 
@@ -5218,6 +5317,7 @@ package dev.aide.host.server
 
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.DecodeResult
+import dev.aide.protocol.HostEvent
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolCodec
 import dev.aide.protocol.ProtocolCompatibility
@@ -5247,12 +5347,17 @@ fun interface ClientMessageHandler {
  * запроса: [onBytes] возвращает false, вызывающий код (см. [ProtocolServer]) закрывает
  * WebSocket, и дальнейшие кадры не обрабатываются вовсе — § 8.4 требует явной ошибки
  * вместо частично работающего соединения.
+ *
+ * [dedup] передаётся снаружи и не имеет значения по умолчанию: кэш обязан жить
+ * дольше сессии, иначе реконнект его теряет. Владелец кэша — [ProtocolServer].
  */
 class ClientSession(
     private val handler: ClientMessageHandler,
     private val hostVersion: ProtocolVersion,
     private val send: suspend (ByteArray) -> Unit,
-    private val dedup: RequestDedupCache = RequestDedupCache(),
+    private val dedup: RequestDedupCache,
+    /** Разослать событие всем сессиям; используется после открытия воркспейса. */
+    private val broadcast: suspend (HostEvent) -> Unit,
 ) {
 
     private val logger: Logger = LoggerFactory.getLogger(ClientSession::class.java)
@@ -5325,6 +5430,11 @@ class ClientSession(
         }
     }
 
+    /** Отправляет уже закодированное сообщение этой сессии; используется для событий хоста. */
+    suspend fun deliver(bytes: ByteArray) {
+        if (!closeRequested) send(bytes)
+    }
+
     private suspend fun sendUnGreetedFailure(requestId: RequestId?) {
         send(
             ProtocolCodec.encode(
@@ -5343,10 +5453,16 @@ class ClientSession(
             logger.info("Повтор запроса $requestId — отдаю сохранённый ответ")
             send(cached)
         } else {
-            val encoded = ProtocolCodec.encode(handler.handle(message))
+            val response = handler.handle(message)
+            val encoded = ProtocolCodec.encode(response)
             dedup.put(requestId, encoded)
             handledRequests += 1
             send(encoded)
+            // Открытие воркспейса меняет то, что видит клиент: остальные сессии (в том числе
+            // эта) получают событие и перезапрашивают состояние (T-0.8, события хоста).
+            if (response is HostMessage.WorkspaceOpened) {
+                broadcast(HostEvent.WorkspaceChanged(response.workspaceId))
+            }
         }
     }
 }
@@ -5377,8 +5493,12 @@ fun freeLoopbackPort(): Int = ServerSocket(0).use { it.localPort }
 ```kotlin
 package dev.aide.host.server
 
+import dev.aide.protocol.HostEvent
+import dev.aide.protocol.HostMessage
 import dev.aide.protocol.HostMode
+import dev.aide.protocol.ProtocolCodec
 import dev.aide.protocol.ProtocolVersion
+import dev.aide.protocol.RequestDedupCache
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -5391,6 +5511,9 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 
 /**
@@ -5398,6 +5521,10 @@ import org.slf4j.LoggerFactory
  *
  * Сервер не знает, локальный он или удалённый: это свойство того, кто его запустил
  * (задача 13). Благодаря этому клиент не различает режимы.
+ *
+ * [dedup] принадлежит серверу, а не сессии: обрыв связи закрывает сессию, но кэш
+ * ответов обязан пережить реконнект — иначе повтор запроса с тем же `requestId`
+ * после обрыва выполнится второй раз, что запрещает § 8.4 и T-0.10.
  */
 class ProtocolServer(
     private val handler: ClientMessageHandler,
@@ -5405,11 +5532,15 @@ class ProtocolServer(
     private val mode: HostMode = HostMode.LOCAL,
     private val port: Int = freeLoopbackPort(),
     private val host: String = "127.0.0.1",
+    private val dedup: RequestDedupCache = RequestDedupCache(),
 ) {
 
     private val logger = LoggerFactory.getLogger(ProtocolServer::class.java)
 
     private var engine: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration>? = null
+
+    /** Активные сессии: по ним рассылаются события хоста без запроса. */
+    private val sessions: MutableSet<ClientSession> = ConcurrentHashMap.newKeySet()
 
     /** Порт, на котором фактически слушает сервер. Действителен после [start]. */
     val boundPort: Int get() = port
@@ -5433,7 +5564,10 @@ class ProtocolServer(
                         handler = handler,
                         hostVersion = hostVersion,
                         send = { bytes -> send(Frame.Binary(true, bytes)) },
+                        dedup = dedup,
+                        broadcast = { event -> broadcast(event) },
                     )
+                    sessions += session
                     logger.info("Клиент подключился, сессия ${session.sessionId.value}, режим $mode")
                     var closeReason = CloseReason(CloseReason.Codes.NORMAL, "Сессия завершена")
                     try {
@@ -5451,6 +5585,7 @@ class ProtocolServer(
                             }
                         }
                     } finally {
+                        sessions -= session
                         close(closeReason)
                         logger.info(
                             "Сессия ${session.sessionId.value} закрыта ($closeReason), " +
@@ -5465,10 +5600,32 @@ class ProtocolServer(
         logger.info("Хост слушает $endpoint, режим $mode")
     }
 
-    /** Останавливает сервер и освобождает порт. */
+    /**
+     * Рассылает событие всем активным сессиям.
+     *
+     * Ошибка или зависшая отправка отдельной сессии не должна мешать остальным и не
+     * роняет сервер: у каждой сессии свой таймаут, закрывшаяся сессия просто пропускается.
+     */
+    private suspend fun broadcast(event: HostEvent) {
+        val encoded = ProtocolCodec.encode(HostMessage.Event(event))
+        sessions.forEach { session ->
+            withTimeoutOrNull(BROADCAST_TIMEOUT_MILLIS) { runCatching { session.deliver(encoded) } }
+        }
+    }
+
+    /**
+     * Останавливает сервер и освобождает порт.
+     *
+     * Перед остановкой клиентам посылается [HostEvent.HostShuttingDown]: по нему UI
+     * переходит в состояние «нет связи» раньше, чем закроется сокет (§ 6.1). Рассылка
+     * ограничена по времени, поэтому остановка не может зависнуть на неотзывчивом клиенте.
+     */
     fun stop() {
+        if (engine == null) return
+        runBlocking { broadcast(HostEvent.HostShuttingDown) }
         engine?.stop(gracePeriodMillis = SHUTDOWN_GRACE_MILLIS, timeoutMillis = SHUTDOWN_TIMEOUT_MILLIS)
         engine = null
+        sessions.clear()
     }
 
     companion object {
@@ -5483,11 +5640,18 @@ class ProtocolServer(
 
         /** Верхняя граница остановки сервера. */
         private const val SHUTDOWN_TIMEOUT_MILLIS: Long = 1_000
+
+        /** Сколько ждать отправки события одной сессии, чтобы остановка не зависла. */
+        private const val BROADCAST_TIMEOUT_MILLIS: Long = 500
     }
 }
 ```
 
 **Про API Ktor.** Версия зафиксирована каталогом (`ktor = "3.0.3"` в `gradle/libs.versions.toml`), поэтому код написан под API 3.x, а не 2.x: в `WebSockets` — `pingPeriodMillis`/`timeoutMillis` (`Long`) вместо `pingPeriod`/`timeout` из `kotlin.time.Duration`, вместо `sendClose()` — `close(CloseReason(...))`, а тип движка — `EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration>`, не `ApplicationEngine`. На клиенте из-за того же API нужен явный `import io.ktor.websocket.close` (шаг 6).
+
+**Почему кэш идемпотентности принадлежит серверу, а не сессии.** Обрыв связи закрывает сессию, но требование T-0.10 написано именно про повтор запроса **после обрыва**: клиент не знает, дошёл ли запрос. Если бы `RequestDedupCache` создавался внутри `ClientSession` (как было в первой редакции, со значением по умолчанию), реконнект заводил бы новую сессию с пустым кэшем, и повтор выполнил бы операцию второй раз. Поэтому кэш создаётся в `ProtocolServer` и передаётся в каждую сессию; у параметра `dedup` нет значения по умолчанию — иначе легко вернуть прежнее поведение, и компилятор об этом не предупредит. Это же проверяет тест `повтор запроса с тем же идентификатором после обрыва выполняется один раз`.
+
+**Про события хоста.** `HostEvent` здесь перестаёт быть заготовкой: `ProtocolServer` держит активные сессии и рассылает им события. После успешного `OpenWorkspace` уходит `WorkspaceChanged(workspaceId)` — по нему клиент перезапрашивает состояние открытого воркспейса, дерево и файл. При остановке сервера (`ProtocolServer.stop()`) клиентам уходит `HostShuttingDown`, и на каждую отправку отпущено 500 мс (`BROADCAST_TIMEOUT_MILLIS`): без таймаута остановка могла бы зависнуть на неотзывчивом клиенте, а остановка хоста не должна ждать никого. На клиенте `HostClient.start()` подписан на `connection.events`: `WorkspaceChanged` своего воркспейса запускает `refreshWorkspace()`, а `HostShuttingDown` выставляет `hostShuttingDown` — по нему UI сразу показывает «нет связи», не дожидаясь закрытия сокета.
 
 - [ ] **Шаг 9: подключить зависимости**
 
@@ -5556,14 +5720,11 @@ kotlin {
         jvmMain.dependencies {
             implementation(libs.ktor.client.cio)
         }
-        commonTest.dependencies {
-            implementation(libs.kotlinx.coroutines.test)
-        }
     }
 }
 ```
 
-`host-core` — JVM-модуль, поэтому `kotlinJvm` из каталога плагинов, а не `aide.kmp-library`. Добавить в каталог зависимость `kotlinx-coroutines-test`. Koin приходит в `host-core` строкой `implementation(libs.koin.core)`: он нужен задаче 13, где `HostApp` собирает граф хоста.
+`host-core` — JVM-модуль, поэтому `kotlinJvm` из каталога плагинов, а не `aide.kmp-library`. Koin приходит в `host-core` строкой `implementation(libs.koin.core)`: он нужен задаче 13, где `HostApp` собирает граф хоста.
 
 - [ ] **Шаг 10: написать интеграционный тест «запрос-ответ и идемпотентность»**
 
@@ -5684,14 +5845,17 @@ class ProtocolServerTest {
         scope.cancel()
     }
 
-    private fun newClient(): Pair<KtorHostConnection, HostClient> {
+    private fun newClient(
+        endpoint: String = server.endpoint,
+        prefix: String = "client",
+    ): Pair<KtorHostConnection, HostClient> {
         val connection = KtorHostConnection(
-            endpoint = server.endpoint,
+            endpoint = endpoint,
             scope = scope,
             httpClient = HttpClient { install(WebSockets) },
         )
         connections += connection
-        return connection to HostClient(connection, scope)
+        return connection to HostClient(connection, scope, requestIdPrefix = prefix)
     }
 
     private suspend fun awaitConnected(connection: KtorHostConnection) {
@@ -5726,6 +5890,14 @@ class ProtocolServerTest {
             awaitConnected(connection)
             client.openWorkspace("/projects/aide")
 
+            // Открытие воркспейса рассылает событие, и клиент обновляет дерево сам:
+            // дождёмся этого, иначе счётчик обработчика менялся бы во время проверки.
+            val before = withTimeoutOrNull(5_000) {
+                while (client.session.value.tree == null) delay(20)
+                treeCalls.get()
+            }
+            assertNotNull(before, "Клиент не обновил дерево после открытия воркспейса")
+
             val requestId = RequestId("dup-1")
             val first = connection.request(ClientMessage.FileTree(requestId, workspaceId))
             val second = connection.request(ClientMessage.FileTree(requestId, workspaceId))
@@ -5733,7 +5905,81 @@ class ProtocolServerTest {
             assertIs<HostMessage.Tree>(first)
             assertIs<HostMessage.Tree>(second)
             assertEquals(first, second, "Повтор должен вернуть тот же ответ")
-            assertEquals(1, treeCalls.get(), "Обработчик должен выполниться ровно один раз")
+            assertEquals(before + 1, treeCalls.get(), "Повторный запрос не должен выполнить обработчик второй раз")
+        }
+    }
+
+    @Test
+    fun `остановка сервера доносит до клиента событие HostShuttingDown`() {
+        runBlocking {
+            val stopping = ProtocolServer(handler = handler, port = freeLoopbackPort())
+            stopping.start()
+            try {
+                val (connection, client) = newClient(stopping.endpoint, prefix = "shutdown-client")
+                client.start()
+                awaitConnected(connection)
+                client.openWorkspace("/projects/aide")
+
+                stopping.stop()
+
+                val observed = withTimeoutOrNull(5_000) {
+                    while (!client.hostShuttingDown.value) delay(20)
+                    true
+                }
+                assertTrue(observed == true, "Клиент должен получить событие HostShuttingDown")
+            } finally {
+                stopping.stop()
+            }
+        }
+    }
+
+    @Test
+    fun `клиенты с разными префиксами сессии не получают чужой ответ`() {
+        runBlocking {
+            // Идентификаторы обоих клиентов начинаются с одного порядкового номера:
+            // различает их только префикс сессии, иначе кэш сервера отдал бы второму
+            // клиенту ответ первого (кэш живёт весь срок хоста).
+            val opened = AtomicInteger(0)
+            val shared = ProtocolServer(
+                handler = ClientMessageHandler { message ->
+                    when (message) {
+                        is ClientMessage.OpenWorkspace -> HostMessage.WorkspaceOpened(
+                            message.requestId,
+                            WorkspaceId("ws-${opened.incrementAndGet()}"),
+                        )
+
+                        is ClientMessage.FileTree -> HostMessage.Tree(
+                            message.requestId,
+                            FileTreePayload(workspaceId, "/projects/aide", emptyList(), truncated = false),
+                        )
+
+                        else -> HostMessage.Failure(
+                            requestId = RequestId("unexpected"),
+                            error = ProtocolError.NotImplemented("не нужен этому тесту"),
+                        )
+                    }
+                },
+                port = freeLoopbackPort(),
+            )
+            shared.start()
+            try {
+                val (connectionA, clientA) = newClient(shared.endpoint, prefix = "client-a")
+                val (connectionB, clientB) = newClient(shared.endpoint, prefix = "client-b")
+                clientA.start()
+                clientB.start()
+                awaitConnected(connectionA)
+                awaitConnected(connectionB)
+
+                val first = clientA.openWorkspace("/projects/aide")
+                val second = clientB.openWorkspace("/projects/aide")
+
+                assertNotNull(first)
+                assertNotNull(second)
+                assertTrue(first != second, "Клиенты с одинаковым номером запроса должны получить свои воркспейсы")
+                assertEquals(2, opened.get(), "Открытие воркспейса должно выполниться для каждого клиента")
+            } finally {
+                shared.stop()
+            }
         }
     }
 
@@ -5907,6 +6153,104 @@ private class ClientHandlerReturningEvent : ClientMessageHandler {
 
 **Замечание к тесту «ответ неожиданного типа не роняет клиента».** Он проверяет ветку «ответ пришёл, но не тот, что ждали»: клиент получает событие вместо ответа и не путает его с ответом, не роняясь. Настоящая толерантность к *неизвестному типу* проверена в `ProtocolCodecTest` (задача 8): там байты с чужим именем типа превращаются в `DecodeResult.Ignored`. Держать обе проверки раздельно честнее, чем имитировать неизвестный тип через известное сообщение.
 
+`client-state/src/jvmTest/kotlin/dev/aide/client/state/HostClientRequestIdTest.kt` — идентификаторы запросов уникальны между запусками клиента: кэш ответов (шаг 8) живёт весь срок хоста, поэтому счётчик без префикса при перезапуске клиента повторил бы `req-1` и получил бы чужой ответ. Тест проверяет и uniqueness внутри запуска, и то, что префикс по умолчанию различает клиентов:
+
+```kotlin
+package dev.aide.client.state
+
+import dev.aide.protocol.ClientMessage
+import dev.aide.protocol.HostMessage
+import dev.aide.protocol.SessionId
+import dev.aide.protocol.WorkspaceId
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.runBlocking
+
+/**
+ * Идентификаторы запросов уникальны между запусками клиента: кэш ответов живёт на хосте
+ * весь его срок, поэтому новый клиентский процесс не должен повторять прежний `req-1`
+ * и получать чужой ответ.
+ */
+class HostClientRequestIdTest {
+
+    private class RecordingConnection : HostConnection {
+
+        override val state: StateFlow<ConnectionState> =
+            MutableStateFlow<ConnectionState>(ConnectionState.Connected(SessionId("s"), reconnected = false))
+
+        override val events: SharedFlow<HostMessage> = MutableSharedFlow()
+
+        val sent = mutableListOf<ClientMessage>()
+
+        override fun start() = Unit
+
+        override suspend fun stop() = Unit
+
+        override suspend fun request(message: ClientMessage, timeoutMillis: Long): HostMessage {
+            sent += message
+            return when (message) {
+                is ClientMessage.OpenWorkspace ->
+                    HostMessage.WorkspaceOpened(message.requestId, WorkspaceId("ws"))
+
+                else -> error("Неожиданный запрос: $message")
+            }
+        }
+    }
+
+    @Test
+    fun `разные запуски клиента не повторяют идентификатор при том же номере`() = runBlocking {
+        val first = RecordingConnection()
+        val second = RecordingConnection()
+
+        HostClient(first, this, requestIdPrefix = "run-a").openWorkspace("/repo")
+        HostClient(second, this, requestIdPrefix = "run-b").openWorkspace("/repo")
+
+        val firstId = (first.sent.single() as ClientMessage.OpenWorkspace).requestId
+        val secondId = (second.sent.single() as ClientMessage.OpenWorkspace).requestId
+
+        assertEquals("run-a-1", firstId.value)
+        assertEquals("run-b-1", secondId.value)
+        assertNotEquals(firstId, secondId, "Один и тот же порядковый номер не должен совпадать между запусками")
+    }
+
+    @Test
+    fun `внутри одного запуска номера запросов уникальны`() = runBlocking {
+        val connection = RecordingConnection()
+        val client = HostClient(connection, this, requestIdPrefix = "run")
+
+        client.openWorkspace("/repo")
+        client.openWorkspace("/repo")
+
+        val ids = connection.sent.map { (it as ClientMessage.OpenWorkspace).requestId.value }
+        assertEquals(listOf("run-1", "run-2"), ids)
+    }
+
+    @Test
+    fun `префикс по умолчанию не пуст и различает клиентов`() = runBlocking {
+        val first = RecordingConnection()
+        val second = RecordingConnection()
+
+        HostClient(first, this).openWorkspace("/repo")
+        HostClient(second, this).openWorkspace("/repo")
+
+        val firstPrefix = requestIdOf(first).substringBeforeLast('-')
+        val secondPrefix = requestIdOf(second).substringBeforeLast('-')
+
+        assertTrue(firstPrefix.isNotBlank(), "Случайный префикс не должен быть пустым: $firstPrefix")
+        assertNotEquals(firstPrefix, secondPrefix, "Случайные префиксы двух клиентов не должны совпадать")
+    }
+
+    private fun requestIdOf(connection: RecordingConnection): String =
+        (connection.sent.single() as ClientMessage.OpenWorkspace).requestId.value
+}
+```
+
 - [ ] **Шаг 11: написать тест на реконнект и актуальность состояния**
 
 `host-core/src/test/kotlin/dev/aide/host/server/ReconnectTest.kt`:
@@ -5918,6 +6262,7 @@ import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.KtorHostConnection
 import dev.aide.protocol.ClientMessage
+import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreeEntry
 import dev.aide.protocol.FileTreePayload
 import dev.aide.protocol.HostMessage
@@ -5928,6 +6273,7 @@ import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -5951,6 +6297,9 @@ class ReconnectTest {
     /** Меняемое содержимое ответа: им проверяется, что клиент не остаётся со старым состоянием. */
     @Volatile
     private var branchName = "master"
+
+    /** Сколько раз обработчик реально выполнил запрос файла: по нему видна идемпотентность. */
+    private val fileContentCalls = AtomicInteger(0)
 
     private val handler = ClientMessageHandler { message ->
         when (message) {
@@ -5980,10 +6329,19 @@ class ReconnectTest {
                 ),
             )
 
-            is ClientMessage.FileContent -> HostMessage.Failure(
-                requestId = message.requestId,
-                error = ProtocolError.NotImplemented("файл не нужен этому тесту"),
-            )
+            is ClientMessage.FileContent -> {
+                fileContentCalls.incrementAndGet()
+                HostMessage.Content(
+                    requestId = message.requestId,
+                    content = FileContentPayload(
+                        workspaceId = workspaceId,
+                        path = message.path,
+                        text = "// branch=$branchName\n",
+                        sizeBytes = 18,
+                        truncated = false,
+                    ),
+                )
+            }
 
             is ClientMessage.Hello -> HostMessage.Failure(
                 requestId = RequestId("x"),
@@ -6049,6 +6407,37 @@ class ReconnectTest {
     }
 
     @Test
+    fun `после реконнекта дерево в состоянии клиента обновляется автоматически`() {
+        runBlocking {
+            server = ProtocolServer(handler = handler, port = port)
+            server.start()
+
+            val active = startClient()
+            val client = HostClient(active, scope)
+            client.start()
+            awaitState(active) { it is ConnectionState.Connected }
+            client.openWorkspace("/projects/aide")
+            client.fileTree()
+            assertEquals("branch=master.kt", client.session.value.tree?.entries?.single()?.path)
+
+            branchName = "feature/token"
+            server.stop()
+            awaitState(active) { it is ConnectionState.Reconnecting }
+            server = ProtocolServer(handler = handler, port = port)
+            server.start()
+            awaitState(active) { it is ConnectionState.Connected && it.reconnected }
+
+            // Ручной запрос дерева здесь не делается: клиент обязан обновить его сам.
+            val refreshed = withTimeoutOrNull(5_000) {
+                while (client.session.value.tree?.entries?.single()?.path != "branch=feature/token.kt") delay(50)
+                client.session.value.tree
+            }
+            assertNotNull(refreshed, "После реконнекта дерево в состоянии клиента должно обновиться само")
+            assertEquals("branch=feature/token.kt", refreshed.entries.single().path)
+        }
+    }
+
+    @Test
     fun `после реконнекта запросы с прежними идентификаторами обслуживаются`() {
         runBlocking {
             server = ProtocolServer(handler = handler, port = port)
@@ -6068,6 +6457,39 @@ class ReconnectTest {
 
             val state = client.hostState()
             assertTrue(state.isSuccess, "После реконнекта обычные запросы должны работать: ${state.exceptionOrNull()}")
+        }
+    }
+
+    @Test
+    fun `повтор запроса с тем же идентификатором после обрыва выполняется один раз`() {
+        runBlocking {
+            server = ProtocolServer(handler = handler, port = port)
+            server.start()
+
+            val active = startClient()
+            val client = HostClient(active, scope)
+            client.start()
+            awaitState(active) { it is ConnectionState.Connected }
+            client.openWorkspace("/projects/aide")
+
+            // Запрос уходит на первом соединении; клиент не знает, дошёл ли ответ.
+            val requestId = RequestId("dup-across-reconnect")
+            val message = ClientMessage.FileContent(requestId, workspaceId, "src/Login.kt")
+            val first = active.request(message)
+            assertIs<HostMessage.Content>(first)
+            assertEquals(1, fileContentCalls.get(), "Первый запрос обрабатывается ровно один раз")
+
+            // Обрыв и реконнект: сессия новая, а кэш ответов должен уцелеть.
+            // Сервер — тот же экземпляр: обрыв связи не перезапускает хост.
+            server.stop()
+            awaitState(active) { it is ConnectionState.Reconnecting }
+            server.start()
+            awaitState(active) { it is ConnectionState.Connected && it.reconnected }
+
+            val repeated = active.request(message)
+            assertIs<HostMessage.Content>(repeated)
+            assertEquals(first, repeated, "Повтор должен вернуть прежний ответ")
+            assertEquals(1, fileContentCalls.get(), "После обрыва обработчик не должен выполниться второй раз")
         }
     }
 
@@ -6095,7 +6517,7 @@ class ReconnectTest {
 ./gradlew :protocol:jvmTest :host-core:test :client-state:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, `ProtocolServerTest` — 5 тестов, `ReconnectTest` — 2 теста.
+Ожидаемо: `BUILD SUCCESSFUL`, `ProtocolServerTest` — 7 тестов, `ReconnectTest` — 4 теста.
 
 Если `ReconnectTest` падает на шаге «хост поднимается на том же порту» с `Address already in use` — увеличить ожидание между `stop()` и `start()`, вставив `delay(200)` перед созданием второго `ProtocolServer`: Netty освобождает порт не мгновенно.
 
@@ -6314,8 +6736,8 @@ class WorkspaceFileSystemTest {
     @Test
     fun `каталог вместо файла даёт понятную ошибку`() {
         val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("src/auth") }
-        val notFound = assertIs<ProtocolError.NotFound>(error.error)
-        assertTrue(notFound.what.contains("каталог", ignoreCase = true))
+        val denied = assertIs<ProtocolError.AccessDenied>(error.error)
+        assertTrue(denied.reason.contains("каталог", ignoreCase = true))
     }
 
     @Test
@@ -6375,13 +6797,6 @@ class WorkspaceFileSystemTest {
     }
 
     @Test
-    fun `листинг каталога остаётся внутри воркспейса`() {
-        val entries = fs.listChildren("src")
-        assertEquals(listOf("src/auth", "src/net"), entries.map { it.path }.sorted())
-        assertTrue(entries.all { it.isDirectory })
-    }
-
-    @Test
     fun `определение языка по расширению`() {
         assertEquals("kotlin", LanguageDetector.detect("a/b/Main.kt"))
         assertEquals("markdown", LanguageDetector.detect("docs/readme.md"))
@@ -6436,10 +6851,10 @@ class Workspace private constructor(
         /** Открывает каталог как воркспейс. */
         fun open(path: Path): Workspace {
             if (!path.exists()) {
-                notFound("путь не существует: $path")
+                notFound(path.toString())
             }
             if (!path.isDirectory()) {
-                notFound("путь не является каталогом: $path")
+                denied(path.toString(), "путь не является каталогом")
             }
             val canonical = try {
                 path.toRealPath()
@@ -6454,8 +6869,11 @@ class Workspace private constructor(
 /** Ошибка доступа к воркспейсу, несущая типизированную причину из протокола. */
 class WorkspaceAccessException(val error: ProtocolError) : Exception(error.toString())
 
-private fun notFound(what: String): Nothing =
-    throw WorkspaceAccessException(ProtocolError.NotFound(what))
+private fun notFound(path: String): Nothing =
+    throw WorkspaceAccessException(ProtocolError.NotFound(path))
+
+private fun denied(path: String, reason: String): Nothing =
+    throw WorkspaceAccessException(ProtocolError.AccessDenied(path = path, reason = reason))
 
 private fun internalError(message: String, detail: String?): Nothing =
     throw WorkspaceAccessException(ProtocolError.Internal(message, detail))
@@ -6524,7 +6942,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
-import kotlin.io.path.name
 import kotlin.io.path.notExists
 import kotlin.io.path.readBytes
 
@@ -6540,16 +6957,6 @@ data class FileContent(
     val truncated: Boolean,
     /** Язык для подсветки или null. */
     val language: String?,
-)
-
-/** Запись в каталоге. */
-data class DirectoryEntry(
-    /** Путь относительно корня воркспейса. */
-    val path: String,
-    /** Директория это или файл. */
-    val isDirectory: Boolean,
-    /** Размер файла; null для директорий. */
-    val sizeBytes: Long?,
 )
 
 /**
@@ -6584,24 +6991,6 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
             truncated = truncated,
             language = LanguageDetector.detect(relativePath),
         )
-    }
-
-    /** Перечисляет содержимое каталога, отсортированное по имени. */
-    fun listChildren(relativePath: String): List<DirectoryEntry> {
-        val resolved = resolveInside(relativePath)
-        if (resolved.notExists() || !resolved.isDirectory()) {
-            notFound("каталог не найден: $relativePath")
-        }
-        return try {
-            Files.list(resolved).use { stream ->
-                stream
-                    .map { child -> child.toDirectoryEntry(relativePath) }
-                    .sorted(Comparator.comparing(DirectoryEntry::path))
-                    .toList()
-            }
-        } catch (error: IOException) {
-            denied(relativePath, "ошибка чтения каталога: ${error.message}")
-        }
     }
 
     /** Превращает прочитанный файл в сообщение протокола. */
@@ -6649,13 +7038,13 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
 
     private fun ensureRegularFile(relativePath: String, resolved: Path) {
         if (resolved.notExists()) {
-            notFound("файл не найден: $relativePath")
+            notFound(relativePath)
         }
         if (resolved.isDirectory()) {
-            notFound("по пути '$relativePath' находится каталог, а не файл")
+            denied(relativePath, "по пути находится каталог, а не файл")
         }
         if (!resolved.isRegularFile()) {
-            notFound("по пути '$relativePath' не обычный файл")
+            denied(relativePath, "по пути не обычный файл")
         }
     }
 
@@ -6728,16 +7117,6 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
     }
 }
 
-private fun Path.toDirectoryEntry(parentRelative: String): DirectoryEntry {
-    val relative = if (parentRelative.isEmpty()) name else "$parentRelative/$name"
-    val directory = isDirectory()
-    return DirectoryEntry(
-        path = relative,
-        isDirectory = directory,
-        sizeBytes = if (directory) null else runCatching { Files.size(this) }.getOrNull(),
-    )
-}
-
 /** Бинарность определяется по NUL в первых килобайтах: текстовые UTF-8 файлы NUL не содержат. */
 private fun looksBinary(bytes: ByteArray): Boolean {
     val sample = minOf(bytes.size, WorkspaceFileSystem.BINARY_SNIFF_BYTES)
@@ -6767,7 +7146,7 @@ private fun notImplemented(what: String): Nothing =
 ./gradlew :host-core:test --tests 'dev.aide.host.workspace.WorkspaceFileSystemTest'
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 18 тестов. Если падает тест «симлинк внутрь воркспейса разрешён» — проверить, что существующий симлинк разворачивается через `toRealPath()`, а не через канонизацию несуществующего пути: в `resolveInside` первой стоит ветка `raw.notExists()`, и лишь затем вызывается `realPathOf`. Для валидного симлинка `notExists()` ложна (она следует по ссылке), поэтому порядок ветвлений на корректность не влияет, а флаг `isSymlink` нужен только для выбора текста причины в отказе.
+Ожидаемо: `BUILD SUCCESSFUL`, 17 тестов. Если падает тест «симлинк внутрь воркспейса разрешён» — проверить, что существующий симлинк разворачивается через `toRealPath()`, а не через канонизацию несуществующего пути: в `resolveInside` первой стоит ветка `raw.notExists()`, и лишь затем вызывается `realPathOf`. Для валидного симлинка `notExists()` ложна (она следует по ссылке), поэтому порядок ветвлений на корректность не влияет, а флаг `isSymlink` нужен только для выбора текста причины в отказе.
 
 - [ ] **Шаг 8: написать падающий тест обхода дерева**
 
@@ -6843,15 +7222,37 @@ class FileTreeBuilderTest {
     }
 
     @Test
-    fun `лимит записей соблюдается и помечается`() {
+    fun `симлинк на корень не разворачивается бесконечно`() {
+        // `link -> .`: без учёта посещённых каталогов обход зациклился бы и упёрся в лимит.
+        Files.createSymbolicLink(fixture.root.resolve("link"), fixture.root)
+
+        val tree = builder().build()
+        val paths = tree.entries.map { it.path }
+
+        assertFalse(tree.truncated, "Петля симлинка — не обрезка по лимиту")
+        assertEquals(0, tree.skippedEntries)
+        assertEquals(paths.distinct().size, paths.size, "Каждый путь показывается один раз")
+        assertEquals(1, paths.count { it == "link" }, "Симлинк показывается один раз")
+        assertFalse(paths.any { it.startsWith("link/") }, "Содержимое корня не дублируется под симлинком")
+        assertEquals(1, paths.count { it == "src/auth/Login.kt" })
+    }
+
+    @Test
+    fun `лимит записей соблюдается, а число пропущенных отражает действительность`() {
         val many = fixture.root.resolve("many")
         many.createDirectories()
         repeat(30) { index -> many.resolve("file-$index.txt").writeText("x") }
 
-        val tree = builder().let { FileTreeBuilder(it.fileSystem, it.workspace, maxEntries = 10) }.build()
-        assertTrue(tree.truncated, "Дерево должно быть помечено как неполное")
-        assertEquals(10, tree.entries.size)
-        assertTrue(tree.skippedEntries > 0)
+        val full = builder().build()
+        val limited = builder().let { FileTreeBuilder(it.fileSystem, it.workspace, maxEntries = 10) }.build()
+
+        assertTrue(limited.truncated, "Дерево должно быть помечено как неполное")
+        assertEquals(10, limited.entries.size)
+        assertEquals(
+            full.entries.size - 10,
+            limited.skippedEntries,
+            "Пропущено ровно столько записей, сколько не поместилось",
+        )
     }
 
     @Test
@@ -6895,10 +7296,13 @@ import kotlin.io.path.name
  * Обход дерева воркспейса для показа в UI.
  *
  * Обходятся только каталоги, прошедшие проверку изоляции: символические ссылки
- * за пределы корня пропускаются, а не разворачиваются. Игнорируемые каталоги
- * (служебный каталог git и записи `.gitignore`) не показываются. Обход ограничен
- * [maxEntries]: на большом репозитории лучше честная пометка «дерево неполное»,
- * чем зависший хост.
+ * за пределы корня пропускаются, а не разворачиваются. Каждый каталог обходится
+ * не более одного раза: канонические пути уже посещённых каталогов запоминаются,
+ * поэтому симлинк на предка (например `link -> .`) не разворачивается бесконечно.
+ * Игнорируемые каталоги (служебный каталог git и записи `.gitignore`) не показываются.
+ * Число показываемых записей ограничено [maxEntries]. Чтобы пометка «дерево неполное»
+ * несла точное число пропущенных записей, обход после достижения предела продолжается,
+ * но записи сверх предела только считаются: память под дерево остаётся ограниченной.
  */
 class FileTreeBuilder(
     /** Доступ к файловой системе воркспейса; используется для проверки путей. */
@@ -6914,26 +7318,32 @@ class FileTreeBuilder(
         val collected = mutableListOf<FileTreeEntry>()
         val pending = ArrayDeque<Pair<Path, String>>()
         pending += workspace.root to ""
+        val visited = mutableSetOf(workspace.root)
+        var skipped = 0
 
         while (pending.isNotEmpty()) {
             val (directory, relative) = pending.removeFirst()
             for (child in childrenOf(directory)) {
                 val childRelative = if (relative.isEmpty()) child.name else "$relative/${child.name}"
                 if (isIgnored(childRelative, child) || isEscapingSymlink(child, childRelative)) continue
-                if (collected.size >= maxEntries) {
-                    return payload(collected, truncated = true, skippedEntries = 1)
-                }
-
                 val directoryChild = child.isDirectory()
-                collected += FileTreeEntry(
-                    path = childRelative,
-                    isDirectory = directoryChild,
-                    sizeBytes = if (directoryChild) null else sizeOf(child),
-                )
-                if (directoryChild) pending += child to childRelative
+                if (collected.size < maxEntries) {
+                    collected += FileTreeEntry(
+                        path = childRelative,
+                        isDirectory = directoryChild,
+                        sizeBytes = if (directoryChild) null else sizeOf(child),
+                    )
+                } else {
+                    skipped += 1
+                }
+                // Каталог обходим один раз: повторный канонический путь — это либо цикл,
+                // либо уже показанное содержимое.
+                if (directoryChild && canonicalOf(child)?.let(visited::add) == true) {
+                    pending += child to childRelative
+                }
             }
         }
-        return payload(collected, truncated = false, skippedEntries = 0)
+        return payload(collected, truncated = skipped > 0, skippedEntries = skipped)
     }
 
     private fun payload(entries: List<FileTreeEntry>, truncated: Boolean, skippedEntries: Int) = FileTreePayload(
@@ -6943,6 +7353,9 @@ class FileTreeBuilder(
         truncated = truncated,
         skippedEntries = skippedEntries,
     )
+
+    /** Канонический путь каталога; null, если его не удалось определить (битый симлинк). */
+    private fun canonicalOf(directory: Path): Path? = runCatching { directory.toRealPath() }.getOrNull()
 
     /** Дети каталога, отсортированные по имени; недоступный каталог даёт пустой список, а не срыв обхода. */
     private fun childrenOf(directory: Path): List<Path> = runCatching {
@@ -6990,9 +7403,9 @@ class FileTreeBuilder(
 }
 ```
 
-**Чего тесты обхода не покрывают.** Симлинк *внутрь* воркспейса, указывающий на каталог (в том числе образующий цикл), отдельным тестом не покрыт: обход ограничен `maxEntries`, поэтому зацикливания не будет, но явной защиты от повторного захода по одному и тому же каталогу нет. Пометка нужна, чтобы при следующем касании обхода дерева об этом помнили.
+**Про симлинк на предка.** Обход помнит канонические пути посещённых каталогов (`visited`), поэтому `link -> .` не разворачивается бесконечно: симлинк показывается один раз как запись, а его содержимое не дублируется. Это закрыто тестом `симлинк на корень не разворачивается бесконечно`.
 
-**Про `skippedEntries`.** Счётчик отражает только обрезку по лимиту: при `truncated = false` он равен нулю, а отсечённые изоляцией симлинки в него не попадают — так документировано поле `FileTreePayload.skippedEntries` (задача 8). Расширять поле ради видимости отфильтрованного сейчас не нужно; если понадобится показать «сколько скрыто», это отдельное изменение протокола на потом.
+**Про `skippedEntries`.** Счётчик отражает только обрезку по лимиту, зато точно: обход после достижения предела продолжается, и каждая не поместившаяся запись увеличивает счётчик (раньше обход останавливался и `skippedEntries` был равен 1 независимо от того, сколько записей пропущено). Отсечённые изоляцией симлинки в счётчик не попадают — так документировано поле `FileTreePayload.skippedEntries` (задача 8). При `truncated = false` счётчик равен нулю.
 
 - [ ] **Шаг 11: прогнать все тесты хоста**
 
@@ -7000,7 +7413,7 @@ class FileTreeBuilder(
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 31 тест (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6).
+Ожидаемо: `BUILD SUCCESSFUL`, 35 тестов (`ProtocolServerTest` — 7, `ReconnectTest` — 4, `WorkspaceFileSystemTest` — 17, `FileTreeBuilderTest` — 7).
 
 - [ ] **Шаг 12: коммит**
 
@@ -7586,7 +7999,7 @@ private fun notAGitRepository(workTree: Path): Nothing =
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 41 тест (`ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 10).
+Ожидаемо: `BUILD SUCCESSFUL`, 45 тестов (`ProtocolServerTest` — 7, `ReconnectTest` — 4, `WorkspaceFileSystemTest` — 17, `FileTreeBuilderTest` — 7, `JGitRepositoryTest` — 10).
 
 **Почему переименования сопоставляются по индексу, а не по рабочему дереву.** Настоящий `git` ищет переименования только между HEAD и индексом: после `git mv` он печатает `R  src/Api.kt -> src/Renamed.kt`, а обычный `mv` без индексации — ` D src/Api.kt` плюс `?? src/Renamed.kt`. Поэтому хост берёт переименования из `git.diff().setCached(true)` и прогоняет их через `RenameDetector`. Если бы он сопоставлял переименования по рабочему дереву, на незакоммиченном `mv` он разошёлся бы с `git status`, а критерий `T-0.12` требует совпадения. Порог сходства выставлен 50 — как у git по умолчанию (у JGit по умолчанию 60), иначе переименования с правкой содержимого распознавались бы реже, чем их показывает `git status`.
 
@@ -9009,20 +9422,19 @@ class MainActivity : ComponentActivity() {
     <string name="state_empty_title">Здесь пока пусто</string>
     <string name="state_empty_repo">В репозитории нет коммитов и файлов. Создайте первый коммит — дерево появится.</string>
     <string name="state_empty_tree">В репозитории нет файлов для показа.</string>
+    <string name="state_no_repository">Репозиторий не выбран. Укажите путь к нему в настройках.</string>
     <string name="state_error_title">Не получилось</string>
     <string name="state_error_retry">Повторить</string>
     <string name="state_error_path_missing">Путь не существует: %1$s</string>
     <string name="state_error_not_a_repo">Каталог не является git-репозиторием: %1$s</string>
+    <string name="state_error_workspace_closed">Воркспейс закрыт, откройте репозиторий заново</string>
     <string name="state_offline_title">Нет связи с хостом</string>
     <string name="state_offline_body">Показаны данные, загруженные ранее. Действия станут доступны после восстановления связи.</string>
     <string name="state_no_permission_title">Нет доступа</string>
     <string name="state_no_permission_body">Доступ к «%1$s» закрыт: %2$s</string>
 
-    <string name="action_open_repository">Открыть репозиторий</string>
     <string name="action_back">Назад</string>
     <string name="action_settings">Настройки</string>
-    <string name="action_about">О приложении</string>
-    <string name="action_about_body">Этап 0: скелет, протокол и показ репозитория. Агент и ревью появятся дальше.</string>
 
     <string name="settings_title">Настройки</string>
     <string name="settings_repository_path">Путь к репозиторию</string>
@@ -9043,7 +9455,9 @@ class MainActivity : ComponentActivity() {
 
     <string name="connection_connecting">Подключение к хосту…</string>
     <string name="connection_reconnecting">Связь потеряна, переподключение (попытка %1$d)…</string>
-    <string name="connection_incompatible">Версии несовместимы. %1$s</string>
+    <string name="connection_incompatible_client_outdated">Версии несовместимы: обновите приложение (клиент %1$s, хост %2$s).</string>
+    <string name="connection_incompatible_host_outdated">Версии несовместимы: обновите хост (клиент %1$s, хост %2$s).</string>
+    <string name="connection_incompatible_malformed">Версии несовместимы: не удалось прочитать приветствие (клиент %1$s, хост %2$s).</string>
     <string name="connection_closed">Соединение закрыто: %1$s</string>
 </resources>
 ```
@@ -9062,7 +9476,9 @@ import dev.aide.client.ui.resources.action_settings
 import dev.aide.client.ui.resources.app_name
 import dev.aide.client.ui.resources.connection_closed
 import dev.aide.client.ui.resources.connection_connecting
-import dev.aide.client.ui.resources.connection_incompatible
+import dev.aide.client.ui.resources.connection_incompatible_client_outdated
+import dev.aide.client.ui.resources.connection_incompatible_host_outdated
+import dev.aide.client.ui.resources.connection_incompatible_malformed
 import dev.aide.client.ui.resources.connection_reconnecting
 import dev.aide.client.ui.resources.repo_file_title
 import dev.aide.client.ui.resources.repo_file_truncated
@@ -9093,10 +9509,12 @@ import dev.aide.client.ui.resources.state_error_not_a_repo
 import dev.aide.client.ui.resources.state_error_path_missing
 import dev.aide.client.ui.resources.state_error_retry
 import dev.aide.client.ui.resources.state_error_title
+import dev.aide.client.ui.resources.state_error_workspace_closed
 import dev.aide.client.ui.resources.state_loading_skeleton
 import dev.aide.client.ui.resources.state_loading_title
 import dev.aide.client.ui.resources.state_no_permission_body
 import dev.aide.client.ui.resources.state_no_permission_title
+import dev.aide.client.ui.resources.state_no_repository
 import dev.aide.client.ui.resources.state_offline_body
 import dev.aide.client.ui.resources.state_offline_title
 import org.jetbrains.compose.resources.StringResource
@@ -9126,10 +9544,12 @@ object Strings {
     val stateEmptyTitle: StringResource = Res.string.state_empty_title
     val stateEmptyRepo: StringResource = Res.string.state_empty_repo
     val stateEmptyTree: StringResource = Res.string.state_empty_tree
+    val stateNoRepository: StringResource = Res.string.state_no_repository
     val stateErrorTitle: StringResource = Res.string.state_error_title
     val stateErrorRetry: StringResource = Res.string.state_error_retry
     val stateErrorPathMissing: StringResource = Res.string.state_error_path_missing
     val stateErrorNotARepo: StringResource = Res.string.state_error_not_a_repo
+    val stateErrorWorkspaceClosed: StringResource = Res.string.state_error_workspace_closed
     val stateOfflineTitle: StringResource = Res.string.state_offline_title
     val stateOfflineBody: StringResource = Res.string.state_offline_body
     val stateNoPermissionTitle: StringResource = Res.string.state_no_permission_title
@@ -9154,7 +9574,9 @@ object Strings {
 
     val connectionConnecting: StringResource = Res.string.connection_connecting
     val connectionReconnecting: StringResource = Res.string.connection_reconnecting
-    val connectionIncompatible: StringResource = Res.string.connection_incompatible
+    val connectionIncompatibleClientOutdated: StringResource = Res.string.connection_incompatible_client_outdated
+    val connectionIncompatibleHostOutdated: StringResource = Res.string.connection_incompatible_host_outdated
+    val connectionIncompatibleMalformed: StringResource = Res.string.connection_incompatible_malformed
     val connectionClosed: StringResource = Res.string.connection_closed
 
     /** Читает строку в composable-контексте. */
@@ -10982,7 +11404,7 @@ class DatabaseFactoryTest {
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 68 тестов (`DatabaseFactoryTest` — 4, `HostStoreTest` — 16, `MigrationTest` — 4, `ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 10, `EmbeddedHostTest` — 3).
+Ожидаемо: `BUILD SUCCESSFUL`, 72 теста (`DatabaseFactoryTest` — 4, `HostStoreTest` — 16, `MigrationTest` — 4, `ProtocolServerTest` — 7, `ReconnectTest` — 4, `WorkspaceFileSystemTest` — 17, `FileTreeBuilderTest` — 7, `JGitRepositoryTest` — 10, `EmbeddedHostTest` — 3).
 
 - [ ] **Шаг 11: проверить, что клиент не может обратиться к базе**
 
@@ -11014,8 +11436,10 @@ git commit -m "feat(host): схема метаданных в SQLite, мигра
 - Создать: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/screens/FileContentScreen.kt`
 - Создать: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/screens/RepoScreen.kt`
 - Создать: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/screens/SettingsScreen.kt`
+- Создать: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/strings/StateMessage.kt`
 - Изменить: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/App.kt`
 - Тест: `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/ScreenStatesTest.kt`
+- Тест: `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/StateMessagesTest.kt`
 - Создать: `platform-android/src/androidMain/kotlin/dev/aide/platform/android/AndroidClientRuntime.kt`
 - Изменить: `androidApp/src/main/kotlin/dev/aide/android/MainActivity.kt`
 - Изменить: `androidApp/build.gradle.kts` (корутины и debug-провайдер SLF4J)
@@ -11028,15 +11452,19 @@ git commit -m "feat(host): схема метаданных в SQLite, мигра
 - Тест: `desktopApp/src/test/kotlin/dev/aide/desktop/DesktopEndToEndTest.kt`
 - Изменить: `client-ui/build.gradle.kts` (зависимость для UI-тестов)
 
-**Что считается выполненным.** На Android и на десктопе приложение открывает репозиторий, показывает ветку в шапке, дерево файлов и содержимое выбранного файла. Для экрана дерева и содержимого проверены пять состояний из § 6.1: пусто, загрузка, ошибка, нет связи, нет прав — на ширине 360 dp и на десктопе.
+**Что считается выполненным.** На Android и на десктопе приложение открывает репозиторий, показывает ветку в шапке, дерево файлов и содержимое выбранного файла. Для экрана дерева и содержимого проверены пять состояний из § 6.1: пусто, загрузка, ошибка, нет связи, нет прав — на ширине 360 dp и на десктопе; отдельно от них — состояние «репозиторий не выбран», которое показывается, пока нет сохранённого пути.
 
 **Про пять состояний.** Состояния моделируются как один тип `ScreenState`, а не как набор флагов: так нельзя случайно показать одновременно «загрузка» и «ошибка». Состояние «нет связи» берётся из `ConnectionState`, остальные — из результата запроса.
+
+**Про запуск и состояние «репозиторий не выбран».** При старте `App` сам открывает сохранённый `SettingsStore.repositoryPath`, не дожидаясь нажатия «Открыть»; иначе пользователь видел бы «пусто», хотя репозиторий просто не выбран. Если сохранённого пути нет, показывается отдельное состояние `ScreenState.NoRepository` («Репозиторий не выбран…»), а не «пусто»: это разные вещи — «пусто» значит «репозиторий открыт, но в нём нет файлов».
+
+**Про тексты состояний.** Готовых пользовательских строк в слоях ниже нет: `ScreenState.Failed` несёт `kind` и `arguments` (путь, версии), а `AppStateStore` и `ProtocolCompatibility` передают коды и параметры, не склеивая текст (NFR-13). Понятный текст строит UI из ресурсов — `client-ui/src/commonMain/kotlin/dev/aide/client/ui/strings/StateMessage.kt` с чистыми функциями `failureMessage`/`incompatibleMessage` и `@Composable`-обёрткой `stateMessageText`. Единственное задокументированное исключение — `ErrorKind.OTHER`: там параметром идёт готовый текст хоста, который классифицировать нельзя.
 
 **Про Android в этом этапе.** Обнаружение хоста в сети и сопряжение устройств — это `T-1.51` и этап 5 (`T-5.11`). Здесь Android подключается по адресу, заданному в настройках вручную; автоматического поиска нет и он не обещается.
 
 **Про адрес хоста.** Локальный хост слушает `ws://127.0.0.1:<порт>/ws`, и это не мешает эмулятору: `10.0.2.2` — псевдоним именно loopback-интерфейса машины-хоста, поэтому эмулятор достучится до хоста без правок адреса биндинга (проверено фактически: хост на `127.0.0.1:36459` принял Android-сессию). Подключение реального устройства по LAN потребует биндинга хоста на сетевой интерфейс (`0.0.0.0`), но это работа `T-1.51`, а не этапа 0; параметризовать адрес биндинга сейчас не нужно — фиксированный loopback безопаснее.
 
-**Про автотест десктопа.** Критерий «десктоп показывает репозиторий» закрывает `desktopApp/src/test/kotlin/dev/aide/desktop/DesktopEndToEndTest.kt` — единственный автотест десктопа (1 тест, `:desktopApp:test`): настоящий `EmbeddedHost`, настоящее WebSocket-соединение и тот же `App`; ручной клик по окну в среде сборки невозможен, потому что инъекция ввода не доходит до Xwayland-клиента.
+**Про автотест десктопа.** Критерий «десктоп показывает репозиторий» закрывает `desktopApp/src/test/kotlin/dev/aide/desktop/DesktopEndToEndTest.kt` — единственный автотест десктопа (2 теста, `:desktopApp:test`): настоящий `EmbeddedHost`, настоящее WebSocket-соединение и тот же `App`. Первый тест пишет путь в настройки до `setContent` и проверяет, что ветка и дерево появляются **сами, без захода в настройки**, а после остановки хоста — плашку «нет связи» и данные из кэша. Второй проверяет обратное: без сохранённого пути показывается «Репозиторий не выбран. Укажите путь к нему в настройках.» Ручной клик по окну в среде сборки невозможен, потому что инъекция ввода не доходит до Xwayland-клиента.
 
 - [ ] **Шаг 1: написать падающий тест состояний экрана**
 
@@ -11050,7 +11478,9 @@ import dev.aide.protocol.FileTreeEntry
 import dev.aide.protocol.FileTreePayload
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.HostStatePayload
+import dev.aide.protocol.IncompatibilityReason
 import dev.aide.protocol.ProtocolError
+import dev.aide.protocol.ProtocolVersion
 import dev.aide.protocol.SessionId
 import dev.aide.protocol.WorkspaceId
 import kotlin.test.Test
@@ -11084,8 +11514,8 @@ class AppStateStoreTest {
     )
 
     @Test
-    fun `начальное состояние — пусто и загрузка не начата`() {
-        assertEquals(ScreenState.Empty, store.treeState.value)
+    fun `начальное состояние — репозиторий не выбран`() {
+        assertEquals(ScreenState.NoRepository, store.treeState.value)
         assertNull(store.selectedFile.value)
         assertNull(store.hostState.value)
     }
@@ -11106,12 +11536,12 @@ class AppStateStoreTest {
     }
 
     @Test
-    fun `ошибка пути даёт состояние ошибки с понятным текстом`() {
-        store.onTreeFailed(ProtocolError.NotFound("путь не существует: /nope"))
+    fun `ошибка пути даёт состояние ошибки с путём в параметрах`() {
+        store.onTreeFailed(ProtocolError.NotFound("/nope"))
 
         val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.PATH_MISSING, failed.kind)
-        assertTrue(failed.detail.contains("/nope"))
+        assertEquals(listOf("/nope"), failed.arguments)
     }
 
     @Test
@@ -11120,6 +11550,25 @@ class AppStateStoreTest {
 
         val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.NOT_A_REPOSITORY, failed.kind)
+        assertEquals(listOf("/tmp/not-a-repo"), failed.arguments)
+    }
+
+    @Test
+    fun `закрытый воркспейс даёт отдельный вид ошибки, а не внутреннюю`() {
+        store.onTreeFailed(ProtocolError.WorkspaceClosed(workspaceId))
+
+        val failed = assertIs<ScreenState.Failed>(store.treeState.value)
+        assertEquals(ScreenState.ErrorKind.WORKSPACE_CLOSED, failed.kind)
+    }
+
+    @Test
+    fun `внутренняя ошибка остаётся видом OTHER с текстом хоста`() {
+        store.onTreeFailed(ProtocolError.Internal("не удалось открыть репозиторий", "trace"))
+
+        val failed = assertIs<ScreenState.Failed>(store.treeState.value)
+        assertEquals(ScreenState.ErrorKind.OTHER, failed.kind)
+        assertEquals(listOf("не удалось открыть репозиторий"), failed.arguments)
+        assertEquals("trace", failed.technical)
     }
 
     @Test
@@ -11154,10 +11603,27 @@ class AppStateStoreTest {
     @Test
     fun `несовместимость версий показывается как ошибка и не даёт работать`() {
         store.onTreeLoaded(tree)
-        store.onConnectionState(ConnectionState.Incompatible("Обновите приложение (клиент 1.0, хост 2.0)"))
+        store.onConnectionState(
+            ConnectionState.Incompatible(
+                reason = IncompatibilityReason.CLIENT_OUTDATED,
+                clientVersion = ProtocolVersion(1, 0),
+                hostVersion = ProtocolVersion(2, 0),
+            ),
+        )
 
         val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.INCOMPATIBLE, failed.kind)
+        assertEquals(listOf("CLIENT_OUTDATED", "1.0", "2.0"), failed.arguments)
+    }
+
+    @Test
+    fun `событие остановки хоста переводит загруженные данные в офлайн, сохраняя кэш`() {
+        store.onTreeLoaded(tree)
+
+        store.onHostShuttingDown()
+
+        val offline = assertIs<ScreenState.Offline<FileTreePayload>>(store.treeState.value)
+        assertTrue(offline.cached.entries.size == 2, "Кэш остаётся доступен офлайн")
     }
 
     @Test
@@ -11198,6 +11664,30 @@ class AppStateStoreTest {
 
         assertEquals(ScreenState.Loading, store.treeState.value)
     }
+
+    @Test
+    fun `сессия клиента отдаёт обновлённое дерево на экран`() {
+        store.onHostSession(HostSession(tree = tree))
+        val loaded = assertIs<ScreenState.Loaded<FileTreePayload>>(store.treeState.value)
+        assertEquals(2, loaded.data.entries.size)
+
+        val updated = tree.copy(entries = listOf(FileTreeEntry("src/New.kt", isDirectory = false)))
+        store.onHostSession(HostSession(tree = updated))
+
+        val refreshed = assertIs<ScreenState.Loaded<FileTreePayload>>(store.treeState.value)
+        assertEquals("src/New.kt", refreshed.data.entries.single().path)
+    }
+
+    @Test
+    fun `сессия без нового дерева не затирает показанную ошибку`() {
+        store.onHostSession(HostSession(tree = tree))
+        store.onTreeFailed(ProtocolError.NotFound("путь не существует: /nope"))
+
+        // Сессия меняется по другому поводу (состояние хоста), дерево — тот же объект.
+        store.onHostSession(HostSession(tree = tree, hostState = hostState))
+
+        assertIs<ScreenState.Failed>(store.treeState.value)
+    }
 }
 ```
 
@@ -11227,18 +11717,27 @@ sealed interface ScreenState<out T> {
     /** Данных ещё нет и запрос не начат. */
     data object Empty : ScreenState<Nothing>
 
+    /** Репозиторий не выбран: показывать нечего, пользователю нужно указать путь в настройках. */
+    data object NoRepository : ScreenState<Nothing>
+
     /** Идёт загрузка; UI показывает скелетон структуры, а не пустой экран. */
     data object Loading : ScreenState<Nothing>
 
     /** Данные получены. */
     data class Loaded<T>(val data: T) : ScreenState<T>
 
-    /** Запрос завершился ошибкой. */
+    /**
+     * Запрос завершился ошибкой.
+     *
+     * [arguments] — параметры текста, интерпретируемые по [kind]: пути, версии. Сам текст
+     * строит UI из ресурсов (NFR-13); исключение — [ErrorKind.OTHER], где параметром служит
+     * уже готовый текст хоста, который классифицировать нельзя.
+     */
     data class Failed(
         /** Вид ошибки — от него зависит текст и действие. */
         val kind: ErrorKind,
-        /** Что именно случилось, для показа пользователю. */
-        val detail: String,
+        /** Параметры для текста ошибки; порядок задаётся видом [kind]. */
+        val arguments: List<String> = emptyList(),
         /** Техническая деталь; показывается по запросу. */
         val technical: String? = null,
     ) : ScreenState<Nothing>
@@ -11262,10 +11761,13 @@ sealed interface ScreenState<out T> {
         /** Каталог есть, но это не git-репозиторий. */
         NOT_A_REPOSITORY,
 
+        /** Воркспейс был открыт, но на хосте уже закрыт. */
+        WORKSPACE_CLOSED,
+
         /** Версии протокола несовместимы. */
         INCOMPATIBLE,
 
-        /** Прочая ошибка, в том числе внутренняя ошибка хоста. */
+        /** Прочая ошибка: текст хоста, классифицировать нельзя. */
         OTHER,
     }
 }
@@ -11280,6 +11782,7 @@ package dev.aide.client.state
 
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreePayload
+import dev.aide.protocol.HostEvent
 import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolError
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11295,7 +11798,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class AppStateStore {
 
-    private val _treeState = MutableStateFlow<ScreenState<FileTreePayload>>(ScreenState.Empty)
+    private val _treeState = MutableStateFlow<ScreenState<FileTreePayload>>(ScreenState.NoRepository)
 
     /** Состояние дерева файлов. */
     val treeState: StateFlow<ScreenState<FileTreePayload>> = _treeState.asStateFlow()
@@ -11317,6 +11820,11 @@ class AppStateStore {
 
     /** Последнее достоверное состояние связи; нужно, чтобы вернуться из [ScreenState.Offline]. */
     private var lastConnection: ConnectionState = ConnectionState.Idle
+
+    /** Что из сессии уже показано: сравнение по ссылке отличает новый ответ от повторной публикации. */
+    private var appliedTree: FileTreePayload? = null
+    private var appliedFile: FileContentPayload? = null
+    private var appliedHostState: HostStatePayload? = null
 
     /** Показывает загрузку дерева. */
     fun onTreeLoading() {
@@ -11355,6 +11863,35 @@ class AppStateStore {
     }
 
     /**
+     * Принимает состояние сессии клиента целиком.
+     *
+     * Нужно после реконнекта: [HostClient] сам перезапрашивает дерево и открытый файл,
+     * и без этой подписки обновлённые данные не дошли бы до экранов (T-0.10).
+     *
+     * Сравнение по ссылке, а не по значению, отличает новый ответ от повторной
+     * публикации того же объекта: сессия меняется и по другим поводам (например,
+     * обновилось только состояние хоста), и тогда перезаписывать экран нельзя —
+     * иначе уже показанная ошибка затиралась бы старыми данными.
+     */
+    fun onHostSession(session: HostSession) {
+        val tree = session.tree
+        if (tree != null && tree !== appliedTree) {
+            appliedTree = tree
+            onTreeLoaded(tree)
+        }
+        val file = session.openFile
+        if (file != null && file !== appliedFile) {
+            appliedFile = file
+            onFileLoaded(file)
+        }
+        val host = session.hostState
+        if (host != null && host !== appliedHostState) {
+            appliedHostState = host
+            onHostState(host)
+        }
+    }
+
+    /**
      * Реагирует на изменение связи.
      *
      * Правила: потеря связи переводит загруженные данные в [ScreenState.Offline],
@@ -11368,7 +11905,14 @@ class AppStateStore {
 
         when (state) {
             is ConnectionState.Incompatible -> {
-                _treeState.value = ScreenState.Failed(ScreenState.ErrorKind.INCOMPATIBLE, state.userMessage)
+                _treeState.value = ScreenState.Failed(
+                    kind = ScreenState.ErrorKind.INCOMPATIBLE,
+                    arguments = listOf(
+                        state.reason.name,
+                        state.clientVersion.toString(),
+                        state.hostVersion.toString(),
+                    ),
+                )
             }
 
             is ConnectionState.Reconnecting -> {
@@ -11386,6 +11930,17 @@ class AppStateStore {
             is ConnectionState.Closed -> Unit
             ConnectionState.Idle, ConnectionState.Connecting -> Unit
         }
+    }
+
+    /**
+     * Переводит загруженные данные в [ScreenState.Offline] по событию [HostEvent.HostShuttingDown].
+     *
+     * Сокет закроется и сам, но событие приходит раньше закрытия: так пользователь видит,
+     * что связи нет, не дожидаясь таймаута транспорта.
+     */
+    fun onHostShuttingDown() {
+        _treeState.value = _treeState.value.toOffline()
+        _fileState.value = _fileState.value.toOffline()
     }
 }
 
@@ -11411,21 +11966,25 @@ private fun <T> ScreenState<T>.fromOffline(): ScreenState<T> = when (this) {
  * Тип ошибки задан протоколом, поэтому разбирать текст не нужно: «нет прав»,
  * «не git-репозиторий» и «путь не существует» приходят как разные типы, а не
  * как одно сообщение, в котором пришлось бы искать подстроки.
+ *
+ * Слои ниже передают только код и параметры (путь, причина): понятный пользователю
+ * текст строит UI из ресурсов (NFR-13). Исключение — [ScreenState.ErrorKind.OTHER]:
+ * там параметром идёт текст, пришедший от хоста, потому что такую ошибку
+ * классифицировать нельзя.
  */
 private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
-    is ProtocolError.NotFound -> ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, what)
+    is ProtocolError.NotFound -> ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, listOf(what))
 
     is ProtocolError.NotAGitRepository ->
-        ScreenState.Failed(ScreenState.ErrorKind.NOT_A_REPOSITORY, "Каталог не является git-репозиторием: $path")
+        ScreenState.Failed(ScreenState.ErrorKind.NOT_A_REPOSITORY, listOf(path))
 
     is ProtocolError.AccessDenied -> ScreenState.NoPermission(path = path, reason = reason)
 
-    is ProtocolError.WorkspaceClosed ->
-        ScreenState.Failed(ScreenState.ErrorKind.OTHER, "Воркспейс закрыт, откройте репозиторий заново")
+    is ProtocolError.WorkspaceClosed -> ScreenState.Failed(ScreenState.ErrorKind.WORKSPACE_CLOSED)
 
-    is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, what)
+    is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(what))
 
-    is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, message, detail)
+    is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(message), detail)
 }
 ```
 
@@ -11435,7 +11994,7 @@ private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
 ./gradlew :client-state:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 25 тестов (`AppStateStoreTest` — 13, `SettingsStoreTest` — 8, `FileKeyValueStoreTest` — 3, `NoLocalityBranchingTest` — 1).
+Ожидаемо: `BUILD SUCCESSFUL`, 33 теста (`AppStateStoreTest` — 18, `SettingsStoreTest` — 8, `FileKeyValueStoreTest` — 3, `HostClientRequestIdTest` — 3, `NoLocalityBranchingTest` — 1).
 
 - [ ] **Шаг 6: написать экраны состояний**
 
@@ -11549,6 +12108,73 @@ fun NoPermissionState(path: String, reason: String, modifier: Modifier = Modifie
 }
 ```
 
+`client-ui/src/commonMain/kotlin/dev/aide/client/ui/strings/StateMessage.kt` — сопоставление кода состояния и параметров с ресурсной строкой (NFR-13). Чистые функции `failureMessage`/`incompatibleMessage` возвращают либо ресурс с подстановками, либо готовый литерал, а `@Composable`-обёртка `stateMessageText` читает выбранный ресурс. Единственное исключение — `ErrorKind.OTHER`: там текст уже готов и приходит от хоста:
+
+```kotlin
+package dev.aide.client.ui.strings
+
+import androidx.compose.runtime.Composable
+import dev.aide.client.state.ScreenState
+import dev.aide.protocol.IncompatibilityReason
+import org.jetbrains.compose.resources.StringResource
+
+/** Как показать текст состояния: ресурс с подстановками либо уже готовый текст. */
+sealed interface StateMessage {
+
+    /** Текст берётся из ресурса; [arguments] подставляются по порядку. */
+    data class Resource(val resource: StringResource, val arguments: List<String>) : StateMessage
+
+    /** Готовый текст без ресурса. */
+    data class Literal(val text: String) : StateMessage
+}
+
+/**
+ * Сопоставляет вид ошибки и её параметры с ресурсной строкой (NFR-13).
+ *
+ * Единственное исключение из NFR-13 — [ScreenState.ErrorKind.OTHER]: такую ошибку
+ * классифицировать нельзя (внутренняя ошибка хоста, нереализованная возможность),
+ * поэтому текст уже готов и приходит от хоста — он показывается как есть.
+ */
+fun failureMessage(kind: ScreenState.ErrorKind, arguments: List<String>): StateMessage = when (kind) {
+    ScreenState.ErrorKind.PATH_MISSING ->
+        StateMessage.Resource(Strings.stateErrorPathMissing, arguments)
+
+    ScreenState.ErrorKind.NOT_A_REPOSITORY ->
+        StateMessage.Resource(Strings.stateErrorNotARepo, arguments)
+
+    ScreenState.ErrorKind.WORKSPACE_CLOSED ->
+        StateMessage.Resource(Strings.stateErrorWorkspaceClosed, emptyList())
+
+    ScreenState.ErrorKind.INCOMPATIBLE ->
+        StateMessage.Resource(incompatibleResource(arguments.firstOrNull()), arguments.drop(1).take(2))
+
+    ScreenState.ErrorKind.OTHER ->
+        StateMessage.Literal(arguments.firstOrNull().orEmpty())
+}
+
+/** Текст о несовместимости версий; общий для шапки и состояния экрана. */
+fun incompatibleMessage(
+    reason: IncompatibilityReason,
+    clientVersion: String,
+    hostVersion: String,
+): StateMessage = StateMessage.Resource(incompatibleResource(reason.name), listOf(clientVersion, hostVersion))
+
+/** Читает текст сообщения состояния в composable-контексте. */
+@Suppress("SpreadOperator") // Передача подстановок вариадической stringResource требует spread.
+@Composable
+fun stateMessageText(message: StateMessage): String = when (message) {
+    is StateMessage.Resource -> Strings.text(message.resource, *message.arguments.toTypedArray())
+    is StateMessage.Literal -> message.text
+}
+
+private fun incompatibleResource(reasonName: String?): StringResource =
+    when (IncompatibilityReason.entries.firstOrNull { it.name == reasonName }) {
+        IncompatibilityReason.HOST_OUTDATED -> Strings.connectionIncompatibleHostOutdated
+        IncompatibilityReason.MALFORMED_HELLO -> Strings.connectionIncompatibleMalformed
+        IncompatibilityReason.CLIENT_OUTDATED, null -> Strings.connectionIncompatibleClientOutdated
+    }
+```
+
 - [ ] **Шаг 7: написать экран дерева и экран файла**
 
 `client-ui/src/commonMain/kotlin/dev/aide/client/ui/screens/RepoTreeScreen.kt`:
@@ -11572,6 +12198,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.aide.client.state.ScreenState
 import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.failureMessage
+import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.protocol.FileTreePayload
 
 /**
@@ -11589,9 +12217,12 @@ fun RepoTreeScreen(
         when (state) {
             ScreenState.Empty -> EmptyState(Strings.text(Strings.stateEmptyRepo))
 
+            ScreenState.NoRepository -> EmptyState(Strings.text(Strings.stateNoRepository))
+
             ScreenState.Loading -> LoadingState()
 
-            is ScreenState.Failed -> ErrorState(message = state.detail, onRetry = onRetry)
+            is ScreenState.Failed ->
+                ErrorState(message = stateMessageText(failureMessage(state.kind, state.arguments)), onRetry = onRetry)
 
             is ScreenState.NoPermission -> NoPermissionState(path = state.path, reason = state.reason)
 
@@ -11670,6 +12301,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.aide.client.state.ScreenState
 import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.failureMessage
+import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.protocol.FileContentPayload
 
 /**
@@ -11688,9 +12321,12 @@ fun FileContentScreen(
         when (state) {
             ScreenState.Empty -> EmptyState(Strings.text(Strings.stateEmptyTree))
 
+            ScreenState.NoRepository -> EmptyState(Strings.text(Strings.stateNoRepository))
+
             ScreenState.Loading -> LoadingState(rows = 6)
 
-            is ScreenState.Failed -> ErrorState(message = state.detail, onRetry = onRetry)
+            is ScreenState.Failed ->
+                ErrorState(message = stateMessageText(failureMessage(state.kind, state.arguments)), onRetry = onRetry)
 
             is ScreenState.NoPermission -> NoPermissionState(path = state.path, reason = state.reason)
 
@@ -11918,6 +12554,8 @@ import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.ui.screens.RepoScreen
 import dev.aide.client.ui.screens.SettingsScreen
 import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.incompatibleMessage
+import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.client.ui.theme.AideTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -11934,11 +12572,26 @@ fun App(
 ) {
     val client = remember(connection, scope) { HostClient(connection, scope) }
     val coroutineScope = rememberCoroutineScope()
+    val initialRepositoryPath = remember { settings.repositoryPath }
 
-    LaunchedEffect(Unit) { client.start() }
+    // При запуске открывается сохранённый репозиторий (T-0.15): иначе пользователь видел бы
+    // «пусто», хотя репозиторий просто не выбран. Пока идёт открытие — состояние загрузки.
+    // Без сохранённого пути остаётся начальное состояние «репозиторий не выбран».
+    LaunchedEffect(Unit) {
+        client.start()
+        if (!initialRepositoryPath.isNullOrBlank()) openRepository(client, state, initialRepositoryPath)
+    }
 
     val connectionState by connection.state.collectAsState()
     LaunchedEffect(connectionState) { state.onConnectionState(connectionState) }
+
+    // Данные приходят не только по явному действию пользователя: после реконнекта
+    // HostClient перезапрашивает дерево и файл сам, и их нужно отдать экрану.
+    LaunchedEffect(client) { client.session.collect { state.onHostSession(it) } }
+
+    // Хост сообщил о завершении работы: показать «нет связи», не дожидаясь закрытия сокета.
+    val hostShuttingDown by client.hostShuttingDown.collectAsState()
+    LaunchedEffect(hostShuttingDown) { if (hostShuttingDown) state.onHostShuttingDown() }
 
     val tree by state.treeState.collectAsState()
     val file by state.fileState.collectAsState()
@@ -11981,7 +12634,10 @@ fun App(
                         onRetry = {
                             coroutineScope.launch { openRepository(client, state, settings.repositoryPath.orEmpty()) }
                         },
-                        onBack = { state.selectFile(null) },
+                        onBack = {
+                            state.selectFile(null)
+                            client.closeFile()
+                        },
                     )
                 }
             }
@@ -12002,8 +12658,13 @@ private fun Header(branch: String?, connectionState: ConnectionState) {
             is ConnectionState.Reconnecting ->
                 Strings.text(Strings.connectionReconnecting, connectionState.attempt)
 
-            is ConnectionState.Incompatible ->
-                Strings.text(Strings.connectionIncompatible, connectionState.userMessage)
+            is ConnectionState.Incompatible -> stateMessageText(
+                incompatibleMessage(
+                    reason = connectionState.reason,
+                    clientVersion = connectionState.clientVersion.toString(),
+                    hostVersion = connectionState.hostVersion.toString(),
+                ),
+            )
 
             is ConnectionState.Closed -> Strings.text(Strings.connectionClosed, connectionState.reason)
         }
@@ -12024,23 +12685,21 @@ private suspend fun openRepository(client: HostClient, state: AppStateStore, pat
         return
     }
 
-    client.fileTree()
-        .onSuccess { state.onTreeLoaded(it) }
-        .onFailure { error ->
-            val protocolError = (error as? HostCallException)?.error
-            if (protocolError != null) state.onTreeFailed(protocolError)
-        }
-    client.hostState().onSuccess { state.onHostState(it) }
+    // Успешные результаты попадают в состояние через подписку на сессию клиента
+    // (LaunchedEffect выше); здесь остаётся только типизированная ошибка.
+    client.fileTree().onFailure { error ->
+        val protocolError = (error as? HostCallException)?.error
+        if (protocolError != null) state.onTreeFailed(protocolError)
+    }
+    client.hostState()
 }
 
-/** Читает файл: на успехе кладёт содержимое в состояние, на ошибке — типизированную причину. */
+/** Читает файл: успех доходит до состояния через сессию клиента, здесь — только ошибка. */
 private suspend fun loadFile(client: HostClient, state: AppStateStore, path: String) {
-    client.fileContent(path)
-        .onSuccess { state.onFileLoaded(it) }
-        .onFailure { error ->
-            val protocolError = (error as? HostCallException)?.error
-            if (protocolError != null) state.onFileFailed(protocolError)
-        }
+    client.fileContent(path).onFailure { error ->
+        val protocolError = (error as? HostCallException)?.error
+        if (protocolError != null) state.onFileFailed(protocolError)
+    }
 }
 ```
 
@@ -12213,7 +12872,7 @@ fun main() = application {
         }
 ```
 
-`libs.kotlinx.coroutines.test` не подключается: ни UI-тесты, ни тесты состояния его не используют (проверено снятием). Без `compose.desktop.currentOs` компиляция при этом проходит, и `BUILD` выглядит успешным до первого теста: нативная библиотека Skiko нужна только на запуске `SkikoComposeUiTest`, поэтому её отсутствие проявляется падением всех одиннадцати UI-тестов, а не ошибкой сборки.
+`libs.kotlinx.coroutines.test` не подключается: ни UI-тесты, ни тесты состояния его не используют (проверено снятием). Без `compose.desktop.currentOs` компиляция при этом проходит, и `BUILD` выглядит успешным до первого теста: нативная библиотека Skiko нужна только на запуске `SkikoComposeUiTest`, поэтому её отсутствие проявляется падением всех тринадцати UI-тестов, а не ошибкой сборки.
 
 `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/ScreenStatesTest.kt`:
 
@@ -12278,11 +12937,18 @@ class ScreenStatesTest {
     }
 
     @Test
+    fun `не выбранный репозиторий отличается от пустого`() = runComposeUiTest {
+        setContent(narrow { RepoTreeScreen(state = ScreenState.NoRepository, onFileClick = {}, onRetry = {}) })
+
+        onNodeWithText("Репозиторий не выбран. Укажите путь к нему в настройках.").assertIsDisplayed()
+    }
+
+    @Test
     fun `ошибка показывает что случилось и кнопку повтора`() = runComposeUiTest {
         setContent(
             narrow {
                 RepoTreeScreen(
-                    state = ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, "Путь не существует: /nope"),
+                    state = ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, listOf("/nope")),
                     onFileClick = {},
                     onRetry = {},
                 )
@@ -12345,16 +13011,28 @@ class ScreenStatesTest {
     fun `экран файла показывает ошибку с повтором`() = runComposeUiTest {
         setContent(
             narrow {
-                val error = ScreenState.Failed(
-                    ScreenState.ErrorKind.OTHER,
-                    "Воркспейс закрыт, откройте репозиторий заново",
-                )
+                val error = ScreenState.Failed(ScreenState.ErrorKind.WORKSPACE_CLOSED)
                 FileContentScreen(state = error, onRetry = {})
             },
         )
 
         onNodeWithText("Воркспейс закрыт, откройте репозиторий заново").assertIsDisplayed()
         onNodeWithText("Повторить").assertIsDisplayed()
+    }
+
+    @Test
+    fun `ошибка вида OTHER показывает текст хоста как есть`() = runComposeUiTest {
+        setContent(
+            narrow {
+                val error = ScreenState.Failed(
+                    ScreenState.ErrorKind.OTHER,
+                    listOf("Показ бинарных файлов появится в следующем этапе"),
+                )
+                FileContentScreen(state = error, onRetry = {})
+            },
+        )
+
+        onNodeWithText("Показ бинарных файлов появится в следующем этапе").assertIsDisplayed()
     }
 
     @Test
@@ -12383,13 +13061,92 @@ class ScreenStatesTest {
 
 Список импортов соответствует фактически используемым символам: `ScreenState`, `RepoTreeScreen`, `FileContentScreen`, `FileContentPayload`, `FileTreeEntry`, `FileTreePayload`, `WorkspaceId`, `Box`, `width`, `dp`, `Composable`, `runComposeUiTest`, `onNodeWithTag`, `onNodeWithText`, `assertIsDisplayed`, `ExperimentalTestApi`.
 
+`client-ui/src/jvmTest/kotlin/dev/aide/client/ui/StateMessagesTest.kt` — юнит-тест сопоставления видов ошибок с ресурсами (NFR-13): он проверяет `failureMessage` и `incompatibleMessage` без Compose, поэтому ловит ошибку сопоставления раньше UI-тестов:
+
+```kotlin
+package dev.aide.client.ui
+
+import dev.aide.client.state.ScreenState
+import dev.aide.client.ui.strings.StateMessage
+import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.failureMessage
+import dev.aide.client.ui.strings.incompatibleMessage
+import dev.aide.protocol.IncompatibilityReason
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+/**
+ * NFR-13: текст состояния собирается в UI из ресурсов, а слои ниже передают только
+ * код и параметры. Единственное исключение — [ScreenState.ErrorKind.OTHER].
+ */
+class StateMessagesTest {
+
+    @Test
+    fun `путь и не-git-каталог берут текст из ресурса`() {
+        assertEquals(
+            StateMessage.Resource(Strings.stateErrorPathMissing, listOf("/nope")),
+            failureMessage(ScreenState.ErrorKind.PATH_MISSING, listOf("/nope")),
+        )
+        assertEquals(
+            StateMessage.Resource(Strings.stateErrorNotARepo, listOf("/tmp/x")),
+            failureMessage(ScreenState.ErrorKind.NOT_A_REPOSITORY, listOf("/tmp/x")),
+        )
+    }
+
+    @Test
+    fun `закрытый воркспейс берёт текст из ресурса без параметров`() {
+        assertEquals(
+            StateMessage.Resource(Strings.stateErrorWorkspaceClosed, emptyList()),
+            failureMessage(ScreenState.ErrorKind.WORKSPACE_CLOSED, emptyList()),
+        )
+    }
+
+    @Test
+    fun `несовместимость выбирает ресурс по причине и несёт обе версии`() {
+        assertEquals(
+            StateMessage.Resource(Strings.connectionIncompatibleClientOutdated, listOf("1.0", "2.0")),
+            failureMessage(
+                ScreenState.ErrorKind.INCOMPATIBLE,
+                listOf(IncompatibilityReason.CLIENT_OUTDATED.name, "1.0", "2.0"),
+            ),
+        )
+        assertEquals(
+            StateMessage.Resource(Strings.connectionIncompatibleHostOutdated, listOf("1.5", "1.2")),
+            failureMessage(
+                ScreenState.ErrorKind.INCOMPATIBLE,
+                listOf(IncompatibilityReason.HOST_OUTDATED.name, "1.5", "1.2"),
+            ),
+        )
+    }
+
+    @Test
+    fun `текст о несовместимости для шапки совпадает с состоянием экрана`() {
+        assertEquals(
+            failureMessage(
+                ScreenState.ErrorKind.INCOMPATIBLE,
+                listOf(IncompatibilityReason.CLIENT_OUTDATED.name, "1.0", "2.0"),
+            ),
+            incompatibleMessage(IncompatibilityReason.CLIENT_OUTDATED, "1.0", "2.0"),
+        )
+    }
+
+    @Test
+    fun `вид OTHER показывает текст хоста как есть, без ресурса`() {
+        assertEquals(
+            StateMessage.Literal("внутренняя ошибка хоста"),
+            failureMessage(ScreenState.ErrorKind.OTHER, listOf("внутренняя ошибка хоста")),
+        )
+    }
+}
+```
+
 - [ ] **Шаг 10: прогнать UI-тесты**
 
 ```bash
 ./gradlew :client-ui:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 16 тестов (`ScreenStatesTest` — 11, `EntryPointStringsTest` — 2, `NoLiteralUiStringsTest` — 1, `NoLocalityBranchingTest` — 1, `SharedUiHasNoPlatformBranchingTest` — 1).
+Ожидаемо: `BUILD SUCCESSFUL`, 23 теста (`ScreenStatesTest` — 13, `StateMessagesTest` — 5, `EntryPointStringsTest` — 2, `NoLiteralUiStringsTest` — 1, `NoLocalityBranchingTest` — 1, `SharedUiHasNoPlatformBranchingTest` — 1).
 
 - [ ] **Шаг 11: подключить Android-приложение**
 
@@ -12657,9 +13414,9 @@ cd -   # возврат в каталог, из которого запуска�
 | ошибка (путь) | ввести `/tmp/нет-такого-каталога` и нажать «Открыть» | «Путь не существует…» и кнопка «Повторить» |
 | ошибка (не репозиторий) | открыть `/tmp` | «Каталог не является git-репозиторием…» |
 | нет связи | вручную в поставляемом приложении не воспроизводится (хост встроен и умирает с окном); поведение при остановке хоста закрывает автотест `DesktopEndToEndTest`, вживую — Android с выключенной сетью (шаг 15) | плашка «Нет связи с хостом» и дерево из кэша |
-| нет прав | выбрать в дереве нечитаемый файл **внутри** воркспейса, сняв с него права на чтение (`chmod 000`, подготовка ниже) | «Нет доступа» с путём и причиной |
+| нет прав | открыть путь-файл (`/etc/passwd`) или выбрать в дереве нечитаемый файл **внутри** воркспейса (`chmod 000`, подготовка ниже) | «Нет доступа» с путём и причиной |
 
-Состояние «нет прав» воспроизводится только нечитаемым файлом **внутри** воркспейса. Путь наружу (`/etc/passwd`) даёт не `NoPermission`, а ошибку пути: `Workspace.open` отвергает не-каталог как `NotFound("путь не является каталогом: /etc/passwd")`. Файл достаточно положить в воркспейс — дерево строится обходом файловой системы, под git его класть не нужно:
+Состояние «нет прав» (`NoPermission`) даёт `ProtocolError.AccessDenied`. Его воспроизводят двумя способами: открыть путь, который существует, но не является каталогом — `Workspace.open` отвечает `AccessDenied("путь не является каталогом")` (например, `/etc/passwd`), — либо выбрать в дереве нечитаемый файл **внутри** воркспейса. Второй способ требует подготовки фикстуры; файл достаточно положить в воркспейс (дерево строится обходом файловой системы, под git его класть не нужно):
 
 ```bash
 echo secret > /tmp/aide-fixture/secret.txt
@@ -12743,7 +13500,7 @@ git commit -m "feat(client): экраны дерева и файла с пять
 | `T-0.16` хранилище метаданных | 15 |
 | `T-0.15` сквозная проверка | 16 |
 
-**Согласованность имён.** Типы, введённые один раз и используемые дальше: `TaskId`, `RunId`, `PacketId`, `HunkId`, `ToolCallId`, `SnapshotRef`, `Task`, `AgentRun`, `ToolCall`, `ToolPermission`, `ChangePacket`, `FileChange`, `Hunk`, `HunkLine`, `TestStatus`, `ReviewDecision`, `Snapshot`, `RiskLevel`, `AutonomyMode`, `Permission`, `Cost`, `RequestId`, `WorkspaceId`, `SessionId`, `ProtocolVersion`, `ClientMessage`, `HostMessage`, `ProtocolError`, `FileTreePayload`, `FileContentPayload`, `HostStatePayload`, `HostEvent`, `HostMode`, `Workspace`, `WorkspaceFileSystem`, `FileTreeBuilder`, `GitRepository`, `JGitRepository`, `ChangeFile`→`ChangedFile`, `CommitInfo`, `EmbeddedHost`, `ProtocolServer`, `ClientSession`, `ClientMessageHandler`, `StageZeroHandler`, `HostConnection`, `KtorHostConnection`, `HostClient`, `HostSession`, `ConnectionState`, `ScreenState`, `AppStateStore`, `SettingsStore`, `KeyValueStore`, `AndroidClientRuntime`, `AndroidClientDependencies`, `DesktopRuntime`, `HostStore`, `DatabaseFactory`.
+**Согласованность имён.** Типы, введённые один раз и используемые дальше: `TaskId`, `RunId`, `PacketId`, `HunkId`, `ToolCallId`, `SnapshotRef`, `Task`, `AgentRun`, `ToolCall`, `ToolPermission`, `ChangePacket`, `FileChange`, `Hunk`, `HunkLine`, `TestStatus`, `ReviewDecision`, `Snapshot`, `RiskLevel`, `AutonomyMode`, `Permission`, `Cost`, `RequestId`, `WorkspaceId`, `SessionId`, `ProtocolVersion`, `ClientMessage`, `HostMessage`, `ProtocolError`, `FileTreePayload`, `FileContentPayload`, `HostStatePayload`, `HostEvent`, `HostMode`, `Workspace`, `WorkspaceFileSystem`, `FileTreeBuilder`, `GitRepository`, `JGitRepository`, `ChangeFile`→`ChangedFile`, `CommitInfo`, `EmbeddedHost`, `ProtocolServer`, `ClientSession`, `ClientMessageHandler`, `StageZeroHandler`, `HostConnection`, `KtorHostConnection`, `HostClient`, `HostSession`, `ConnectionState`, `ScreenState`, `AppStateStore`, `StateMessage`, `SettingsStore`, `KeyValueStore`, `AndroidClientRuntime`, `AndroidClientDependencies`, `DesktopRuntime`, `HostStore`, `DatabaseFactory`.
 
 **Что осознанно не входит в план**, потому что относится к другим этапам: агент и его рантайм (`T-1.1`–`T-1.6`), diff-движок (`T-1.21`–`T-1.23`), инбокс и hunk-вьюер (`T-1.28`–`T-1.37`), редактор (этап 2), удалённый транспорт через интернет (этап 5), Rust-модули (этап 6). Поле `Hunk.explanation` для пояснений на уровне блока добавляется в `T-1.25`, а не здесь.
 
@@ -12752,6 +13509,28 @@ git commit -m "feat(client): экраны дерева и файла с пять
 1. `host-core` объявлен JVM-модулем, а не KMP. Это соответствует § 3.2 (хост — JVM-сервис) и § 7.1, но означает, что хост нельзя запустить на Android. Если позже понадобится локальный хост на телефоне, модуль придётся делать мультиплатформенным — это отдельное решение, а не следствие этапа 0.
 2. Состояние «нет связи» в поставляемом десктопном приложении вручную не воспроизводится: хост встроен и живёт в том же процессе, умирает вместе с окном. При остановке хоста приложение штатно показывает плашку и оставляет данные из кэша — это проверяет автотест `DesktopEndToEndTest`; вживую состояние проверяют на Android с выключенной сетью (шаг 15).
 3. Тесты `JGitRepositoryTest` и `MigrationTest` требуют `git` в `PATH` и JDBC-драйвер SQLite; в CI на `ubuntu-latest` оба есть. Локально на Windows `git` нужно добавить в `PATH`, иначе тесты упадут с явным сообщением из `GitCliFixture.requireGit`.
+
+---
+
+## Долг перед этапом 1
+
+Ревью этапа 0 нашло места, которые сознательно **не** исправлены сейчас: они не мешают приёмке этапа, но станут проблемой дальше. Список — чеклист: закрывая пункт, отмечать его здесь.
+
+- [ ] **Хранилище метаданных не открывается вне тестов.** `host-core/src/main/kotlin/dev/aide/host/store/` (схема, миграции, пять хранилищ) вызывается только из тестов: сущности — задачи, прогоны, вызовы инструментов — это данные этапа 1. Хранилище подключается, когда появляется первое сохранение прогона; журнал аудита — `T-1.14`.
+- [ ] **`GitRepository.changedFiles()` и `commitLog()` недостижимы через протокол.** `currentBranch()` и `headCommit()` используются в состоянии хоста, а эти два метода не вызывает никто. Место применения — вкладка Changes этапа 1.
+- [ ] **НФТ производительности из § 11 не измеряются.** NFR-1 (запуск < 2 с), NFR-2 (отклик < 100 мс), NFR-3 (60 FPS), NFR-4 (память) заявлены, но не имеют ни теста, ни бенчмарка; измеряются только NFR-7 (число файлов в дереве) и NFR-13 (отсутствие литералов). Бенчмарки — в этапе 1, вместе с первым профилем производительности.
+- [ ] **Android не автоматизирован.** Инструментированных тестов нет, эмуляторного job'а в CI нет, всё держится на ручной проверке. Стоит завести хотя бы smoke-тест запуска в этапе 1.
+- [ ] **Сквозной тест десктопа зависает при регрессии «не открывает при старте».** Compose `waitUntil`/`waitForIdle` ждёт вечно, а ограничивает только `timeout-minutes` job'а (15 минут). Нужен таймаут внутри теста — при первой правке `DesktopEndToEndTest`.
+- [ ] **Память серверного кэша дедупликации.** Оценка до ~128 МиБ в худшем случае (256 записей × 512 КиБ), а `RequestDedupCache.clear()` не вызывается нигде. Стоит ограничить кэш по байтам или сбрасывать его при смене воркспейса — при первой правке `RequestDedupCache`/`ProtocolServer`.
+- [ ] **`ScreenState.Failed.technical` собирается, но нигде не показывается.** Спецификация § 6.1 требует «техническая деталь — по запросу», а UI её не показывает. Закрывается в этапе 1, вместе с экраном ошибки.
+- [ ] **`ConnectionState.Closed.reason` — литерал.** «Соединение остановлено пользователем» в `KtorHostConnection` — единственный пользовательский текст вне ресурсов, оставшийся после перевода NFR-13 в UI. При первой правке `KtorHostConnection` его нужно вынести в ресурсы.
+- [ ] **Схема мигрированной базы расходится с эталонной.** `1.sqm` добавляет `payload BLOB NOT NULL DEFAULT ''`, а `.sq`-схема объявляет `payload BLOB NOT NULL` без default. Плагинная проверка миграций (`verifyMigrations`) выключена, поэтому дрейф не ловится. Закрывается при первой правке схемы или миграций.
+- [ ] **Бюджет 15 минут из `T-0.3` не измеряется.** В CI стоит только `timeout-minutes` и шаг `echo`, который ничего не замеряет; фактические 7m0s холодного прогона задокументированы лишь в плане. Стоит измерять бюджет в этапе 1.
+- [ ] **`NoLiteralUiStringsTest` не ловит литерал в форме `Text(text = "…")`** и не проверяет, что скан вообще что-то нашёл (у соседних тестов `scanned > 0` есть, здесь нет). При первой правке теста добавить обе проверки.
+- [ ] **`PublicFieldsAreDocumentedTest` покрывает шесть файлов моделей** и только свойства с отступом ровно в четыре пробела; `Ids.kt` и `Enums.kt` не покрыты. При первой правке теста расширить охват.
+- [ ] **`SettingsScreen` читает настройки напрямую из `SettingsStore` без состояния.** Выбор темы или режима управления не обновляет даже `enabled` кнопок до следующей рекомпозиции. Закрывается при первой правке экрана настроек (в этапе 1).
+- [ ] **Системный жест «назад» на Android не обрабатывается.** `BackHandler` нигде нет, хотя § 6.2 требует возврата в дерево. Закрывается в этапе 1.
+- [ ] **Строка состояния «нет связи» обещает неверное поведение.** Текст «Действия станут доступны после восстановления связи» противоречит § 3.5, который требует ставить офлайн-решения в очередь. Текст правится вместе с офлайн-очередью в этапе 1.
 
 ---
 
