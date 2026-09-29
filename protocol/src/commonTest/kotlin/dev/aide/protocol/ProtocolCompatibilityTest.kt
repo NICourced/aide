@@ -3,7 +3,6 @@ package dev.aide.protocol
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertTrue
 
 class ProtocolCompatibilityTest {
 
@@ -31,7 +30,6 @@ class ProtocolCompatibilityTest {
             ProtocolCompatibility.check(client = ProtocolVersion(1, 0), host = ProtocolVersion(2, 0)),
         )
         assertEquals(IncompatibilityReason.CLIENT_OUTDATED, result.reason)
-        assertTrue(result.userMessage.contains("обновите приложение", ignoreCase = true))
     }
 
     @Test
@@ -40,7 +38,6 @@ class ProtocolCompatibilityTest {
             ProtocolCompatibility.check(client = ProtocolVersion(3, 1), host = ProtocolVersion(2, 9)),
         )
         assertEquals(IncompatibilityReason.HOST_OUTDATED, result.reason)
-        assertTrue(result.userMessage.contains("обновите хост", ignoreCase = true))
     }
 
     @Test
@@ -52,21 +49,21 @@ class ProtocolCompatibilityTest {
     }
 
     @Test
-    fun `сообщение несовместимости содержит обе версии, чтобы пользователь видел, что обновлять`() {
+    fun `результат несовместимости несёт обе версии, чтобы UI показал, что обновлять`() {
         val result = assertIs<ProtocolCompatibility.Incompatible>(
             ProtocolCompatibility.check(client = ProtocolVersion(1, 5), host = ProtocolVersion(1, 2)),
         )
-        assertTrue(result.userMessage.contains("1.5"))
-        assertTrue(result.userMessage.contains("1.2"))
+        assertEquals(ProtocolVersion(1, 5), result.clientVersion)
+        assertEquals(ProtocolVersion(1, 2), result.hostVersion)
     }
 
     @Test
-    fun `сообщение о несовпадении major называет обе версии`() {
+    fun `несовпадение major тоже называет обе версии`() {
         val result = assertIs<ProtocolCompatibility.Incompatible>(
             ProtocolCompatibility.check(client = ProtocolVersion(1, 0), host = ProtocolVersion(2, 0)),
         )
-        assertTrue(result.userMessage.contains("1.0"))
-        assertTrue(result.userMessage.contains("2.0"))
+        assertEquals(ProtocolVersion(1, 0), result.clientVersion)
+        assertEquals(ProtocolVersion(2, 0), result.hostVersion)
     }
 
     @Test
@@ -74,7 +71,8 @@ class ProtocolCompatibilityTest {
         val incompatible = ProtocolCompatibility.toHostMessage(
             result = ProtocolCompatibility.Incompatible(
                 reason = IncompatibilityReason.CLIENT_OUTDATED,
-                userMessage = "Обновите приложение",
+                clientVersion = ProtocolVersion(1, 0),
+                hostVersion = ProtocolVersion(2, 0),
             ),
             hostVersion = ProtocolVersion(2, 0),
         )

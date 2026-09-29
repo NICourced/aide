@@ -16,6 +16,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.aide.client.state.ScreenState
 import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.failureMessage
+import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.protocol.FileTreePayload
 
 /**
@@ -33,9 +35,12 @@ fun RepoTreeScreen(
         when (state) {
             ScreenState.Empty -> EmptyState(Strings.text(Strings.stateEmptyRepo))
 
+            ScreenState.NoRepository -> EmptyState(Strings.text(Strings.stateNoRepository))
+
             ScreenState.Loading -> LoadingState()
 
-            is ScreenState.Failed -> ErrorState(message = state.detail, onRetry = onRetry)
+            is ScreenState.Failed ->
+                ErrorState(message = stateMessageText(failureMessage(state.kind, state.arguments)), onRetry = onRetry)
 
             is ScreenState.NoPermission -> NoPermissionState(path = state.path, reason = state.reason)
 

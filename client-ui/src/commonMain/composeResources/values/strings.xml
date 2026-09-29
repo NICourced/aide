@@ -14,20 +14,19 @@
     <string name="state_empty_title">Здесь пока пусто</string>
     <string name="state_empty_repo">В репозитории нет коммитов и файлов. Создайте первый коммит — дерево появится.</string>
     <string name="state_empty_tree">В репозитории нет файлов для показа.</string>
+    <string name="state_no_repository">Репозиторий не выбран. Укажите путь к нему в настройках.</string>
     <string name="state_error_title">Не получилось</string>
     <string name="state_error_retry">Повторить</string>
     <string name="state_error_path_missing">Путь не существует: %1$s</string>
     <string name="state_error_not_a_repo">Каталог не является git-репозиторием: %1$s</string>
+    <string name="state_error_workspace_closed">Воркспейс закрыт, откройте репозиторий заново</string>
     <string name="state_offline_title">Нет связи с хостом</string>
     <string name="state_offline_body">Показаны данные, загруженные ранее. Действия станут доступны после восстановления связи.</string>
     <string name="state_no_permission_title">Нет доступа</string>
     <string name="state_no_permission_body">Доступ к «%1$s» закрыт: %2$s</string>
 
-    <string name="action_open_repository">Открыть репозиторий</string>
     <string name="action_back">Назад</string>
     <string name="action_settings">Настройки</string>
-    <string name="action_about">О приложении</string>
-    <string name="action_about_body">Этап 0: скелет, протокол и показ репозитория. Агент и ревью появятся дальше.</string>
 
     <string name="settings_title">Настройки</string>
     <string name="settings_repository_path">Путь к репозиторию</string>
@@ -48,6 +47,8 @@
 
     <string name="connection_connecting">Подключение к хосту…</string>
     <string name="connection_reconnecting">Связь потеряна, переподключение (попытка %1$d)…</string>
-    <string name="connection_incompatible">Версии несовместимы. %1$s</string>
+    <string name="connection_incompatible_client_outdated">Версии несовместимы: обновите приложение (клиент %1$s, хост %2$s).</string>
+    <string name="connection_incompatible_host_outdated">Версии несовместимы: обновите хост (клиент %1$s, хост %2$s).</string>
+    <string name="connection_incompatible_malformed">Версии несовместимы: не удалось прочитать приветствие (клиент %1$s, хост %2$s).</string>
     <string name="connection_closed">Соединение закрыто: %1$s</string>
 </resources>

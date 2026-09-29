@@ -11,7 +11,6 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation(project(":domain"))
             // api: тип client-state стоит в публичной подписи модуля — в параметре App, —
             // поэтому без api потребитель не соберётся: implementation-зависимости
             // не попадают на его compile classpath.

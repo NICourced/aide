@@ -10,7 +10,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
-import kotlin.io.path.name
 import kotlin.io.path.notExists
 import kotlin.io.path.readBytes
 
@@ -26,16 +25,6 @@ data class FileContent(
     val truncated: Boolean,
     /** Язык для подсветки или null. */
     val language: String?,
-)
-
-/** Запись в каталоге. */
-data class DirectoryEntry(
-    /** Путь относительно корня воркспейса. */
-    val path: String,
-    /** Директория это или файл. */
-    val isDirectory: Boolean,
-    /** Размер файла; null для директорий. */
-    val sizeBytes: Long?,
 )
 
 /**
@@ -70,24 +59,6 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
             truncated = truncated,
             language = LanguageDetector.detect(relativePath),
         )
-    }
-
-    /** Перечисляет содержимое каталога, отсортированное по имени. */
-    fun listChildren(relativePath: String): List<DirectoryEntry> {
-        val resolved = resolveInside(relativePath)
-        if (resolved.notExists() || !resolved.isDirectory()) {
-            notFound("каталог не найден: $relativePath")
-        }
-        return try {
-            Files.list(resolved).use { stream ->
-                stream
-                    .map { child -> child.toDirectoryEntry(relativePath) }
-                    .sorted(Comparator.comparing(DirectoryEntry::path))
-                    .toList()
-            }
-        } catch (error: IOException) {
-            denied(relativePath, "ошибка чтения каталога: ${error.message}")
-        }
     }
 
     /** Превращает прочитанный файл в сообщение протокола. */
@@ -135,13 +106,13 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
 
     private fun ensureRegularFile(relativePath: String, resolved: Path) {
         if (resolved.notExists()) {
-            notFound("файл не найден: $relativePath")
+            notFound(relativePath)
         }
         if (resolved.isDirectory()) {
-            notFound("по пути '$relativePath' находится каталог, а не файл")
+            denied(relativePath, "по пути находится каталог, а не файл")
         }
         if (!resolved.isRegularFile()) {
-            notFound("по пути '$relativePath' не обычный файл")
+            denied(relativePath, "по пути не обычный файл")
         }
     }
 
@@ -212,16 +183,6 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
         /** Сколько первых байт проверяется на бинарность. */
         const val BINARY_SNIFF_BYTES: Int = 8 * 1024
     }
-}
-
-private fun Path.toDirectoryEntry(parentRelative: String): DirectoryEntry {
-    val relative = if (parentRelative.isEmpty()) name else "$parentRelative/$name"
-    val directory = isDirectory()
-    return DirectoryEntry(
-        path = relative,
-        isDirectory = directory,
-        sizeBytes = if (directory) null else runCatching { Files.size(this) }.getOrNull(),
-    )
 }
 
 /** Бинарность определяется по NUL в первых килобайтах: текстовые UTF-8 файлы NUL не содержат. */

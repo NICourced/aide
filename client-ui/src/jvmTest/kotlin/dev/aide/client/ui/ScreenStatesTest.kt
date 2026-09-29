@@ -58,11 +58,18 @@ class ScreenStatesTest {
     }
 
     @Test
+    fun `не выбранный репозиторий отличается от пустого`() = runComposeUiTest {
+        setContent(narrow { RepoTreeScreen(state = ScreenState.NoRepository, onFileClick = {}, onRetry = {}) })
+
+        onNodeWithText("Репозиторий не выбран. Укажите путь к нему в настройках.").assertIsDisplayed()
+    }
+
+    @Test
     fun `ошибка показывает что случилось и кнопку повтора`() = runComposeUiTest {
         setContent(
             narrow {
                 RepoTreeScreen(
-                    state = ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, "Путь не существует: /nope"),
+                    state = ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, listOf("/nope")),
                     onFileClick = {},
                     onRetry = {},
                 )
@@ -125,16 +132,28 @@ class ScreenStatesTest {
     fun `экран файла показывает ошибку с повтором`() = runComposeUiTest {
         setContent(
             narrow {
-                val error = ScreenState.Failed(
-                    ScreenState.ErrorKind.OTHER,
-                    "Воркспейс закрыт, откройте репозиторий заново",
-                )
+                val error = ScreenState.Failed(ScreenState.ErrorKind.WORKSPACE_CLOSED)
                 FileContentScreen(state = error, onRetry = {})
             },
         )
 
         onNodeWithText("Воркспейс закрыт, откройте репозиторий заново").assertIsDisplayed()
         onNodeWithText("Повторить").assertIsDisplayed()
+    }
+
+    @Test
+    fun `ошибка вида OTHER показывает текст хоста как есть`() = runComposeUiTest {
+        setContent(
+            narrow {
+                val error = ScreenState.Failed(
+                    ScreenState.ErrorKind.OTHER,
+                    listOf("Показ бинарных файлов появится в следующем этапе"),
+                )
+                FileContentScreen(state = error, onRetry = {})
+            },
+        )
+
+        onNodeWithText("Показ бинарных файлов появится в следующем этапе").assertIsDisplayed()
     }
 
     @Test

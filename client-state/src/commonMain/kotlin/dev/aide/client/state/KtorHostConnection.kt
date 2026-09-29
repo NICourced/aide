@@ -4,7 +4,6 @@ import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.DecodeResult
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolCodec
-import dev.aide.protocol.ProtocolCompatibility
 import dev.aide.protocol.ProtocolVersion
 import dev.aide.protocol.RequestId
 import io.ktor.client.HttpClient
@@ -181,14 +180,11 @@ class KtorHostConnection(
                     }
 
                     is HostMessage.Incompatible -> {
-                        val userMessage = ProtocolCompatibility.check(
-                            client = clientVersion,
-                            host = message.hostVersion,
-                        ).let { result ->
-                            (result as? ProtocolCompatibility.Incompatible)?.userMessage
-                                ?: "Версии протокола несовместимы (хост ${message.hostVersion})"
-                        }
-                        _state.value = ConnectionState.Incompatible(userMessage)
+                        _state.value = ConnectionState.Incompatible(
+                            reason = message.reason,
+                            clientVersion = clientVersion,
+                            hostVersion = message.hostVersion,
+                        )
                     }
 
                     else -> {

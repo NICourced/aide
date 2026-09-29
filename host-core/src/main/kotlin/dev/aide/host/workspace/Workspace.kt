@@ -26,10 +26,10 @@ class Workspace private constructor(
         /** Открывает каталог как воркспейс. */
         fun open(path: Path): Workspace {
             if (!path.exists()) {
-                notFound("путь не существует: $path")
+                notFound(path.toString())
             }
             if (!path.isDirectory()) {
-                notFound("путь не является каталогом: $path")
+                denied(path.toString(), "путь не является каталогом")
             }
             val canonical = try {
                 path.toRealPath()
@@ -44,8 +44,11 @@ class Workspace private constructor(
 /** Ошибка доступа к воркспейсу, несущая типизированную причину из протокола. */
 class WorkspaceAccessException(val error: ProtocolError) : Exception(error.toString())
 
-private fun notFound(what: String): Nothing =
-    throw WorkspaceAccessException(ProtocolError.NotFound(what))
+private fun notFound(path: String): Nothing =
+    throw WorkspaceAccessException(ProtocolError.NotFound(path))
+
+private fun denied(path: String, reason: String): Nothing =
+    throw WorkspaceAccessException(ProtocolError.AccessDenied(path = path, reason = reason))
 
 private fun internalError(message: String, detail: String?): Nothing =
     throw WorkspaceAccessException(ProtocolError.Internal(message, detail))

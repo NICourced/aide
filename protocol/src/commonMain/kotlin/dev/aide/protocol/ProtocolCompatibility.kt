@@ -13,38 +13,30 @@ object ProtocolCompatibility {
     /** Версии совместимы. */
     data object Compatible : ProtocolCompatibilityResult
 
-    /** Версии несовместимы; [userMessage] показывается пользователю как есть. */
+    /** Версии несовместимы; текста здесь нет — его строит UI по [reason] и версиям (NFR-13). */
     data class Incompatible(
         /** Машинночитаемая причина. */
         val reason: IncompatibilityReason,
-        /** Текст для пользователя: что обновить и до чего. */
-        val userMessage: String,
+        /** Версия клиента на момент проверки. */
+        val clientVersion: ProtocolVersion,
+        /** Версия хоста на момент проверки. */
+        val hostVersion: ProtocolVersion,
     ) : ProtocolCompatibilityResult
 
     /**
      * Сравнивает версии клиента и хоста.
      *
-     * `userMessage` по сети не передаётся: [HostMessage.Incompatible] несёт только причину и
-     * версию хоста, а текст клиент строит сам, вызывая эту же чистую функцию с версией хоста.
+     * Возвращает только машинночитаемую причину и версии: понятный пользователю текст
+     * строит клиентский UI из ресурсов (NFR-13), поэтому по сети он не передаётся —
+     * [HostMessage.Incompatible] несёт лишь причину и версию хоста.
      */
     fun check(client: ProtocolVersion, host: ProtocolVersion): ProtocolCompatibilityResult = when {
-        client.major < host.major -> Incompatible(
-            reason = IncompatibilityReason.CLIENT_OUTDATED,
-            userMessage = "Версия протокола не поддерживается: обновите приложение " +
-                "(клиент $client, хост $host).",
-        )
+        client.major < host.major -> Incompatible(IncompatibilityReason.CLIENT_OUTDATED, client, host)
 
         // После первой ветки major у клиента не меньше, чем у хоста, значит эта ветка — про «клиент новее».
-        client.major > host.major -> Incompatible(
-            reason = IncompatibilityReason.HOST_OUTDATED,
-            userMessage = "Версия протокола не поддерживается: обновите хост " +
-                "(клиент $client, хост $host).",
-        )
+        client.major > host.major -> Incompatible(IncompatibilityReason.HOST_OUTDATED, client, host)
 
-        client.minor > host.minor -> Incompatible(
-            reason = IncompatibilityReason.HOST_OUTDATED,
-            userMessage = "Клиент новее хоста: обновите хост (клиент $client, хост $host).",
-        )
+        client.minor > host.minor -> Incompatible(IncompatibilityReason.HOST_OUTDATED, client, host)
 
         else -> Compatible
     }

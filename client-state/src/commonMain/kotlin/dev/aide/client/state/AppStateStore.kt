@@ -2,6 +2,7 @@ package dev.aide.client.state
 
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreePayload
+import dev.aide.protocol.HostEvent
 import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolError
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,7 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class AppStateStore {
 
-    private val _treeState = MutableStateFlow<ScreenState<FileTreePayload>>(ScreenState.Empty)
+    private val _treeState = MutableStateFlow<ScreenState<FileTreePayload>>(ScreenState.NoRepository)
 
     /** Состояние дерева файлов. */
     val treeState: StateFlow<ScreenState<FileTreePayload>> = _treeState.asStateFlow()
@@ -124,7 +125,14 @@ class AppStateStore {
 
         when (state) {
             is ConnectionState.Incompatible -> {
-                _treeState.value = ScreenState.Failed(ScreenState.ErrorKind.INCOMPATIBLE, state.userMessage)
+                _treeState.value = ScreenState.Failed(
+                    kind = ScreenState.ErrorKind.INCOMPATIBLE,
+                    arguments = listOf(
+                        state.reason.name,
+                        state.clientVersion.toString(),
+                        state.hostVersion.toString(),
+                    ),
+                )
             }
 
             is ConnectionState.Reconnecting -> {
@@ -142,6 +150,17 @@ class AppStateStore {
             is ConnectionState.Closed -> Unit
             ConnectionState.Idle, ConnectionState.Connecting -> Unit
         }
+    }
+
+    /**
+     * Переводит загруженные данные в [ScreenState.Offline] по событию [HostEvent.HostShuttingDown].
+     *
+     * Сокет закроется и сам, но событие приходит раньше закрытия: так пользователь видит,
+     * что связи нет, не дожидаясь таймаута транспорта.
+     */
+    fun onHostShuttingDown() {
+        _treeState.value = _treeState.value.toOffline()
+        _fileState.value = _fileState.value.toOffline()
     }
 }
 
@@ -167,19 +186,23 @@ private fun <T> ScreenState<T>.fromOffline(): ScreenState<T> = when (this) {
  * Тип ошибки задан протоколом, поэтому разбирать текст не нужно: «нет прав»,
  * «не git-репозиторий» и «путь не существует» приходят как разные типы, а не
  * как одно сообщение, в котором пришлось бы искать подстроки.
+ *
+ * Слои ниже передают только код и параметры (путь, причина): понятный пользователю
+ * текст строит UI из ресурсов (NFR-13). Исключение — [ScreenState.ErrorKind.OTHER]:
+ * там параметром идёт текст, пришедший от хоста, потому что такую ошибку
+ * классифицировать нельзя.
  */
 private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
-    is ProtocolError.NotFound -> ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, what)
+    is ProtocolError.NotFound -> ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, listOf(what))
 
     is ProtocolError.NotAGitRepository ->
-        ScreenState.Failed(ScreenState.ErrorKind.NOT_A_REPOSITORY, "Каталог не является git-репозиторием: $path")
+        ScreenState.Failed(ScreenState.ErrorKind.NOT_A_REPOSITORY, listOf(path))
 
     is ProtocolError.AccessDenied -> ScreenState.NoPermission(path = path, reason = reason)
 
-    is ProtocolError.WorkspaceClosed ->
-        ScreenState.Failed(ScreenState.ErrorKind.OTHER, "Воркспейс закрыт, откройте репозиторий заново")
+    is ProtocolError.WorkspaceClosed -> ScreenState.Failed(ScreenState.ErrorKind.WORKSPACE_CLOSED)
 
-    is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, what)
+    is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(what))
 
-    is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, message, detail)
+    is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(message), detail)
 }

@@ -2,6 +2,7 @@ package dev.aide.host.server
 
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.DecodeResult
+import dev.aide.protocol.HostEvent
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolCodec
 import dev.aide.protocol.ProtocolCompatibility
@@ -40,6 +41,8 @@ class ClientSession(
     private val hostVersion: ProtocolVersion,
     private val send: suspend (ByteArray) -> Unit,
     private val dedup: RequestDedupCache,
+    /** Разослать событие всем сессиям; используется после открытия воркспейса. */
+    private val broadcast: suspend (HostEvent) -> Unit,
 ) {
 
     private val logger: Logger = LoggerFactory.getLogger(ClientSession::class.java)
@@ -112,6 +115,11 @@ class ClientSession(
         }
     }
 
+    /** Отправляет уже закодированное сообщение этой сессии; используется для событий хоста. */
+    suspend fun deliver(bytes: ByteArray) {
+        if (!closeRequested) send(bytes)
+    }
+
     private suspend fun sendUnGreetedFailure(requestId: RequestId?) {
         send(
             ProtocolCodec.encode(
@@ -130,10 +138,16 @@ class ClientSession(
             logger.info("Повтор запроса $requestId — отдаю сохранённый ответ")
             send(cached)
         } else {
-            val encoded = ProtocolCodec.encode(handler.handle(message))
+            val response = handler.handle(message)
+            val encoded = ProtocolCodec.encode(response)
             dedup.put(requestId, encoded)
             handledRequests += 1
             send(encoded)
+            // Открытие воркспейса меняет то, что видит клиент: остальные сессии (в том числе
+            // эта) получают событие и перезапрашивают состояние (T-0.8, события хоста).
+            if (response is HostMessage.WorkspaceOpened) {
+                broadcast(HostEvent.WorkspaceChanged(response.workspaceId))
+            }
         }
     }
 }

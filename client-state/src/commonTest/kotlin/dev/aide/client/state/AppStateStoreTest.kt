@@ -5,7 +5,9 @@ import dev.aide.protocol.FileTreeEntry
 import dev.aide.protocol.FileTreePayload
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.HostStatePayload
+import dev.aide.protocol.IncompatibilityReason
 import dev.aide.protocol.ProtocolError
+import dev.aide.protocol.ProtocolVersion
 import dev.aide.protocol.SessionId
 import dev.aide.protocol.WorkspaceId
 import kotlin.test.Test
@@ -39,8 +41,8 @@ class AppStateStoreTest {
     )
 
     @Test
-    fun `начальное состояние — пусто и загрузка не начата`() {
-        assertEquals(ScreenState.Empty, store.treeState.value)
+    fun `начальное состояние — репозиторий не выбран`() {
+        assertEquals(ScreenState.NoRepository, store.treeState.value)
         assertNull(store.selectedFile.value)
         assertNull(store.hostState.value)
     }
@@ -61,12 +63,12 @@ class AppStateStoreTest {
     }
 
     @Test
-    fun `ошибка пути даёт состояние ошибки с понятным текстом`() {
-        store.onTreeFailed(ProtocolError.NotFound("путь не существует: /nope"))
+    fun `ошибка пути даёт состояние ошибки с путём в параметрах`() {
+        store.onTreeFailed(ProtocolError.NotFound("/nope"))
 
         val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.PATH_MISSING, failed.kind)
-        assertTrue(failed.detail.contains("/nope"))
+        assertEquals(listOf("/nope"), failed.arguments)
     }
 
     @Test
@@ -75,6 +77,25 @@ class AppStateStoreTest {
 
         val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.NOT_A_REPOSITORY, failed.kind)
+        assertEquals(listOf("/tmp/not-a-repo"), failed.arguments)
+    }
+
+    @Test
+    fun `закрытый воркспейс даёт отдельный вид ошибки, а не внутреннюю`() {
+        store.onTreeFailed(ProtocolError.WorkspaceClosed(workspaceId))
+
+        val failed = assertIs<ScreenState.Failed>(store.treeState.value)
+        assertEquals(ScreenState.ErrorKind.WORKSPACE_CLOSED, failed.kind)
+    }
+
+    @Test
+    fun `внутренняя ошибка остаётся видом OTHER с текстом хоста`() {
+        store.onTreeFailed(ProtocolError.Internal("не удалось открыть репозиторий", "trace"))
+
+        val failed = assertIs<ScreenState.Failed>(store.treeState.value)
+        assertEquals(ScreenState.ErrorKind.OTHER, failed.kind)
+        assertEquals(listOf("не удалось открыть репозиторий"), failed.arguments)
+        assertEquals("trace", failed.technical)
     }
 
     @Test
@@ -109,10 +130,27 @@ class AppStateStoreTest {
     @Test
     fun `несовместимость версий показывается как ошибка и не даёт работать`() {
         store.onTreeLoaded(tree)
-        store.onConnectionState(ConnectionState.Incompatible("Обновите приложение (клиент 1.0, хост 2.0)"))
+        store.onConnectionState(
+            ConnectionState.Incompatible(
+                reason = IncompatibilityReason.CLIENT_OUTDATED,
+                clientVersion = ProtocolVersion(1, 0),
+                hostVersion = ProtocolVersion(2, 0),
+            ),
+        )
 
         val failed = assertIs<ScreenState.Failed>(store.treeState.value)
         assertEquals(ScreenState.ErrorKind.INCOMPATIBLE, failed.kind)
+        assertEquals(listOf("CLIENT_OUTDATED", "1.0", "2.0"), failed.arguments)
+    }
+
+    @Test
+    fun `событие остановки хоста переводит загруженные данные в офлайн, сохраняя кэш`() {
+        store.onTreeLoaded(tree)
+
+        store.onHostShuttingDown()
+
+        val offline = assertIs<ScreenState.Offline<FileTreePayload>>(store.treeState.value)
+        assertTrue(offline.cached.entries.size == 2, "Кэш остаётся доступен офлайн")
     }
 
     @Test

@@ -67,15 +67,37 @@ class FileTreeBuilderTest {
     }
 
     @Test
-    fun `лимит записей соблюдается и помечается`() {
+    fun `симлинк на корень не разворачивается бесконечно`() {
+        // `link -> .`: без учёта посещённых каталогов обход зациклился бы и упёрся в лимит.
+        Files.createSymbolicLink(fixture.root.resolve("link"), fixture.root)
+
+        val tree = builder().build()
+        val paths = tree.entries.map { it.path }
+
+        assertFalse(tree.truncated, "Петля симлинка — не обрезка по лимиту")
+        assertEquals(0, tree.skippedEntries)
+        assertEquals(paths.distinct().size, paths.size, "Каждый путь показывается один раз")
+        assertEquals(1, paths.count { it == "link" }, "Симлинк показывается один раз")
+        assertFalse(paths.any { it.startsWith("link/") }, "Содержимое корня не дублируется под симлинком")
+        assertEquals(1, paths.count { it == "src/auth/Login.kt" })
+    }
+
+    @Test
+    fun `лимит записей соблюдается, а число пропущенных отражает действительность`() {
         val many = fixture.root.resolve("many")
         many.createDirectories()
         repeat(30) { index -> many.resolve("file-$index.txt").writeText("x") }
 
-        val tree = builder().let { FileTreeBuilder(it.fileSystem, it.workspace, maxEntries = 10) }.build()
-        assertTrue(tree.truncated, "Дерево должно быть помечено как неполное")
-        assertEquals(10, tree.entries.size)
-        assertTrue(tree.skippedEntries > 0)
+        val full = builder().build()
+        val limited = builder().let { FileTreeBuilder(it.fileSystem, it.workspace, maxEntries = 10) }.build()
+
+        assertTrue(limited.truncated, "Дерево должно быть помечено как неполное")
+        assertEquals(10, limited.entries.size)
+        assertEquals(
+            full.entries.size - 10,
+            limited.skippedEntries,
+            "Пропущено ровно столько записей, сколько не поместилось",
+        )
     }
 
     @Test

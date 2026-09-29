@@ -11,18 +11,27 @@ sealed interface ScreenState<out T> {
     /** Данных ещё нет и запрос не начат. */
     data object Empty : ScreenState<Nothing>
 
+    /** Репозиторий не выбран: показывать нечего, пользователю нужно указать путь в настройках. */
+    data object NoRepository : ScreenState<Nothing>
+
     /** Идёт загрузка; UI показывает скелетон структуры, а не пустой экран. */
     data object Loading : ScreenState<Nothing>
 
     /** Данные получены. */
     data class Loaded<T>(val data: T) : ScreenState<T>
 
-    /** Запрос завершился ошибкой. */
+    /**
+     * Запрос завершился ошибкой.
+     *
+     * [arguments] — параметры текста, интерпретируемые по [kind]: пути, версии. Сам текст
+     * строит UI из ресурсов (NFR-13); исключение — [ErrorKind.OTHER], где параметром служит
+     * уже готовый текст хоста, который классифицировать нельзя.
+     */
     data class Failed(
         /** Вид ошибки — от него зависит текст и действие. */
         val kind: ErrorKind,
-        /** Что именно случилось, для показа пользователю. */
-        val detail: String,
+        /** Параметры для текста ошибки; порядок задаётся видом [kind]. */
+        val arguments: List<String> = emptyList(),
         /** Техническая деталь; показывается по запросу. */
         val technical: String? = null,
     ) : ScreenState<Nothing>
@@ -46,10 +55,13 @@ sealed interface ScreenState<out T> {
         /** Каталог есть, но это не git-репозиторий. */
         NOT_A_REPOSITORY,
 
+        /** Воркспейс был открыт, но на хосте уже закрыт. */
+        WORKSPACE_CLOSED,
+
         /** Версии протокола несовместимы. */
         INCOMPATIBLE,
 
-        /** Прочая ошибка, в том числе внутренняя ошибка хоста. */
+        /** Прочая ошибка: текст хоста, классифицировать нельзя. */
         OTHER,
     }
 }

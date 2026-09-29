@@ -112,14 +112,17 @@ class ProtocolServerTest {
         scope.cancel()
     }
 
-    private fun newClient(): Pair<KtorHostConnection, HostClient> {
+    private fun newClient(
+        endpoint: String = server.endpoint,
+        prefix: String = "client",
+    ): Pair<KtorHostConnection, HostClient> {
         val connection = KtorHostConnection(
-            endpoint = server.endpoint,
+            endpoint = endpoint,
             scope = scope,
             httpClient = HttpClient { install(WebSockets) },
         )
         connections += connection
-        return connection to HostClient(connection, scope)
+        return connection to HostClient(connection, scope, requestIdPrefix = prefix)
     }
 
     private suspend fun awaitConnected(connection: KtorHostConnection) {
@@ -154,6 +157,14 @@ class ProtocolServerTest {
             awaitConnected(connection)
             client.openWorkspace("/projects/aide")
 
+            // Открытие воркспейса рассылает событие, и клиент обновляет дерево сам:
+            // дождёмся этого, иначе счётчик обработчика менялся бы во время проверки.
+            val before = withTimeoutOrNull(5_000) {
+                while (client.session.value.tree == null) delay(20)
+                treeCalls.get()
+            }
+            assertNotNull(before, "Клиент не обновил дерево после открытия воркспейса")
+
             val requestId = RequestId("dup-1")
             val first = connection.request(ClientMessage.FileTree(requestId, workspaceId))
             val second = connection.request(ClientMessage.FileTree(requestId, workspaceId))
@@ -161,7 +172,81 @@ class ProtocolServerTest {
             assertIs<HostMessage.Tree>(first)
             assertIs<HostMessage.Tree>(second)
             assertEquals(first, second, "Повтор должен вернуть тот же ответ")
-            assertEquals(1, treeCalls.get(), "Обработчик должен выполниться ровно один раз")
+            assertEquals(before + 1, treeCalls.get(), "Повторный запрос не должен выполнить обработчик второй раз")
+        }
+    }
+
+    @Test
+    fun `остановка сервера доносит до клиента событие HostShuttingDown`() {
+        runBlocking {
+            val stopping = ProtocolServer(handler = handler, port = freeLoopbackPort())
+            stopping.start()
+            try {
+                val (connection, client) = newClient(stopping.endpoint, prefix = "shutdown-client")
+                client.start()
+                awaitConnected(connection)
+                client.openWorkspace("/projects/aide")
+
+                stopping.stop()
+
+                val observed = withTimeoutOrNull(5_000) {
+                    while (!client.hostShuttingDown.value) delay(20)
+                    true
+                }
+                assertTrue(observed == true, "Клиент должен получить событие HostShuttingDown")
+            } finally {
+                stopping.stop()
+            }
+        }
+    }
+
+    @Test
+    fun `клиенты с разными префиксами сессии не получают чужой ответ`() {
+        runBlocking {
+            // Идентификаторы обоих клиентов начинаются с одного порядкового номера:
+            // различает их только префикс сессии, иначе кэш сервера отдал бы второму
+            // клиенту ответ первого (кэш живёт весь срок хоста).
+            val opened = AtomicInteger(0)
+            val shared = ProtocolServer(
+                handler = ClientMessageHandler { message ->
+                    when (message) {
+                        is ClientMessage.OpenWorkspace -> HostMessage.WorkspaceOpened(
+                            message.requestId,
+                            WorkspaceId("ws-${opened.incrementAndGet()}"),
+                        )
+
+                        is ClientMessage.FileTree -> HostMessage.Tree(
+                            message.requestId,
+                            FileTreePayload(workspaceId, "/projects/aide", emptyList(), truncated = false),
+                        )
+
+                        else -> HostMessage.Failure(
+                            requestId = RequestId("unexpected"),
+                            error = ProtocolError.NotImplemented("не нужен этому тесту"),
+                        )
+                    }
+                },
+                port = freeLoopbackPort(),
+            )
+            shared.start()
+            try {
+                val (connectionA, clientA) = newClient(shared.endpoint, prefix = "client-a")
+                val (connectionB, clientB) = newClient(shared.endpoint, prefix = "client-b")
+                clientA.start()
+                clientB.start()
+                awaitConnected(connectionA)
+                awaitConnected(connectionB)
+
+                val first = clientA.openWorkspace("/projects/aide")
+                val second = clientB.openWorkspace("/projects/aide")
+
+                assertNotNull(first)
+                assertNotNull(second)
+                assertTrue(first != second, "Клиенты с одинаковым номером запроса должны получить свои воркспейсы")
+                assertEquals(2, opened.get(), "Открытие воркспейса должно выполниться для каждого клиента")
+            } finally {
+                shared.stop()
+            }
         }
     }
 

@@ -7,7 +7,6 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.runComposeUiTest
 import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.KtorHostConnection
@@ -58,13 +57,16 @@ class DesktopEndToEndTest {
     }
 
     @Test
-    fun `десктоп открывает репозиторий и показывает ветку, дерево и файл`() = runComposeUiTest {
+    fun `десктоп открывает репозиторий при запуске и показывает ветку, дерево и файл`() = runComposeUiTest {
         val repo = fixture()
         val host = EmbeddedHost.open()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val connection = KtorHostConnection(endpoint = host.endpoint, scope = scope)
         val settingsFile = Files.createTempFile("aide-settings", ".properties")
         val settings = SettingsStore(createKeyValueStoreAt(settingsFile))
+        // Путь сохранён в настройках: приложение обязано открыть его само (T-0.15),
+        // а не ждать, пока пользователь зайдёт в настройки и нажмёт «Открыть».
+        settings.repositoryPath = repo.toString()
 
         try {
             connection.start()
@@ -73,14 +75,7 @@ class DesktopEndToEndTest {
             waitUntil(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
             println("E2E: соединение установлено ${connection.state.value}")
 
-            onNodeWithText("Настройки").performClick()
-            waitUntil(timeoutMillis = 5_000) {
-                onAllNodesWithTag("settings-repository-path").fetchSemanticsNodes().isNotEmpty()
-            }
-
-            onNodeWithTag("settings-repository-path").performTextInput(repo.toString())
-            onNodeWithTag("settings-open").performClick()
-
+            // Никаких действий в настройках: дерево и ветка должны появиться сами.
             waitUntil(timeoutMillis = 15_000) {
                 onAllNodesWithText("Ветка: master").fetchSemanticsNodes().isNotEmpty()
             }
@@ -91,7 +86,7 @@ class DesktopEndToEndTest {
             onNodeWithText("Ветка: master").assertIsDisplayed()
             onNodeWithText("Репозиторий: $repo").assertIsDisplayed()
             onNodeWithTag("tree-row-src/Login.kt").assertIsDisplayed()
-            println("E2E: дерево показано")
+            println("E2E: репозиторий открыт при запуске, дерево показано")
 
             onNodeWithTag("tree-row-src/Login.kt").performClick()
             waitUntil(timeoutMillis = 15_000) {
@@ -108,6 +103,30 @@ class DesktopEndToEndTest {
             onNodeWithText("Нет связи с хостом").assertIsDisplayed()
             onNodeWithText("fun login() = \"token\"\n").assertIsDisplayed()
             println("E2E: состояние «нет связи» показано с кэшем")
+        } finally {
+            runBlocking { connection.stop() }
+            host.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `без сохранённого пути приложение предлагает выбрать репозиторий`() = runComposeUiTest {
+        val host = EmbeddedHost.open()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val connection = KtorHostConnection(endpoint = host.endpoint, scope = scope)
+        val settingsFile = Files.createTempFile("aide-settings-empty", ".properties")
+        val settings = SettingsStore(createKeyValueStoreAt(settingsFile))
+
+        try {
+            connection.start()
+            setContent { App(connection = connection, settings = settings, scope = scope) }
+
+            waitUntil(timeoutMillis = 15_000) {
+                onAllNodesWithText("Репозиторий не выбран. Укажите путь к нему в настройках.")
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            onNodeWithText("Репозиторий не выбран. Укажите путь к нему в настройках.").assertIsDisplayed()
         } finally {
             runBlocking { connection.stop() }
             host.close()

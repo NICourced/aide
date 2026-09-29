@@ -16,6 +16,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.aide.client.state.ScreenState
 import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.failureMessage
+import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.protocol.FileContentPayload
 
 /**
@@ -34,9 +36,12 @@ fun FileContentScreen(
         when (state) {
             ScreenState.Empty -> EmptyState(Strings.text(Strings.stateEmptyTree))
 
+            ScreenState.NoRepository -> EmptyState(Strings.text(Strings.stateNoRepository))
+
             ScreenState.Loading -> LoadingState(rows = 6)
 
-            is ScreenState.Failed -> ErrorState(message = state.detail, onRetry = onRetry)
+            is ScreenState.Failed ->
+                ErrorState(message = stateMessageText(failureMessage(state.kind, state.arguments)), onRetry = onRetry)
 
             is ScreenState.NoPermission -> NoPermissionState(path = state.path, reason = state.reason)
 

@@ -28,6 +28,8 @@ import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.ui.screens.RepoScreen
 import dev.aide.client.ui.screens.SettingsScreen
 import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.incompatibleMessage
+import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.client.ui.theme.AideTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -44,8 +46,15 @@ fun App(
 ) {
     val client = remember(connection, scope) { HostClient(connection, scope) }
     val coroutineScope = rememberCoroutineScope()
+    val initialRepositoryPath = remember { settings.repositoryPath }
 
-    LaunchedEffect(Unit) { client.start() }
+    // При запуске открывается сохранённый репозиторий (T-0.15): иначе пользователь видел бы
+    // «пусто», хотя репозиторий просто не выбран. Пока идёт открытие — состояние загрузки.
+    // Без сохранённого пути остаётся начальное состояние «репозиторий не выбран».
+    LaunchedEffect(Unit) {
+        client.start()
+        if (!initialRepositoryPath.isNullOrBlank()) openRepository(client, state, initialRepositoryPath)
+    }
 
     val connectionState by connection.state.collectAsState()
     LaunchedEffect(connectionState) { state.onConnectionState(connectionState) }
@@ -53,6 +62,10 @@ fun App(
     // Данные приходят не только по явному действию пользователя: после реконнекта
     // HostClient перезапрашивает дерево и файл сам, и их нужно отдать экрану.
     LaunchedEffect(client) { client.session.collect { state.onHostSession(it) } }
+
+    // Хост сообщил о завершении работы: показать «нет связи», не дожидаясь закрытия сокета.
+    val hostShuttingDown by client.hostShuttingDown.collectAsState()
+    LaunchedEffect(hostShuttingDown) { if (hostShuttingDown) state.onHostShuttingDown() }
 
     val tree by state.treeState.collectAsState()
     val file by state.fileState.collectAsState()
@@ -119,8 +132,13 @@ private fun Header(branch: String?, connectionState: ConnectionState) {
             is ConnectionState.Reconnecting ->
                 Strings.text(Strings.connectionReconnecting, connectionState.attempt)
 
-            is ConnectionState.Incompatible ->
-                Strings.text(Strings.connectionIncompatible, connectionState.userMessage)
+            is ConnectionState.Incompatible -> stateMessageText(
+                incompatibleMessage(
+                    reason = connectionState.reason,
+                    clientVersion = connectionState.clientVersion.toString(),
+                    hostVersion = connectionState.hostVersion.toString(),
+                ),
+            )
 
             is ConnectionState.Closed -> Strings.text(Strings.connectionClosed, connectionState.reason)
         }

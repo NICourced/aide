@@ -7,7 +7,9 @@ import dev.aide.client.ui.resources.action_settings
 import dev.aide.client.ui.resources.app_name
 import dev.aide.client.ui.resources.connection_closed
 import dev.aide.client.ui.resources.connection_connecting
-import dev.aide.client.ui.resources.connection_incompatible
+import dev.aide.client.ui.resources.connection_incompatible_client_outdated
+import dev.aide.client.ui.resources.connection_incompatible_host_outdated
+import dev.aide.client.ui.resources.connection_incompatible_malformed
 import dev.aide.client.ui.resources.connection_reconnecting
 import dev.aide.client.ui.resources.repo_file_title
 import dev.aide.client.ui.resources.repo_file_truncated
@@ -38,10 +40,12 @@ import dev.aide.client.ui.resources.state_error_not_a_repo
 import dev.aide.client.ui.resources.state_error_path_missing
 import dev.aide.client.ui.resources.state_error_retry
 import dev.aide.client.ui.resources.state_error_title
+import dev.aide.client.ui.resources.state_error_workspace_closed
 import dev.aide.client.ui.resources.state_loading_skeleton
 import dev.aide.client.ui.resources.state_loading_title
 import dev.aide.client.ui.resources.state_no_permission_body
 import dev.aide.client.ui.resources.state_no_permission_title
+import dev.aide.client.ui.resources.state_no_repository
 import dev.aide.client.ui.resources.state_offline_body
 import dev.aide.client.ui.resources.state_offline_title
 import org.jetbrains.compose.resources.StringResource
@@ -71,10 +75,12 @@ object Strings {
     val stateEmptyTitle: StringResource = Res.string.state_empty_title
     val stateEmptyRepo: StringResource = Res.string.state_empty_repo
     val stateEmptyTree: StringResource = Res.string.state_empty_tree
+    val stateNoRepository: StringResource = Res.string.state_no_repository
     val stateErrorTitle: StringResource = Res.string.state_error_title
     val stateErrorRetry: StringResource = Res.string.state_error_retry
     val stateErrorPathMissing: StringResource = Res.string.state_error_path_missing
     val stateErrorNotARepo: StringResource = Res.string.state_error_not_a_repo
+    val stateErrorWorkspaceClosed: StringResource = Res.string.state_error_workspace_closed
     val stateOfflineTitle: StringResource = Res.string.state_offline_title
     val stateOfflineBody: StringResource = Res.string.state_offline_body
     val stateNoPermissionTitle: StringResource = Res.string.state_no_permission_title
@@ -99,7 +105,9 @@ object Strings {
 
     val connectionConnecting: StringResource = Res.string.connection_connecting
     val connectionReconnecting: StringResource = Res.string.connection_reconnecting
-    val connectionIncompatible: StringResource = Res.string.connection_incompatible
+    val connectionIncompatibleClientOutdated: StringResource = Res.string.connection_incompatible_client_outdated
+    val connectionIncompatibleHostOutdated: StringResource = Res.string.connection_incompatible_host_outdated
+    val connectionIncompatibleMalformed: StringResource = Res.string.connection_incompatible_malformed
     val connectionClosed: StringResource = Res.string.connection_closed
 
     /** Читает строку в composable-контексте. */

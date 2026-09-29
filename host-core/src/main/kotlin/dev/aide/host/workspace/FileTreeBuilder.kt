@@ -11,10 +11,13 @@ import kotlin.io.path.name
  * Обход дерева воркспейса для показа в UI.
  *
  * Обходятся только каталоги, прошедшие проверку изоляции: символические ссылки
- * за пределы корня пропускаются, а не разворачиваются. Игнорируемые каталоги
- * (служебный каталог git и записи `.gitignore`) не показываются. Обход ограничен
- * [maxEntries]: на большом репозитории лучше честная пометка «дерево неполное»,
- * чем зависший хост.
+ * за пределы корня пропускаются, а не разворачиваются. Каждый каталог обходится
+ * не более одного раза: канонические пути уже посещённых каталогов запоминаются,
+ * поэтому симлинк на предка (например `link -> .`) не разворачивается бесконечно.
+ * Игнорируемые каталоги (служебный каталог git и записи `.gitignore`) не показываются.
+ * Число показываемых записей ограничено [maxEntries]. Чтобы пометка «дерево неполное»
+ * несла точное число пропущенных записей, обход после достижения предела продолжается,
+ * но записи сверх предела только считаются: память под дерево остаётся ограниченной.
  */
 class FileTreeBuilder(
     /** Доступ к файловой системе воркспейса; используется для проверки путей. */
@@ -30,26 +33,32 @@ class FileTreeBuilder(
         val collected = mutableListOf<FileTreeEntry>()
         val pending = ArrayDeque<Pair<Path, String>>()
         pending += workspace.root to ""
+        val visited = mutableSetOf(workspace.root)
+        var skipped = 0
 
         while (pending.isNotEmpty()) {
             val (directory, relative) = pending.removeFirst()
             for (child in childrenOf(directory)) {
                 val childRelative = if (relative.isEmpty()) child.name else "$relative/${child.name}"
                 if (isIgnored(childRelative, child) || isEscapingSymlink(child, childRelative)) continue
-                if (collected.size >= maxEntries) {
-                    return payload(collected, truncated = true, skippedEntries = 1)
-                }
-
                 val directoryChild = child.isDirectory()
-                collected += FileTreeEntry(
-                    path = childRelative,
-                    isDirectory = directoryChild,
-                    sizeBytes = if (directoryChild) null else sizeOf(child),
-                )
-                if (directoryChild) pending += child to childRelative
+                if (collected.size < maxEntries) {
+                    collected += FileTreeEntry(
+                        path = childRelative,
+                        isDirectory = directoryChild,
+                        sizeBytes = if (directoryChild) null else sizeOf(child),
+                    )
+                } else {
+                    skipped += 1
+                }
+                // Каталог обходим один раз: повторный канонический путь — это либо цикл,
+                // либо уже показанное содержимое.
+                if (directoryChild && canonicalOf(child)?.let(visited::add) == true) {
+                    pending += child to childRelative
+                }
             }
         }
-        return payload(collected, truncated = false, skippedEntries = 0)
+        return payload(collected, truncated = skipped > 0, skippedEntries = skipped)
     }
 
     private fun payload(entries: List<FileTreeEntry>, truncated: Boolean, skippedEntries: Int) = FileTreePayload(
@@ -59,6 +68,9 @@ class FileTreeBuilder(
         truncated = truncated,
         skippedEntries = skippedEntries,
     )
+
+    /** Канонический путь каталога; null, если его не удалось определить (битый симлинк). */
+    private fun canonicalOf(directory: Path): Path? = runCatching { directory.toRealPath() }.getOrNull()
 
     /** Дети каталога, отсортированные по имени; недоступный каталог даёт пустой список, а не срыв обхода. */
     private fun childrenOf(directory: Path): List<Path> = runCatching {

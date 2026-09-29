@@ -1,5 +1,7 @@
 package dev.aide.client.state
 
+import dev.aide.protocol.IncompatibilityReason
+import dev.aide.protocol.ProtocolVersion
 import dev.aide.protocol.SessionId
 
 /**
@@ -30,10 +32,14 @@ sealed interface ConnectionState {
         val nextRetryMillis: Long,
     ) : ConnectionState
 
-    /** Версии протокола несовместимы; UI показывает [userMessage] и не даёт работать. */
+    /** Версии протокола несовместимы; UI строит [ConnectionState.Incompatible] текст из ресурсов. */
     data class Incompatible(
-        /** Что обновить и до какой версии. */
-        val userMessage: String,
+        /** Машинночитаемая причина: какую сторону и почему нужно обновить. */
+        val reason: IncompatibilityReason,
+        /** Версия клиента этой сборки. */
+        val clientVersion: ProtocolVersion,
+        /** Версия хоста, полученная при подключении. */
+        val hostVersion: ProtocolVersion,
     ) : ConnectionState
 
     /** Соединение закрыто окончательно: остановлено пользователем или хост отверг сессию. */

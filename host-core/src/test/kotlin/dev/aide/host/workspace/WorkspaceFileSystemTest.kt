@@ -116,8 +116,8 @@ class WorkspaceFileSystemTest {
     @Test
     fun `каталог вместо файла даёт понятную ошибку`() {
         val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("src/auth") }
-        val notFound = assertIs<ProtocolError.NotFound>(error.error)
-        assertTrue(notFound.what.contains("каталог", ignoreCase = true))
+        val denied = assertIs<ProtocolError.AccessDenied>(error.error)
+        assertTrue(denied.reason.contains("каталог", ignoreCase = true))
     }
 
     @Test
@@ -174,13 +174,6 @@ class WorkspaceFileSystemTest {
         )
         val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("src/auth/Secret.kt") }
         assertIs<ProtocolError.AccessDenied>(error.error)
-    }
-
-    @Test
-    fun `листинг каталога остаётся внутри воркспейса`() {
-        val entries = fs.listChildren("src")
-        assertEquals(listOf("src/auth", "src/net"), entries.map { it.path }.sorted())
-        assertTrue(entries.all { it.isDirectory })
     }
 
     @Test
