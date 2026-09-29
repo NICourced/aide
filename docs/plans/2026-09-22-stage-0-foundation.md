@@ -2641,6 +2641,8 @@ git commit -m "feat(domain): 11 моделей домена, round-trip тест
 
 **Что именно проверяемо на уровне домена.** Из шести инвариантов § 4.1 конструктором или валидатором закрываются только два: 1 (принадлежность hunk → file → packet) и 5 (риск пакета не ниже максимума по hunk'ам). Остальные четыре — свойства процесса и проверяются в задачах хоста: 2 (неизменяемость пакета) — `T-1.24`, 3 (снапшот до и после) — `T-1.19`, 4 (автор в истории git) — `T-1.11`, 6 (решения ревью не теряются) — `T-1.37`.
 
+**Чего валидатор не закрывает — и почему это важно дальше.** Формулировка инварианта 1 «каждый `FileChange` принадлежит ровно одному `ChangePacket`» конструктором не закрывается в принципе: у `FileChange` и `Hunk` нет обратной ссылки на пакет, поэтому одно и то же значение можно положить в два разных пакета, и ни один из них этого не заметит. Валидатор закрывает только проверяемую часть: уникальность пути внутри пакета и совпадение `hunk.filePath` с путём своего файла; сверх § 4.1 добавлено осознанное усиление — у файла, кроме `DELETED`, должен быть хотя бы один hunk (на него есть тест). `Hunk` и `FileChange` остаются публичными data-классами без валидации: вне пакета их можно собрать как угодно, и инвариант 1 не считается обеспеченным полностью — ни в этой задаче, ни в следующих.
+
 - [ ] **Шаг 1: написать падающие тесты на оба инварианта**
 
 `domain/src/commonTest/kotlin/dev/aide/domain/InvariantsTest.kt`:
@@ -2707,7 +2709,9 @@ class InvariantsTest {
 
     @Test
     fun `корректный пакет создаётся без исключения`() {
-        assertTrue(DomainFixtures.packet.files.isNotEmpty())
+        // Копирование тоже проходит через конструктор, поэтому валидация здесь исполняется по-настоящему.
+        val packet = DomainFixtures.packet.copy(risk = RiskLevel.SAFE)
+        assertEquals(2, packet.files.size)
     }
 
     // Инвариант 5: RiskLevel пакета не может быть ниже максимального RiskLevel его hunk-ов.
@@ -2743,7 +2747,11 @@ class InvariantsTest {
 
     @Test
     fun `пакет без файлов проходит проверку риска`() {
-        assertEquals(RiskLevel.SAFE, DomainFixtures.emptyPacket.risk)
+        // Пакет собирается копированием, то есть валидация исполняется; проверяется,
+        // что она не отвергает пустой список файлов.
+        val packet = DomainFixtures.packet.copy(files = emptyList())
+        assertTrue(packet.files.isEmpty())
+        assertEquals(RiskLevel.SAFE, packet.risk)
     }
 }
 ```
@@ -2763,8 +2771,11 @@ class InvariantsTest {
 ```kotlin
 package dev.aide.domain
 
-/** Инвариант домена, который можно проверить конструктором. */
-enum class DomainInvariant(val description: String) {
+/** Инвариант домена, который удаётся проверить конструктором. */
+enum class DomainInvariant(
+    /** Человекочитаемая формулировка инварианта; попадает в сообщение [DomainViolation]. */
+    val description: String,
+) {
     /** Инвариант 1 § 4.1: каждый hunk принадлежит ровно одному файлу, каждый файл — ровно одному пакету. */
     HUNK_HAS_EXACTLY_ONE_FILE(
         "Каждый hunk принадлежит ровно одному FileChange, каждый FileChange — ровно одному ChangePacket",
@@ -2778,6 +2789,7 @@ enum class DomainInvariant(val description: String) {
 
 /** Нарушение инварианта домена; несёт сам инвариант, чтобы тест и UI могли на него сослаться. */
 class DomainViolation(
+    /** Инвариант, который нарушен. */
     val invariant: DomainInvariant,
     detail: String,
 ) : IllegalArgumentException("${invariant.description}. $detail")
@@ -2785,8 +2797,18 @@ class DomainViolation(
 /**
  * Проверяет инварианты 1 и 5 § 4.1. Вызывается из `init`-блока [ChangePacket],
  * поэтому некорректный пакет нельзя ни создать, ни разобрать из сериализованного вида.
+ *
+ * Проверки разнесены по функциям с одним `throw` каждая: detekt ограничивает число
+ * `throw` в функции, а исключение здесь — единственный способ сообщить о нарушении.
  */
 internal fun validatePacket(files: List<FileChange>, risk: RiskLevel) {
+    requireUniquePaths(files)
+    files.forEach(::requireHunksBelongToFile)
+    requireRiskNotBelowHunks(files, risk)
+}
+
+/** Инвариант 1: один путь — одно [FileChange] в пакете. */
+private fun requireUniquePaths(files: List<FileChange>) {
     val duplicates = files.groupBy { it.path }.filterValues { it.size > 1 }.keys
     if (duplicates.isNotEmpty()) {
         throw DomainViolation(
@@ -2794,27 +2816,27 @@ internal fun validatePacket(files: List<FileChange>, risk: RiskLevel) {
             "Пути, встречающиеся в пакете больше одного раза: ${duplicates.sorted()}",
         )
     }
+}
 
-    files.forEach { file ->
-        if (file.changeKind != FileChangeKind.DELETED && file.hunks.isEmpty()) {
-            throw DomainViolation(
-                DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE,
-                "Файл '${file.path}' изменён (${file.changeKind}), но не содержит ни одного hunk'а",
-            )
-        }
-        file.hunks.forEach { hunk ->
-            if (hunk.filePath != file.path) {
-                throw DomainViolation(
-                    DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE,
-                    "Hunk '${hunk.id.value}' указывает файл '${hunk.filePath}', " +
-                        "но лежит в FileChange '${file.path}'",
-                )
-            }
-        }
+/** Инвариант 1: у hunk'а тот же файл, что у [FileChange], и изменённый файл не пуст. */
+private fun requireHunksBelongToFile(file: FileChange) {
+    if (file.changeKind != FileChangeKind.DELETED && file.hunks.isEmpty()) {
+        throw DomainViolation(
+            DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE,
+            "Файл '${file.path}' изменён (${file.changeKind}), но не содержит ни одного hunk'а",
+        )
     }
+    val foreign = file.hunks.firstOrNull { it.filePath != file.path } ?: return
+    throw DomainViolation(
+        DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE,
+        "Hunk '${foreign.id.value}' указывает файл '${foreign.filePath}', " +
+            "но лежит в FileChange '${file.path}'",
+    )
+}
 
-    val hunks = files.flatMap { it.hunks }
-    val highestHunkRisk = hunks.maxOfOrNull { it.risk.ordinal } ?: return
+/** Инвариант 5: риск пакета не ниже риска самого опасного его hunk'а. */
+private fun requireRiskNotBelowHunks(files: List<FileChange>, risk: RiskLevel) {
+    val highestHunkRisk = files.flatMap { it.hunks }.maxOfOrNull { it.risk.ordinal } ?: return
     if (risk.ordinal < highestHunkRisk) {
         val highest = RiskLevel.entries[highestHunkRisk]
         throw DomainViolation(
@@ -2824,6 +2846,8 @@ internal fun validatePacket(files: List<FileChange>, risk: RiskLevel) {
     }
 }
 ```
+
+Почему проверки разнесены, а не оставлены одной функцией: detekt с настройками из задачи 3 допускает два `throw` на функцию, а в общей `validatePacket` их было бы четыре — прогон падает с `Too many throw statements in the function validatePacket. The maximum number of allowed throw statements is 2. [ThrowsCount]`, и `./gradlew detekt` (а значит и CI) становится красным. Заодно разбиение удерживает тело `validatePacket` коротким — это страхует от `ComplexMethod`.
 
 - [ ] **Шаг 4: подключить валидацию в `ChangePacket`**
 
@@ -2859,29 +2883,88 @@ internal fun validatePacket(files: List<FileChange>, risk: RiskLevel) {
 
 - [ ] **Шаг 6: проверить, что валидация ломает разбор некорректных данных**
 
-Добавить в `DomainRoundTripTest` ещё один тест — он подтверждает, что инвариант нельзя обойти, подсунув готовый CBOR:
+Сначала — почему нельзя обойтись «ручным» CBOR. Прежний вариант теста подавал `"""{"risk":"SAFE"}""".toByteArray()` и ждал исключения: это вообще не CBOR пакета, разбор падает на формате **до** конструктора, и инвариант 5 не проверяется вовсе. Проверяется это фактом: если снять `requireRiskNotBelowHunks`, такой тест остаётся зелёным. Чтобы дойти до `init`-блока, нужны настоящие байты пакета, собранные в обход конструктора, — для этого в тесте объявляется двойник пакета без валидации.
+
+Добавить в `DomainRoundTripTest` двойник, хелпер и два теста:
 
 ```kotlin
+    /**
+     * Двойник [ChangePacket] без `init`-валидации: только через него можно собрать байты,
+     * которые конструктор пакета отверг бы. Имена и типы полей совпадают с настоящим
+     * пакетом, поэтому [Cbor] разбирает эти байты как [ChangePacket].
+     */
+    @Serializable
+    private data class RawChangePacket(
+        val id: PacketId,
+        val taskId: TaskId,
+        val revision: Int,
+        val title: String,
+        val summary: String,
+        val files: List<FileChange>,
+        val risk: RiskLevel,
+        val tests: TestStatus,
+        val source: ChangeSource,
+        val status: PacketStatus,
+        val branch: String,
+        val snapshotRef: SnapshotRef? = null,
+        val createdAt: Instant,
+    )
+
+    private fun rawPacket(risk: RiskLevel, files: List<FileChange>): RawChangePacket {
+        val packet = DomainFixtures.packet
+        return RawChangePacket(
+            id = packet.id,
+            taskId = packet.taskId,
+            revision = packet.revision,
+            title = packet.title,
+            summary = packet.summary,
+            files = files,
+            risk = risk,
+            tests = packet.tests,
+            source = packet.source,
+            status = packet.status,
+            branch = packet.branch,
+            snapshotRef = packet.snapshotRef,
+            createdAt = packet.createdAt,
+        )
+    }
+
     @Test
-    fun `разбор пакета, нарушающего инвариант 5, бросает исключение`() {
-        val bytes = cbor.encodeToByteArray(DomainFixtures.packet.copy(risk = RiskLevel.RISKY))
-        // Валидные данные разбираются…
+    fun `разбор CBOR с риском ниже максимума по hunk-ам отвергается`() {
+        val riskyHunk = DomainFixtures.hunk.copy(risk = RiskLevel.RISKY)
+        val bytes = cbor.encodeToByteArray(
+            rawPacket(risk = RiskLevel.SAFE, files = listOf(DomainFixtures.fileChange.copy(hunks = listOf(riskyHunk)))),
+        )
+
+        // Согласованный вход разбирается в объект…
         assertEquals(RiskLevel.RISKY, roundTrip(DomainFixtures.packet.copy(risk = RiskLevel.RISKY)).risk)
 
-        // …а собранный вручную CBOR с риском ниже максимума по hunk-ам — нет.
-        val handCrafted = """{"risk":"SAFE"}""".toByteArray()
-        assertFailsWith<Exception> { cbor.decodeFromByteArray<ChangePacket>(handCrafted) }
-        assertTrue(bytes.isNotEmpty())
+        // …а несовместимый с инвариантом 5 — нет: валидация живёт в конструкторе,
+        // и десериализатор вызывает именно его, поэтому обойти инвариант готовым CBOR нельзя.
+        val violation = assertFailsWith<DomainViolation> { cbor.decodeFromByteArray<ChangePacket>(bytes) }
+        assertEquals(DomainInvariant.PACKET_RISK_NOT_BELOW_HUNKS, violation.invariant)
+    }
+
+    @Test
+    fun `обрезанный CBOR падает на разборе, не доходя до валидации`() {
+        // `{"risk":"SAFE"}` — не CBOR пакета, поэтому разбор отвергает вход раньше,
+        // чем дело дойдёт до `init`-блока и инварианта 5. Ценность теста только в этом:
+        // неполный вход не превращается в объект.
+        assertFailsWith<SerializationException> {
+            cbor.decodeFromByteArray<ChangePacket>("""{"risk":"SAFE"}""".toByteArray())
+        }
     }
 ```
 
-Добавить импорты `kotlin.test.assertFailsWith` в этот файл. Прогнать:
+Двойник объявлен внутри `DomainRoundTripTest`, а не в `DomainFixtures`: он нужен ровно одному файлу тестов, и держать в фикстурах тип без валидации — значит оставлять его в общем доступе для будущих тестов.
+
+Добавить в этот файл импорты `kotlinx.serialization.Serializable`, `kotlinx.serialization.SerializationException`, `kotlin.test.assertFailsWith`. Прогнать:
 
 ```bash
 ./gradlew :domain:jvmTest --tests 'dev.aide.domain.DomainRoundTripTest'
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`. Тест проходит и потому, что неполный CBOR не разбирается вообще, — это ожидаемо; ценность теста в том, что он фиксирует: невалидный вход до объекта не доходит.
+Ожидаемо: `BUILD SUCCESSFUL`, `DomainRoundTripTest` — 17 тестов; всего по домену после этого шага 26 (`DomainRoundTripTest` — 17, `InvariantsTest` — 8, `PublicFieldsAreDocumentedTest` — 1). Тест на инвариант настоящий: если снять `requireRiskNotBelowHunks`, он краснеет — разбор проходит успешно, и `assertFailsWith` не находит ожидаемого исключения, то есть проверяется именно валидация, а не разбор формата.
 
 - [ ] **Шаг 7: коммит**
 
@@ -3235,7 +3318,7 @@ object RiskEvaluator {
 ./gradlew :domain:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 43 теста пройдено (25 + 18 из `RiskEvaluatorTest`).
+Ожидаемо: `BUILD SUCCESSFUL`, 44 теста пройдено (26 + 18 из `RiskEvaluatorTest`).
 
 - [ ] **Шаг 5: проверить, что LLM не может понизить риск**
 
