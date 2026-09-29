@@ -1,0 +1,6 @@
+# gradlew — POSIX-скрипт: CRLF ломает его при запуске через Git Bash на Windows,
+# а Windows-сборку десктопа собирает отдельный job в CI.
+gradlew text eol=lf
+
+# .bat — Windows-скрипт, ему нужны CRLF.
+*.bat text eol=crlf

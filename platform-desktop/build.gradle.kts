@@ -9,7 +9,9 @@ dependencies {
     // а поднимает EmbeddedHost — типы обоих модулей нужны точке входа desktopApp.
     api(project(":client-state"))
     api(project(":host-core"))
-    implementation(libs.kotlinx.coroutines.core)
+    // api: DesktopRuntime.start принимает CoroutineScope, а точка входа desktopApp
+    // создаёт область корутин сама — тип должен быть виден.
+    api(libs.kotlinx.coroutines.core)
     // Композиционный корень десктопа собирается на Koin (DI-фреймворк стека).
     implementation(libs.koin.core)
 }

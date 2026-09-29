@@ -10,7 +10,9 @@ kotlin {
             // api: AndroidClientRuntime возвращает AndroidClientDependencies с типами
             // HostConnection и SettingsStore, значит они нужны androidApp на компиляции.
             api(project(":client-state"))
-            implementation(libs.kotlinx.coroutines.core)
+            // api: AndroidClientRuntime.start принимает CoroutineScope, а точка входа
+            // androidApp создаёт область корутин сама — тип должен быть виден.
+            api(libs.kotlinx.coroutines.core)
             // Композиционный корень клиента собирается на Koin (DI-фреймворк стека).
             implementation(libs.koin.core)
         }
