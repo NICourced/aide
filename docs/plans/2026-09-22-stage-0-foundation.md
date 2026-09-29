@@ -2980,14 +2980,21 @@ git commit -m "feat(domain): инварианты 1 и 5 § 4.1 как вали�
 **Файлы:**
 - Создать: `domain/src/commonMain/kotlin/dev/aide/domain/risk/RiskEvaluator.kt`
 - Тест: `domain/src/commonTest/kotlin/dev/aide/domain/risk/RiskEvaluatorTest.kt`
+- Тест: `domain/src/jvmTest/kotlin/dev/aide/domain/risk/RiskEvaluatorContractTest.kt`
 
 **Правила, которые реализуются (из § 5.3.2 спецификации).**
 
-`safe` — все условия выполнены: изменения только в тестах, документации, файлах локализации или результатах форматтера; тесты и линтер зелёные; объём ниже порога (по умолчанию 50 строк на пакет); не затронуты публичный API, схема БД, конфигурация прав и секреты; не удалены файлы.
+`safe` — все условия выполнены: изменения только в тестах, документации или файлах локализации; тесты и линтер зелёные; объём не превышает порога (по умолчанию 50 строк на пакет); не затронуты публичный API, схема БД, конфигурация прав и секреты; не удалены файлы.
 
-`risky` — хотя бы одно: удалены файлы; затронуты публичный API, схема БД, права доступа или секреты; тесты красные; объём выше порога в 5 раз.
+`risky` — хотя бы одно: удалены файлы; затронуты публичный API, схема БД, права доступа или секреты; тесты красные; объём превышает порог более чем в пять раз.
 
 `normal` — всё остальное.
+
+Границы порога — по формулировке § 5.3.2 после правки: объём ровно на пороге (50) — ещё `safe`, 51 — `normal`, ровно пять порогов (250) — ещё `normal`, 251 — `risky`.
+
+Про «результаты форматтера». В § 5.3.2 это правило осталось, но в этом этапе оно неоцениваемо: признака «это вывод форматтера» нет ни в `Input`, ни в `FileChange`, и по пути файла его не отличить — сигнал даст движок diff в этапе 1. До тех пор такие изменения классифицируются как `normal`, и теста на это правило нет: `RiskEvaluator` относит к безопасным только тесты, документацию и локализацию.
+
+Инвариант 5 (§ 4.1) соблюдается на выходе: уровень пакета не ниже риска самого опасного его hunk'а. Правила классифицируют пакет целиком, но если отдельный блок уже помечен опаснее, пакет не может оказаться безопаснее своего блока — иначе результат `RiskEvaluator` нельзя было бы положить в `ChangePacket`, который такой пакет отвергает.
 
 - [ ] **Шаг 1: написать падающие тесты на каждое правило**
 
@@ -2999,7 +3006,6 @@ package dev.aide.domain.risk
 import dev.aide.domain.DomainFixtures
 import dev.aide.domain.FileChange
 import dev.aide.domain.FileChangeKind
-import dev.aide.domain.Hunk
 import dev.aide.domain.HunkId
 import dev.aide.domain.RiskLevel
 import dev.aide.domain.TestState
@@ -3011,14 +3017,8 @@ class RiskEvaluatorTest {
 
     private val defaultThreshold = 50
 
-    private fun hunk(path: String, risk: RiskLevel = RiskLevel.SAFE, added: Int = 1) = Hunk(
-        id = HunkId("h-$path"),
-        filePath = path,
-        startLine = 1,
-        kind = dev.aide.domain.HunkKind.REPLACE,
-        risk = risk,
-        lines = emptyList(),
-    ).let { DomainFixtures.hunk.copy(id = it.id, filePath = path, risk = risk) }
+    private fun hunk(path: String, risk: RiskLevel = RiskLevel.SAFE) =
+        DomainFixtures.hunk.copy(id = HunkId("h-$path"), filePath = path, risk = risk)
 
     private fun file(
         path: String,
@@ -3069,6 +3069,7 @@ class RiskEvaluatorTest {
     }
 
     // ——— границы safe ———
+    // Границы ровно по формулировке § 5.3.2: объём не превышает порога.
 
     @Test
     fun `объём ровно на пороге — ещё safe`() {
@@ -3155,7 +3156,8 @@ class RiskEvaluatorTest {
     }
 
     @Test
-    fun `объём выше порога в пять раз — risky`() {
+    fun `объём превышает порог более чем в пять раз — risky`() {
+        // «Более чем в пять раз»: 251 — уже risky.
         assertEquals(RiskLevel.RISKY, evaluate(listOf(file("src/auth/Big.kt", added = 251))))
     }
 
@@ -3180,6 +3182,18 @@ class RiskEvaluatorTest {
         assertEquals(RiskLevel.NORMAL, risk)
     }
 
+    // ——— инвариант 5: уровень пакета не ниже максимального уровня его hunk'ов ———
+
+    @Test
+    fun `рискованный hunk поднимает безопасный пакет до risky`() {
+        assertEquals(RiskLevel.RISKY, evaluate(listOf(file("docs/auth.md", risk = RiskLevel.RISKY))))
+    }
+
+    @Test
+    fun `hunk уровня normal поднимает безопасный пакет до normal`() {
+        assertEquals(RiskLevel.NORMAL, evaluate(listOf(file("docs/auth.md", risk = RiskLevel.NORMAL))))
+    }
+
     // ——— детерминированность и композиция ———
 
     @Test
@@ -3189,7 +3203,7 @@ class RiskEvaluatorTest {
     }
 
     @Test
-    fun `riск пакета равен максимуму по входам и не ниже него`() {
+    fun `удаление файла в пакете с документацией — risky, а не safe`() {
         val risk = evaluate(listOf(file("src/auth/Legacy.kt", kind = FileChangeKind.DELETED), file("docs/a.md")))
         assertEquals(RiskLevel.RISKY, risk)
     }
@@ -3229,6 +3243,10 @@ import dev.aide.domain.TestStatus
  * LLM не может понизить уровень — она может добавить пояснение, но не участвует в вычислении
  * (FR-AGENT-6). Список путей, изменения в которых считаются безопасными, намеренно задан
  * явными правилами, а не эвристикой.
+ *
+ * Результат не ниже риска самого опасного hunk'а [Input.files] (инвариант 5 § 4.1): правила
+ * § 5.3.2 классифицируют пакет целиком, но если отдельный блок уже помечен опаснее, пакет
+ * не может оказаться безопаснее своего блока.
  */
 object RiskEvaluator {
 
@@ -3259,12 +3277,18 @@ object RiskEvaluator {
      *
      * @param volumeThresholdLines порог объёма; по умолчанию [DEFAULT_VOLUME_THRESHOLD_LINES].
      */
-    fun evaluate(changes: Input, volumeThresholdLines: Int = DEFAULT_VOLUME_THRESHOLD_LINES): RiskLevel =
-        when {
+    fun evaluate(changes: Input, volumeThresholdLines: Int = DEFAULT_VOLUME_THRESHOLD_LINES): RiskLevel {
+        val byRules = when {
             anyRiskyCondition(changes, volumeThresholdLines) -> RiskLevel.RISKY
             allSafeConditions(changes, volumeThresholdLines) -> RiskLevel.SAFE
             else -> RiskLevel.NORMAL
         }
+        return maxOf(byRules, highestHunkRisk(changes.files))
+    }
+
+    /** Максимальный риск среди блоков; [RiskLevel.SAFE], если блоков нет. */
+    private fun highestHunkRisk(files: List<FileChange>): RiskLevel =
+        files.asSequence().flatMap { it.hunks.asSequence() }.maxOfOrNull { it.risk } ?: RiskLevel.SAFE
 
     private fun anyRiskyCondition(changes: Input, threshold: Int): Boolean =
         changes.files.any { it.changeKind == FileChangeKind.DELETED } ||
@@ -3285,32 +3309,55 @@ object RiskEvaluator {
             !changes.touchesPermissionsOrSecrets
 
     /**
-     * Путь считается безопасным, если он относится только к тестам, документации,
-     * локализации или это файл сгенерированного форматтером результата.
+     * Путь считается безопасным, если он относится только к тестам, документации или локализации.
+     *
+     * Результат форматтера отдельного признака не имеет: по пути его отличить нельзя, поэтому
+     * в список безопасных такие файлы не попадают (см. § 5.3.2).
+     *
+     * Проверки разнесены по трём предикатам намеренно: собранные в одну функцию, они дали бы
+     * больше двадцати ветвлений, и detekt валит её правилом `CyclomaticComplexMethod` с порогом 15.
      */
     internal fun isSafePath(path: String): Boolean {
         val normalized = path.replace('\\', '/').lowercase()
         val fileName = normalized.substringAfterLast('/')
+        return isTestPath(normalized, fileName) ||
+            isDocumentationPath(normalized, fileName) ||
+            isLocalizationPath(normalized, fileName)
+    }
 
-        val inTestTree = normalized.contains("/test/") || normalized.contains("/tests/") ||
-            normalized.contains("/androidtest/") || normalized.contains("/commonTest/".lowercase()) ||
-            normalized.startsWith("test/") || normalized.startsWith("tests/") ||
-            fileName.endsWith("test.kt") || fileName.endsWith("tests.kt") ||
-            fileName.endsWith("_test.go") || fileName.startsWith("test_") ||
-            fileName.endsWith("spec.kt") || fileName.endsWith("spec.js") || fileName.endsWith("spec.ts")
+    private fun isTestPath(normalized: String, fileName: String): Boolean {
+        // Имена каталогов записаны строчными: путь уже приведён к нижнему регистру в isSafePath.
+        val directories = listOf("/test/", "/tests/", "/androidtest/", "/commontest/")
+        val prefixes = listOf("test/", "tests/")
+        val suffixes = listOf("test.kt", "tests.kt", "_test.go", "spec.kt", "spec.js", "spec.ts")
+        return directories.any { normalized.contains(it) } ||
+            prefixes.any { normalized.startsWith(it) } ||
+            suffixes.any { fileName.endsWith(it) } ||
+            fileName.startsWith("test_")
+    }
 
-        val isDocs = normalized.startsWith("docs/") || normalized.contains("/docs/") ||
-            fileName.endsWith(".md") || fileName.endsWith(".rst") || fileName == "license" ||
+    private fun isDocumentationPath(normalized: String, fileName: String): Boolean {
+        val inDocsDirectory = normalized.startsWith("docs/") || normalized.contains("/docs/")
+        val suffixes = listOf(".md", ".rst")
+        return inDocsDirectory ||
+            suffixes.any { fileName.endsWith(it) } ||
+            fileName == "license" ||
             fileName == "changelog.md"
+    }
 
-        val isLocalization = normalized.contains("/values-") || normalized.contains("/i18n/") ||
-            normalized.contains("/l10n/") || normalized.contains("/locales/") ||
-            fileName == "strings.xml" || fileName.endsWith(".po") || fileName.endsWith(".ftl")
-
-        return inTestTree || isDocs || isLocalization
+    private fun isLocalizationPath(normalized: String, fileName: String): Boolean {
+        val markers = listOf("/values-", "/i18n/", "/l10n/", "/locales/")
+        val suffixes = listOf(".po", ".ftl")
+        return markers.any { normalized.contains(it) } ||
+            fileName == "strings.xml" ||
+            suffixes.any { fileName.endsWith(it) }
     }
 }
 ```
+
+Почему `isSafePath` разбита на три предиката: одной функцией она не проходит линт — detekt валил её правилом `CyclomaticComplexMethod` со сложностью 26 при пороге 15: `isSafePath ... Cyclomatic Complexity (complexity: 26) ... threshold ... '15' [CyclomaticComplexMethod]`, то есть CI был бы красным. Разбиение даёт три маленьких предиката и дизъюнкцию из них.
+
+Почему `evaluate` берёт максимум с `highestHunkRisk`: без этого выход `RiskEvaluator` несовместим со входом `ChangePacket`. Пакет из `docs/auth.md` с hunk'ом уровня `RISKY` вернул бы `SAFE` — ниже максимума по hunk'ам, а конструктор `ChangePacket` такой пакет отвергает (инвариант 5), и сборка пакета в этапе 1 упала бы. Критерий `T-0.7` тоже прямо требует «уровень пакета не ниже максимального уровня его hunk'ов». Сигнатура `evaluate` и состав `Input` при этом не менялись.
 
 - [ ] **Шаг 4: прогнать тесты**
 
@@ -3318,36 +3365,106 @@ object RiskEvaluator {
 ./gradlew :domain:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 44 теста пройдено (26 + 18 из `RiskEvaluatorTest`).
+Ожидаемо: `BUILD SUCCESSFUL`, 46 тестов пройдено (26 по домену до этой задачи — `DomainRoundTripTest` 17, `InvariantsTest` 8, `PublicFieldsAreDocumentedTest` 1 — плюс 20 из `RiskEvaluatorTest`).
 
 - [ ] **Шаг 5: проверить, что LLM не может понизить риск**
 
-Это требование проверяется структурно: у `evaluate` нет параметра, принимающего подсказку от модели. Добавить тест, который это фиксирует, — если кто-то потом добавит такой параметр, тест укажет на нарушение контракта:
+Требование FR-AGENT-6 проверяется структурно: у `evaluate` нет параметра с подсказкой модели, и во входе нет полей, которые заполняет LLM. Рефлексия (`KClass.members`) для этого не годится — она требует `kotlin-reflect`, которого в `commonTest` KMP-модуля нет; поэтому тест живёт в `jvmTest` и читает исходник `RiskEvaluator.kt` тем же способом, что и остальные статические проверки проекта (тест отсутствия платформенных ветвлений и тест документированности полей): путь приходит системным свойством `domainSourcesDir`, которое уже выставляет `build.gradle.kts`.
+
+`domain/src/jvmTest/kotlin/dev/aide/domain/risk/RiskEvaluatorContractTest.kt`:
 
 ```kotlin
+package dev.aide.domain.risk
+
+import java.io.File
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * Контракт FR-AGENT-6 / § 5.3.2: уровень риска вычисляется только правилами, LLM может
+ * добавить пояснение, но не понизить уровень. Проверяется структурно — по исходнику
+ * [RiskEvaluator]: во входе не должно быть полей-подсказок, а у `evaluate` не должно быть
+ * третьего параметра.
+ *
+ * Рефлексия (`KClass.members`) здесь не используется: она требует `kotlin-reflect` и
+ * недоступна в `commonTest` KMP-модуля. Чтение исходника файловой системой — уже принятый
+ * в проекте приём (`PublicFieldsAreDocumentedTest`); путь приходит системным свойством
+ * `domainSourcesDir`, которое выставляет `build.gradle.kts`.
+ */
+class RiskEvaluatorContractTest {
+
+    private val text: String by lazy {
+        val root = File(
+            System.getProperty("domainSourcesDir")
+                ?: error("Не задано системное свойство domainSourcesDir — проверь блок jvmTest в build.gradle.kts"),
+        )
+        val file = File(root, "dev/aide/domain/risk/RiskEvaluator.kt")
+        assertTrue(file.isFile, "Исходник RiskEvaluator.kt не найден: ${file.path}")
+        file.readText()
+    }
+
     @Test
-    fun `вход вычисления не содержит полей, которые заполняет LLM`() {
-        val fields = RiskEvaluator.Input::class.members.map { it.name }.toSet()
-        val llmSuspicious = fields.filter { name ->
-            name.contains("suggest", ignoreCase = true) ||
-                name.contains("llm", ignoreCase = true) ||
-                name.contains("model", ignoreCase = true) ||
-                name.contains("advice", ignoreCase = true)
-        }
+    fun `во входе вычисления нет полей, которые заполняет LLM`() {
+        val fields = Regex("""\bval\s+(\w+)\s*:""")
+            .findAll(argumentsOf("data class Input("))
+            .map { match -> match.groupValues[1] }
+            .toList()
+        assertTrue(fields.isNotEmpty(), "Не удалось разобрать поля Input — тест больше не проверяет контракт")
+
+        val suspicious = fields.filter { isLlmSuspicious(it) }
         assertTrue(
-            llmSuspicious.isEmpty(),
-            "Уровень риска вычисляется только правилами § 5.3.2 (FR-AGENT-6), но во входе появились поля: $llmSuspicious",
+            suspicious.isEmpty(),
+            "Риск вычисляется только правилами § 5.3.2 (FR-AGENT-6), но во входе появились поля: $suspicious",
         )
     }
+
+    @Test
+    fun `у evaluate только два параметра и ни одного с подсказкой модели`() {
+        val params = Regex("""(\w+)\s*:""")
+            .findAll(argumentsOf("fun evaluate("))
+            .map { match -> match.groupValues[1] }
+            .toList()
+        assertEquals(
+            listOf("changes", "volumeThresholdLines"),
+            params,
+            "Подпись evaluate изменилась: подсказка модели не должна влиять на риск (FR-AGENT-6)",
+        )
+    }
+
+    /** Текст внутри скобок объявления [declaration], найденный по балансу круглых скобок. */
+    private fun argumentsOf(declaration: String): String {
+        val start = text.indexOf(declaration)
+        assertTrue(start >= 0, "В RiskEvaluator.kt не найдено объявление: $declaration")
+
+        val open = text.indexOf('(', start)
+        var depth = 0
+        for (index in open until text.length) {
+            when (text[index]) {
+                '(' -> depth++
+                ')' -> {
+                    depth--
+                    if (depth == 0) return text.substring(open + 1, index)
+                }
+            }
+        }
+        error("Не найден закрывающий ')' для объявления: $declaration")
+    }
+
+    private fun isLlmSuspicious(name: String): Boolean {
+        val lower = name.lowercase()
+        return listOf("suggest", "llm", "model", "advice", "hint", "confidence").any { lower.contains(it) }
+    }
+}
 ```
 
-Добавить импорт `kotlin.test.assertTrue`. Прогнать:
+Проверить, что тест действительно ловит нарушение: временно добавить в `Input` поле `val suggestion: String? = null`, прогнать — ожидаемо `FAILED` с перечислением подозрительных полей; затем добавить третий параметр в `evaluate`, прогнать — ожидаемо `FAILED` на списке параметров. Вернуть файл. Прогнать:
 
 ```bash
-./gradlew :domain:jvmTest --tests 'dev.aide.domain.risk.RiskEvaluatorTest'
+./gradlew :domain:jvmTest --tests 'dev.aide.domain.risk.RiskEvaluatorContractTest'
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 19 тестов.
+Ожидаемо: `BUILD SUCCESSFUL`, 2 теста. Полный прогон домена после этого шага — 48 тестов (26 прежних + 20 в `RiskEvaluatorTest` + 2 здесь).
 
 - [ ] **Шаг 6: коммит**
 
