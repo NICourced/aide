@@ -9446,16 +9446,29 @@ git commit -m "feat(client): хранилище настроек, тема по 
 - Создать: `host-core/src/main/sqldelight/dev/aide/host/store/ReviewDecision.sq`
 - Создать: `host-core/src/main/sqldelight/dev/aide/host/store/ToolPermission.sq`
 - Создать: `host-core/src/main/sqldelight/dev/aide/host/store/1.sqm`
+- Создать: `host-core/src/main/kotlin/dev/aide/host/store/StoreCodec.kt`
+- Создать: `host-core/src/main/kotlin/dev/aide/host/store/RowMapper.kt`
+- Создать: `host-core/src/main/kotlin/dev/aide/host/store/TaskStore.kt`
+- Создать: `host-core/src/main/kotlin/dev/aide/host/store/RunStore.kt`
+- Создать: `host-core/src/main/kotlin/dev/aide/host/store/ToolCallStore.kt`
+- Создать: `host-core/src/main/kotlin/dev/aide/host/store/DecisionStore.kt`
+- Создать: `host-core/src/main/kotlin/dev/aide/host/store/PermissionStore.kt`
 - Создать: `host-core/src/main/kotlin/dev/aide/host/store/HostStore.kt`
 - Создать: `host-core/src/main/kotlin/dev/aide/host/store/DatabaseFactory.kt`
 - Создать: `host-core/src/test/resources/schema-v1.sql`
+- Создать: `host-core/src/test/kotlin/dev/aide/host/store/StoreTestSupport.kt`
+- Создать: `host-core/src/test/kotlin/dev/aide/host/store/StoreFixtures.kt`
 - Тест: `host-core/src/test/kotlin/dev/aide/host/store/HostStoreTest.kt`
 - Тест: `host-core/src/test/kotlin/dev/aide/host/store/MigrationTest.kt`
+- Тест: `host-core/src/test/kotlin/dev/aide/host/store/DatabaseFactoryTest.kt`
+- Создать (генерируется): `host-core/src/main/sqldelight-schema/2.db`
 - Изменить: `host-core/build.gradle.kts` (SQLDelight и CBOR)
 
 **Про устройство схемы.** У каждой таблицы есть колонки для полей, по которым ищут, — идентификаторы, статусы, время, — и колонка `payload` с полной сериализацией доменного объекта в CBOR. Это осознанный выбор: домен остаётся единственным описанием объекта (не нужно вручную поддерживать соответствие двух десятков колонок и полей), а фильтры, которые нужны журналу аудита (`T-1.14`) и метрикам (`§ 2.3`), работают по индексированным колонкам.
 
 **Про миграции.** Версия 1 схемы хранила только индексированные колонки. Версия 2 добавила `payload`. Миграция `1.sqm` — это `ALTER TABLE … ADD COLUMN`, то есть ровно тот случай, который нужно уметь применять на непустой базе, не потеряв записи.
+
+**Ловушка с именами.** Пакет сгенерированных классов запросов — `dev.aide.host.store` (путь `.sq` внутри `srcDirs` прибавляется к `packageName`), а сам `HostDatabase` — `dev.aide.host.store.db`. Из-за этого в пакете `dev.aide.host.store` оказывается сгенерированный row-класс `Task`, совпадающий по имени с `dev.aide.domain.Task`. Спасает то, что явный импорт доменного типа имеет приоритет над одноимённым типом из того же пакета; но при чтении кода это надо держать в голове.
 
 - [ ] **Шаг 1: написать схему текущей версии**
 
@@ -9631,12 +9644,14 @@ DELETE FROM tool_permission WHERE tool = ?;
 `host-core/src/main/sqldelight/dev/aide/host/store/1.sqm`:
 
 ```sql
-ALTER TABLE task ADD COLUMN payload BLOB NOT NULL DEFAULT X'';
-ALTER TABLE agent_run ADD COLUMN payload BLOB NOT NULL DEFAULT X'';
-ALTER TABLE tool_call ADD COLUMN payload BLOB NOT NULL DEFAULT X'';
-ALTER TABLE review_decision ADD COLUMN payload BLOB NOT NULL DEFAULT X'';
-ALTER TABLE tool_permission ADD COLUMN payload BLOB NOT NULL DEFAULT X'';
+ALTER TABLE task ADD COLUMN payload BLOB NOT NULL DEFAULT '';
+ALTER TABLE agent_run ADD COLUMN payload BLOB NOT NULL DEFAULT '';
+ALTER TABLE tool_call ADD COLUMN payload BLOB NOT NULL DEFAULT '';
+ALTER TABLE review_decision ADD COLUMN payload BLOB NOT NULL DEFAULT '';
+ALTER TABLE tool_permission ADD COLUMN payload BLOB NOT NULL DEFAULT '';
 ```
+
+Значение по умолчанию — `''`, а не hex-литерал: SQLDelight 2.0.2 не принимает в `DEFAULT` ни hex-литерал (`… expected, got 'X'`), ни `x''`-выражение в скобках; пустая строка парсится и даёт пустой BLOB — ровно то, что означает «настройка не записана».
 
 - [ ] **Шаг 3: написать схему версии 1 для теста миграции**
 
@@ -9711,35 +9726,53 @@ plugins {
 
 kotlin { jvmToolchain(libs.versions.jvmTarget.get().toInt()) }
 
+// Хранилище метаданных хоста (T-0.16): SQLite через SQLDelight.
+// packageName — пакет DB-класса; пакет классов запросов задаётся ещё и путём
+// .sq-файла внутри srcDirs (dev/aide/host/store → dev.aide.host.store).
 sqldelight {
     databases {
         create("HostDatabase") {
             packageName.set("dev.aide.host.store.db")
             srcDirs.setFrom("src/main/sqldelight")
-            schemaOutputDirectory.set(file("src/main/sqldelight/databases"))
+            // Файл схемы текущей версии коммитится вместе с кодом как эталон.
+            // Каталог лежит вне srcDirs: плагин пишет выход внутрь srcDirs, и тогда
+            // выход schema-задачи попадает внутрь входов задачи генерации интерфейса —
+            // Gradle 8 валит сборку. Встроенная проверка миграций (verifyMigrations)
+            // по умолчанию выключена: миграцию на непустой базе версии 1 проверяет
+            // MigrationTest.
+            schemaOutputDirectory.set(file("src/main/sqldelight-schema"))
         }
     }
 }
 
 dependencies {
     implementation(project(":domain"))
-    implementation(project(":protocol"))
+    // api, а не implementation: ClientMessageHandler, ClientSession и ProtocolServer
+    // держат в публичных сигнатурах типы протокола (ClientMessage, HostMessage,
+    // ProtocolVersion, HostMode, RequestId). Домен приходит транзитивно.
+    api(project(":protocol"))
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.websockets)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.datetime)
+    // Полный доменный объект хранится в колонке payload в CBOR: домен остаётся
+    // единственным описанием объекта, а индексируемые поля вынесены в колонки.
     implementation(libs.kotlinx.serialization.core)
     implementation(libs.kotlinx.serialization.cbor)
-    implementation(libs.jgit)
+    // SQLite: runtime нужен сгенерированному коду, sqlite-driver — драйвер JDBC.
     implementation(libs.sqldelight.runtime)
-    implementation(libs.sqldelight.coroutines)
     implementation(libs.sqldelight.jdbc)
     implementation(libs.slf4j.api)
-    // Граф хоста (`HostApp`, задача 13) собирается на Koin.
+    // Композиционный корень хоста (задача 13) собирает граф на Koin — DI-фреймворк стека.
     implementation(libs.koin.core)
+    // Чтение состояния git (ветка, изменения, история) — задача 12.
+    implementation(libs.jgit)
 
     testImplementation(libs.kotlin.test)
+    // Клиент нужен интеграционным тестам транспорта. Правило границ проверяет
+    // только main-наборы, поэтому ребро host-core → client-state в тестах легально.
+    testImplementation(project(":client-state"))
     testImplementation(libs.ktor.client.cio)
     testImplementation(libs.ktor.client.websockets)
     testImplementation(libs.slf4j.simple)
@@ -9748,11 +9781,104 @@ dependencies {
 tasks.test { useJUnitPlatform() }
 ```
 
-Первая сборка создаст файлы схемы в `src/main/sqldelight/databases` — их нужно закоммитить, они служат эталоном для проверки миграций:
+Каталог схем — `src/main/sqldelight-schema`, **вне** `srcDirs`. Если положить его внутрь `srcDirs` (как было `sqldelight/databases`), Gradle 8 валит даже `./gradlew build`: задача генерации интерфейса потребляет выход задачи генерации схемы, а зависимость не объявлена — `Task ':host-core:generateMainHostDatabaseInterface' uses this output of task ':host-core:generateMainHostDatabaseSchema' without declaring an explicit or implicit dependency`. Имя задачи генерации схемы в SQLDelight 2.0.2 — `generateMainHostDatabaseSchema` (рядом `generateMainHostDatabaseInterface`; агрегаты — `generateSqlDelightInterface` и `verifySqlDelightMigration`):
 
 ```bash
-./gradlew :host-core:generateHostDatabaseSchema
-git add host-core/src/main/sqldelight/databases
+./gradlew :host-core:generateMainHostDatabaseSchema
+git add host-core/src/main/sqldelight-schema
+```
+
+Плагинная проверка миграций (`verifyMigrations`) в 2.0.2 **выключена по умолчанию**, поэтому эти файлы — не «эталон для проверки миграций»: роль проверки исполняет `MigrationTest`, который открывает базу версии 1 и прогоняет `HostDatabase.Schema.migrate`. Включить плагинную проверку можно, но тогда нужны `.db`-снимки каждой версии внутри `srcDirs` (что снова конфликтует с запретом выше) и совпадение определений колонок миграции и текущей схемы.
+
+`host-core/src/test/kotlin/dev/aide/host/store/StoreTestSupport.kt`:
+
+```kotlin
+package dev.aide.host.store
+
+import app.cash.sqldelight.db.QueryResult
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+
+/**
+ * Подпорки для тестов хранилища: схема предыдущей версии и прямые запросы к базе.
+ *
+ * Схема версии 1 берётся из тестового ресурса, а не из сгенерированной текущей
+ * схемы: SQLDelight генерирует только текущую версию, и подсунуть её в тест
+ * миграции значило бы проверять миграцию на уже мигрированной базе.
+ */
+internal object StoreTestSupport {
+
+    /** DDL версии 1 — без колонок `payload`. */
+    fun legacySchemaStatements(): List<String> =
+        requireNotNull(StoreTestSupport::class.java.classLoader.getResourceAsStream("schema-v1.sql")) {
+            "Не найден ресурс schema-v1.sql — без него миграция непроверяема"
+        }.bufferedReader().readText()
+            .split(';')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+    /** Создаёт базу версии 1: DDL без `payload` и метка версии в `PRAGMA user_version`. */
+    fun createLegacyDatabase(driver: JdbcSqliteDriver) {
+        legacySchemaStatements().forEach { driver.execute(null, it, 0) }
+        driver.execute(null, "PRAGMA user_version = 1", 0)
+    }
+
+    /** По одной записи в каждую таблицу схемы версии 1 — у них ещё нет колонки `payload`. */
+    fun insertLegacyRows(driver: JdbcSqliteDriver) {
+        val inserts = listOf(
+            """
+            INSERT INTO task(id, title, prompt, branch, status, created_at)
+            VALUES ('t-legacy', 'Старая задача', 'текст', 'ai/t-legacy', 'REVIEW', 1758535200000)
+            """,
+            """
+            INSERT INTO agent_run(
+                id, task_id, state, mode, started_at, finished_at, elapsed_millis, cost_micros, cost_known
+            ) VALUES ('r-legacy', 't-legacy', 'FINISHED', 'ASK_BEFORE_CHANGES', 1758535200000, 1758535260000, 60000, 12500, 1)
+            """,
+            """
+            INSERT INTO tool_call(id, run_id, tool, outcome, required_approval, duration_millis, at)
+            VALUES ('tc-legacy', 'r-legacy', 'fs.write', 'SUCCESS', 1, 42, 1758535260000)
+            """,
+            """
+            INSERT INTO review_decision(
+                packet_id, packet_revision, scope, target_hunk_id, value, client_platform, decided_at
+            ) VALUES ('p-legacy', 1, 'HUNK', 'h-1', 'ACCEPTED', 'ANDROID', 1758535260000)
+            """,
+            """
+            INSERT INTO tool_permission(tool, read_permission, write_permission)
+            VALUES ('fs.read', 'ALLOW', 'DENY')
+            """,
+        )
+        inserts.forEach { driver.execute(null, it.trimIndent(), 0) }
+    }
+
+    /** Версия схемы, записанная в базе. */
+    fun userVersion(driver: SqlDriver): Long = long(driver, "PRAGMA user_version")
+
+    /** Единственное число из запроса. */
+    fun long(driver: SqlDriver, sql: String): Long =
+        driver.executeQuery(
+            null,
+            sql,
+            { cursor -> QueryResult.Value(if (cursor.next().value) cursor.getLong(0) ?: 0L else 0L) },
+            0,
+        ).value
+
+    /** Имена колонок таблицы в порядке объявления. */
+    fun columns(driver: SqlDriver, table: String): List<String> {
+        val names = mutableListOf<String>()
+        driver.executeQuery(
+            null,
+            "PRAGMA table_info($table)",
+            { cursor ->
+                while (cursor.next().value) names += cursor.getString(1).orEmpty()
+                QueryResult.Value(Unit)
+            },
+            0,
+        )
+        return names
+    }
+}
 ```
 
 `host-core/src/test/kotlin/dev/aide/host/store/MigrationTest.kt`:
@@ -9769,22 +9895,30 @@ import kotlin.test.assertTrue
 
 class MigrationTest {
 
-    /** DDL версии 1 — из тестового ресурса, а не из сгенерированной текущей схемы. */
-    private fun schemaV1Statements(): List<String> =
-        requireNotNull(javaClass.classLoader.getResourceAsStream("schema-v1.sql")) {
-            "Не найден ресурс schema-v1.sql — без него миграция непроверяема"
-        }.bufferedReader().readText()
-            .split(';')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
+    @Test
+    fun `ресурс версии 1 описывает прежнюю схему без payload`() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        StoreTestSupport.createLegacyDatabase(driver)
+
+        assertEquals(
+            listOf("id", "title", "prompt", "branch", "status", "created_at"),
+            StoreTestSupport.columns(driver, "task"),
+        )
+        assertEquals(
+            listOf("tool", "read_permission", "write_permission"),
+            StoreTestSupport.columns(driver, "tool_permission"),
+        )
+        assertEquals(1L, StoreTestSupport.userVersion(driver))
+
+        driver.close()
+    }
 
     @Test
     fun `миграция с версии 1 на версию 2 сохраняет записи`() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
 
         // 1. База версии 1: своя схема и своя метка версии.
-        schemaV1Statements().forEach { driver.execute(null, it, 0) }
-        driver.execute(null, "PRAGMA user_version = 1", 0)
+        StoreTestSupport.createLegacyDatabase(driver)
 
         val taskId = "task-legacy"
         driver.execute(
@@ -9836,7 +9970,15 @@ class MigrationTest {
         val database = HostDatabase(driver)
 
         assertEquals(0, database.taskQueries.count().executeAsOne())
-        database.taskQueries.insert("t-1", "Задача", "текст", "ai/t-1", "QUEUED", 1_758_535_200_000, byteArrayOf())
+        database.taskQueries.insert(
+            "t-1",
+            "Задача",
+            "текст",
+            "ai/t-1",
+            "QUEUED",
+            1_758_535_200_000,
+            byteArrayOf(),
+        )
         assertEquals(1, database.taskQueries.count().executeAsOne())
         driver.close()
     }
@@ -9865,7 +10007,8 @@ class MigrationTest {
 
             // Запись, сделанная после перезапуска, читается вместе со старой: файл базы не пересоздавался.
             database.taskQueries.insert(
-                "t-after-restart", "После перезапуска", "текст", "ai/t-after-restart", "QUEUED", 1_758_535_400_000, byteArrayOf(7),
+                "t-after-restart", "После перезапуска", "текст", "ai/t-after-restart", "QUEUED",
+                1_758_535_400_000, byteArrayOf(7),
             )
             assertEquals(2, database.taskQueries.count().executeAsOne())
             assertEquals("После перезапуска", database.taskQueries.byId("t-after-restart").executeAsOne().title)
@@ -9883,9 +10026,121 @@ class MigrationTest {
 ./gradlew :host-core:test --tests 'dev.aide.host.store.MigrationTest'
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 3 теста. Если `HostDatabase.Schema.migrate` требует другой набор аргументов — посмотреть сигнатуру в `host-core/build/generated/sqldelight/code/HostDatabase/commonMain/dev/aide/host/store/db/HostDatabase.kt` и привести вызов к ней.
+Ожидаемо: `BUILD SUCCESSFUL`, 4 теста. Если `HostDatabase.Schema.migrate` требует другой набор аргументов — посмотреть сигнатуру в `host-core/build/generated/sqldelight/code/HostDatabase/commonMain/dev/aide/host/store/db/HostDatabase.kt` и привести вызов к ней.
 
 - [ ] **Шаг 6: написать тест на доменные объекты**
+
+Образцы доменных объектов здесь свои — `StoreFixtures`, а не `DomainFixtures` из `domain/src/commonTest`: общий тестовый набор домена не публикуется как артефакт, и `host-core` его не видит.
+
+`host-core/src/test/kotlin/dev/aide/host/store/StoreFixtures.kt`:
+
+```kotlin
+package dev.aide.host.store
+
+import dev.aide.domain.AgentRun
+import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ClientPlatform
+import dev.aide.domain.Cost
+import dev.aide.domain.DecisionScope
+import dev.aide.domain.DecisionValue
+import dev.aide.domain.HunkId
+import dev.aide.domain.PacketId
+import dev.aide.domain.Permission
+import dev.aide.domain.ReviewDecision
+import dev.aide.domain.RunId
+import dev.aide.domain.RunState
+import dev.aide.domain.Task
+import dev.aide.domain.TaskId
+import dev.aide.domain.TaskStatus
+import dev.aide.domain.ToolCall
+import dev.aide.domain.ToolCallId
+import dev.aide.domain.ToolOutcome
+import dev.aide.domain.ToolPermission
+import kotlinx.datetime.Instant
+
+/**
+ * Образцы доменных объектов для тестов хранилища.
+ *
+ * Набор повторяет `DomainFixtures` из `domain/src/commonTest`, но живёт здесь:
+ * общий тестовый набор домена не публикуется как артефакт, и host-core его не видит.
+ */
+object StoreFixtures {
+
+    private val t0 = Instant.parse("2026-09-22T10:00:00Z")
+    private val t1 = Instant.parse("2026-09-22T10:01:00Z")
+
+    val task = Task(
+        id = TaskId("t-1"),
+        title = "Авторизация",
+        prompt = "Сделай выдачу токена через сервис",
+        branch = "ai/t-1",
+        status = TaskStatus.REVIEW,
+        createdAt = t0,
+        runIds = listOf(RunId("r-1")),
+    )
+
+    val queuedTask = task.copy(
+        id = TaskId("t-2"),
+        title = "Второй запуск",
+        prompt = "Починить сборку",
+        branch = "ai/t-2",
+        status = TaskStatus.QUEUED,
+        createdAt = t1,
+        runIds = emptyList(),
+    )
+
+    val run = AgentRun(
+        id = RunId("r-1"),
+        taskId = TaskId("t-1"),
+        state = RunState.FINISHED,
+        mode = AutonomyMode.ASK_BEFORE_CHANGES,
+        toolCallIds = listOf(ToolCallId("tc-1")),
+        startedAt = t0,
+        finishedAt = t1,
+        elapsedMillis = 60_000,
+        cost = Cost(amountMicros = 12_500, known = true),
+        interruptReason = null,
+    )
+
+    /** Прогон с неизвестной ценой: итог по задаче становится неполным (FR-COST-5). */
+    val runWithUnknownCost = run.copy(
+        id = RunId("r-2"),
+        state = RunState.INTERRUPTED,
+        toolCallIds = emptyList(),
+        finishedAt = null,
+        elapsedMillis = 5_000,
+        cost = Cost(amountMicros = 0, known = false),
+    )
+
+    val toolCall = ToolCall(
+        id = ToolCallId("tc-1"),
+        runId = RunId("r-1"),
+        tool = "fs.write",
+        arguments = """{"path":"src/auth/Login.kt"}""",
+        result = "ok",
+        outcome = ToolOutcome.SUCCESS,
+        durationMillis = 42,
+        cost = Cost(amountMicros = 0, known = true),
+        requiredApproval = true,
+        at = t1,
+    )
+
+    val toolPermission = ToolPermission(tool = "fs.write", read = Permission.ALLOW, write = Permission.ASK)
+
+    val decision = ReviewDecision(
+        packetId = PacketId("p-1"),
+        packetRevision = 1,
+        scope = DecisionScope.HUNK,
+        targetHunkId = HunkId("h-1"),
+        value = DecisionValue.CHANGES_REQUESTED,
+        comment = "Вынеси выдачу токена в отдельную функцию",
+        clientPlatform = ClientPlatform.ANDROID,
+        decidedAt = t1,
+    )
+
+    val packetLevelDecision = decision.copy(scope = DecisionScope.PACKET, targetHunkId = null, comment = null)
+}
+```
 
 `host-core/src/test/kotlin/dev/aide/host/store/HostStoreTest.kt`:
 
@@ -9896,18 +10151,20 @@ import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import dev.aide.domain.ClientPlatform
 import dev.aide.domain.DecisionScope
 import dev.aide.domain.DecisionValue
-import dev.aide.domain.DomainFixtures
 import dev.aide.domain.PacketId
 import dev.aide.domain.Permission
-import dev.aide.domain.ReviewDecision
 import dev.aide.domain.TaskId
+import dev.aide.domain.TaskStatus
+import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolPermission
 import dev.aide.host.store.db.HostDatabase
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.datetime.Instant
 
 class HostStoreTest {
 
@@ -9915,86 +10172,146 @@ class HostStoreTest {
     private val store = HostStore(HostDatabase(driver))
 
     @AfterTest
-    fun tearDown() = driver.close()
+    fun tearDown() {
+        driver.close()
+    }
 
     @Test
     fun `задача переживает запись и чтение`() {
-        store.saveTask(DomainFixtures.task)
-        assertEquals(DomainFixtures.task, store.loadTask(DomainFixtures.task.id))
+        store.tasks.save(StoreFixtures.task)
+        assertEquals(StoreFixtures.task, store.tasks.load(StoreFixtures.task.id))
     }
 
     @Test
     fun `неизвестная задача читается как null`() {
-        assertNull(store.loadTask(TaskId("нет-такой")))
+        assertNull(store.tasks.load(TaskId("нет-такой")))
+    }
+
+    @Test
+    fun `повторная запись задачи заменяет прежнюю`() {
+        store.tasks.save(StoreFixtures.task)
+        store.tasks.save(StoreFixtures.task.copy(status = TaskStatus.ACCEPTED))
+
+        assertEquals(1L, store.tasks.count())
+        assertEquals(TaskStatus.ACCEPTED, store.tasks.load(StoreFixtures.task.id)?.status)
+    }
+
+    @Test
+    fun `задачи читаются по статусу от новых к старым`() {
+        val older = StoreFixtures.task.copy(
+            id = TaskId("t-0"),
+            title = "Старая задача",
+            createdAt = Instant.parse("2026-09-21T10:00:00Z"),
+        )
+        store.tasks.save(older)
+        store.tasks.save(StoreFixtures.task)
+        store.tasks.save(StoreFixtures.queuedTask)
+
+        assertEquals(listOf(StoreFixtures.queuedTask), store.tasks.byStatus(TaskStatus.QUEUED))
+        assertEquals(listOf(StoreFixtures.task, older), store.tasks.byStatus(TaskStatus.REVIEW))
+    }
+
+    @Test
+    fun `удаление задачи не удаляет её прогоны`() {
+        store.tasks.save(StoreFixtures.task)
+        store.runs.save(StoreFixtures.run)
+
+        store.tasks.delete(StoreFixtures.task.id)
+
+        assertNull(store.tasks.load(StoreFixtures.task.id))
+        assertEquals(StoreFixtures.run, store.runs.load(StoreFixtures.run.id))
     }
 
     @Test
     fun `прогон переживает запись и чтение`() {
-        store.saveRun(DomainFixtures.run)
-        assertEquals(DomainFixtures.run, store.loadRun(DomainFixtures.run.id))
+        store.runs.save(StoreFixtures.run)
+        assertEquals(StoreFixtures.run, store.runs.load(StoreFixtures.run.id))
+    }
+
+    @Test
+    fun `прогоны читаются по задаче в порядке запуска`() {
+        store.runs.save(StoreFixtures.run)
+        store.runs.save(StoreFixtures.runWithUnknownCost)
+
+        assertEquals(
+            listOf(StoreFixtures.run, StoreFixtures.runWithUnknownCost),
+            store.runs.byTask(StoreFixtures.run.taskId),
+        )
     }
 
     @Test
     fun `стоимость задачи считается по прогонам`() {
-        store.saveRun(DomainFixtures.run)
-        val incomplete = DomainFixtures.emptyRun.copy(taskId = DomainFixtures.run.taskId)
-        store.saveRun(incomplete)
+        store.runs.save(StoreFixtures.run)
+        store.runs.save(StoreFixtures.runWithUnknownCost)
 
-        val total = store.totalCostMicros(DomainFixtures.run.taskId)
+        val total = store.runs.totalCost(StoreFixtures.run.taskId)
         assertEquals(12_500, total.amountMicros)
-        assertTrue(!total.known, "Есть прогон с неизвестной ценой — итог помечается неполным (FR-COST-5)")
+        assertFalse(total.known, "Есть прогон с неизвестной ценой — итог помечается неполным (FR-COST-5)")
+    }
+
+    @Test
+    fun `стоимость известна, когда у всех прогонов есть цена`() {
+        store.runs.save(StoreFixtures.run)
+
+        val total = store.runs.totalCost(StoreFixtures.run.taskId)
+        assertEquals(12_500, total.amountMicros)
+        assertTrue(total.known)
     }
 
     @Test
     fun `вызовы инструментов читаются по прогону`() {
-        store.saveRun(DomainFixtures.run)
-        store.saveToolCall(DomainFixtures.toolCall)
-        val calls = store.toolCallsForRun(DomainFixtures.run.id)
-        assertEquals(listOf(DomainFixtures.toolCall), calls)
+        store.runs.save(StoreFixtures.run)
+        store.toolCalls.save(StoreFixtures.toolCall)
+
+        val calls = store.toolCalls.forRun(StoreFixtures.run.id)
+        assertEquals(listOf(StoreFixtures.toolCall), calls)
     }
 
     @Test
     fun `журнал фильтруется по инструменту`() {
-        store.saveRun(DomainFixtures.run)
-        store.saveToolCall(DomainFixtures.toolCall)
-        store.saveToolCall(DomainFixtures.toolCall.copy(id = dev.aide.domain.ToolCallId("tc-2"), tool = "git.commit"))
+        store.runs.save(StoreFixtures.run)
+        store.toolCalls.save(StoreFixtures.toolCall)
+        store.toolCalls.save(
+            StoreFixtures.toolCall.copy(id = ToolCallId("tc-2"), tool = "git.commit"),
+        )
 
-        assertEquals(1, store.toolCallsForRun(DomainFixtures.run.id, tool = "fs.write").size)
-        assertEquals(2, store.toolCallsForRun(DomainFixtures.run.id).size)
+        assertEquals(1, store.toolCalls.forRun(StoreFixtures.run.id, tool = "fs.write").size)
+        assertEquals(2, store.toolCalls.forRun(StoreFixtures.run.id).size)
     }
 
     @Test
     fun `решения ревью читаются по пакету и по ревизии`() {
-        store.saveDecision(DomainFixtures.decision)
-        store.saveDecision(DomainFixtures.decision.copy(packetRevision = 2, value = DecisionValue.ACCEPTED))
+        store.decisions.save(StoreFixtures.decision)
+        store.decisions.save(StoreFixtures.decision.copy(packetRevision = 2, value = DecisionValue.ACCEPTED))
 
-        assertEquals(2, store.decisionsForPacket(PacketId("p-1")).size)
-        val revisionOne = store.decisionsForPacket(PacketId("p-1"), revision = 1)
-        assertEquals(listOf(DomainFixtures.decision), revisionOne)
+        assertEquals(2, store.decisions.forPacket(PacketId("p-1")).size)
+        val revisionOne = store.decisions.forPacket(PacketId("p-1"), revision = 1)
+        assertEquals(listOf(StoreFixtures.decision), revisionOne)
     }
 
     @Test
     fun `платформа клиента сохраняется и участвует в метрике`() {
-        store.saveDecision(DomainFixtures.decision)
-        store.saveDecision(
-            DomainFixtures.decision.copy(
+        store.decisions.save(StoreFixtures.decision)
+        store.decisions.save(
+            StoreFixtures.decision.copy(
                 packetId = PacketId("p-2"),
                 clientPlatform = ClientPlatform.DESKTOP_LINUX,
             ),
         )
 
-        assertEquals(1, store.decisionsByPlatform(ClientPlatform.ANDROID).size)
-        assertEquals(1, store.decisionsByPlatform(ClientPlatform.DESKTOP_LINUX).size)
+        assertEquals(1, store.decisions.byPlatform(ClientPlatform.ANDROID).size)
+        assertEquals(1, store.decisions.byPlatform(ClientPlatform.DESKTOP_LINUX).size)
         assertEquals(
             mapOf("ANDROID" to 1L, "DESKTOP_LINUX" to 1L),
-            store.decisionCountsByPlatform(),
+            store.decisions.countsByPlatform(),
         )
     }
 
     @Test
     fun `решения на уровне пакета сохраняются с пустым идентификатором блока`() {
-        store.saveDecision(DomainFixtures.packetLevelDecision)
-        val loaded = store.decisionsForPacket(PacketId("p-1")).single()
+        store.decisions.save(StoreFixtures.packetLevelDecision)
+
+        val loaded = store.decisions.forPacket(PacketId("p-1")).single()
         assertEquals(DecisionScope.PACKET, loaded.scope)
         assertNull(loaded.targetHunkId)
         assertNull(loaded.comment)
@@ -10003,17 +10320,19 @@ class HostStoreTest {
     @Test
     fun `права на инструменты переживают запись и чтение`() {
         val permission = ToolPermission(tool = "fs.write", read = Permission.ALLOW, write = Permission.ASK)
-        store.savePermission(permission)
-        assertEquals(permission, store.loadPermission("fs.write"))
-        assertEquals(listOf(permission), store.allPermissions())
+        store.permissions.save(permission)
+
+        assertEquals(permission, store.permissions.load("fs.write"))
+        assertEquals(listOf(permission), store.permissions.all())
     }
 
     @Test
     fun `повторная запись прав обновляет, а не дублирует`() {
-        store.savePermission(ToolPermission("fs.write", Permission.ALLOW, Permission.ASK))
-        store.savePermission(ToolPermission("fs.write", Permission.ALLOW, Permission.DENY))
-        assertEquals(Permission.DENY, store.loadPermission("fs.write")!!.write)
-        assertEquals(1, store.allPermissions().size)
+        store.permissions.save(ToolPermission("fs.write", Permission.ALLOW, Permission.ASK))
+        store.permissions.save(ToolPermission("fs.write", Permission.ALLOW, Permission.DENY))
+
+        assertEquals(Permission.DENY, store.permissions.load("fs.write")?.write)
+        assertEquals(1, store.permissions.all().size)
     }
 }
 ```
@@ -10028,48 +10347,166 @@ class HostStoreTest {
 
 - [ ] **Шаг 8: написать `HostStore`**
 
-`host-core/src/main/kotlin/dev/aide/host/store/HostStore.kt`:
+Слой доступа разбит по сущностям, а не собран в один класс: у `HostStore` из плана набиралось бы около шестнадцати методов, а detekt валится уже на двенадцати (`Class '…' with '12' functions detected. Defined threshold inside classes is set to '11'`). Пять небольших хранилищ читаются лучше, а `HostStore` остаётся фасадом из пяти свойств и методов не делегирует — поэтому порог не задет.
+
+`host-core/src/main/kotlin/dev/aide/host/store/StoreCodec.kt`:
+
+```kotlin
+package dev.aide.host.store
+
+import kotlinx.serialization.DeserializationStrategy
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerializationStrategy
+import kotlinx.serialization.cbor.Cbor
+
+/**
+ * Кодек колонки `payload`: полный доменный объект в CBOR.
+ *
+ * Домен остаётся единственным описанием объекта — в колонках лежат только поля,
+ * по которым ищут. Формат тот же, что у протокола (задача 8): один способ
+ * сериализации на весь проект вместо двух несовместимых.
+ *
+ * CBOR и бинарные `encodeToByteArray`/`decodeFromByteArray` помечены в
+ * kotlinx.serialization экспериментальными — отсюда opt-in на весь объект.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+internal object StoreCodec {
+
+    private val cbor = Cbor {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
+
+    fun <T> encode(serializer: SerializationStrategy<T>, value: T): ByteArray =
+        cbor.encodeToByteArray(serializer, value)
+
+    fun <T> decode(deserializer: DeserializationStrategy<T>, bytes: ByteArray): T =
+        cbor.decodeFromByteArray(deserializer, bytes)
+}
+```
+
+`host-core/src/main/kotlin/dev/aide/host/store/RowMapper.kt` — восстановление объекта из колонок, когда `payload` пуст. Это нужно для записей версии 1: у них колонки `payload` не было, миграция заполнила её значением по умолчанию, и безусловное декодирование падало бы на `CborDecodingException: Expected start of map, but found FF` — то есть после обновления хоста инбокс с прежними задачами упал бы. Поля, которых схема версии 1 физически не хранила (`plan`, `toolCallIds`, `arguments`, `result`, `cost`, `approval`), при восстановлении получают значения по умолчанию, и «правильность» их сверить не с чем:
 
 ```kotlin
 package dev.aide.host.store
 
 import dev.aide.domain.AgentRun
+import dev.aide.domain.AutonomyMode
 import dev.aide.domain.ClientPlatform
 import dev.aide.domain.Cost
+import dev.aide.domain.DecisionScope
+import dev.aide.domain.DecisionValue
+import dev.aide.domain.HunkId
 import dev.aide.domain.PacketId
+import dev.aide.domain.Permission
 import dev.aide.domain.ReviewDecision
 import dev.aide.domain.RunId
-import dev.aide.domain.Task
+import dev.aide.domain.RunState
+import dev.aide.domain.Task as DomainTask
 import dev.aide.domain.TaskId
+import dev.aide.domain.TaskStatus
 import dev.aide.domain.ToolCall
+import dev.aide.domain.ToolCallId
+import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
-import dev.aide.host.store.db.HostDatabase
-import kotlinx.serialization.cbor.Cbor
+import dev.aide.host.store.Agent_run as AgentRunRow
+import dev.aide.host.store.Review_decision as ReviewDecisionRow
+import dev.aide.host.store.Tool_call as ToolCallRow
+import dev.aide.host.store.Tool_permission as ToolPermissionRow
+import kotlinx.datetime.Instant
+import kotlinx.serialization.DeserializationStrategy
 
 /**
- * Слой доступа к метаданным хоста (§ 8.3, § 9).
+ * Превращение строки базы в доменный объект.
  *
- * Задачи, прогоны, вызовы инструментов, решения ревью и права хранятся в SQLite.
- * Код репозитория в базе не хранится — он живёт в git. Модули `client-*` к базе
- * не обращаются: им это запрещено правилом границ из задачи 4, а единственный
- * путь к этим данным для клиента — сообщения протокола.
- *
- * Каждая запись сохраняется дважды: индексируемые поля — в колонках, полный
- * объект — в CBOR. Поэтому фильтры по задаче, инструменту и платформе работают
- * индексами, а домен остаётся единственным описанием объекта.
+ * Обычный путь — разобрать `payload`. Пустая колонка означает запись, сделанную
+ * до версии 2 схемы: там лежали только индексированные колонки, и полного
+ * объекта у такой записи нет. Такую запись приходится собирать из колонок —
+ * иначе чтение списка задач падало бы на базе, прошедшей миграцию 1 → 2.
+ * Поля, которых в схеме версии 1 не было, при этом возвращаются значениями
+ * по умолчанию: восстановить их нечем.
  */
-class HostStore(
-    private val database: HostDatabase,
-    private val cbor: Cbor = Cbor {
-        encodeDefaults = true
-        ignoreUnknownKeys = true
-    },
-) {
+internal object RowMapper {
 
-    // ——— Задачи ———
+    fun task(row: Task): DomainTask =
+        decode(row.payload, DomainTask.serializer()) ?: DomainTask(
+            id = TaskId(row.id),
+            title = row.title,
+            prompt = row.prompt,
+            branch = row.branch,
+            status = TaskStatus.valueOf(row.status),
+            createdAt = Instant.fromEpochMilliseconds(row.created_at),
+        )
 
-    /** Сохраняет задачу. */
-    fun saveTask(task: Task) {
+    fun run(row: AgentRunRow): AgentRun =
+        decode(row.payload, AgentRun.serializer()) ?: AgentRun(
+            id = RunId(row.id),
+            taskId = TaskId(row.task_id),
+            state = RunState.valueOf(row.state),
+            mode = AutonomyMode.valueOf(row.mode),
+            startedAt = Instant.fromEpochMilliseconds(row.started_at),
+            finishedAt = row.finished_at?.let { Instant.fromEpochMilliseconds(it) },
+            elapsedMillis = row.elapsed_millis,
+            cost = Cost(amountMicros = row.cost_micros, known = row.cost_known != 0L),
+        )
+
+    fun toolCall(row: ToolCallRow): ToolCall =
+        decode(row.payload, ToolCall.serializer()) ?: ToolCall(
+            id = ToolCallId(row.id),
+            runId = RunId(row.run_id),
+            tool = row.tool,
+            arguments = "",
+            outcome = ToolOutcome.valueOf(row.outcome),
+            durationMillis = row.duration_millis,
+            cost = Cost(),
+            requiredApproval = row.required_approval != 0L,
+            at = Instant.fromEpochMilliseconds(row.at),
+        )
+
+    fun decision(row: ReviewDecisionRow): ReviewDecision =
+        decode(row.payload, ReviewDecision.serializer()) ?: ReviewDecision(
+            packetId = PacketId(row.packet_id),
+            packetRevision = row.packet_revision.toInt(),
+            scope = DecisionScope.valueOf(row.scope),
+            targetHunkId = row.target_hunk_id?.let { HunkId(it) },
+            value = DecisionValue.valueOf(row.value_),
+            clientPlatform = ClientPlatform.valueOf(row.client_platform),
+            decidedAt = Instant.fromEpochMilliseconds(row.decided_at),
+        )
+
+    fun permission(row: ToolPermissionRow): ToolPermission =
+        decode(row.payload, ToolPermission.serializer()) ?: ToolPermission(
+            tool = row.tool,
+            read = Permission.valueOf(row.read_permission),
+            write = Permission.valueOf(row.write_permission),
+        )
+
+    private fun <T> decode(bytes: ByteArray, deserializer: DeserializationStrategy<T>): T? =
+        if (bytes.isEmpty()) null else StoreCodec.decode(deserializer, bytes)
+}
+```
+
+`host-core/src/main/kotlin/dev/aide/host/store/TaskStore.kt`:
+
+```kotlin
+package dev.aide.host.store
+
+import dev.aide.domain.Task
+import dev.aide.domain.TaskId
+import dev.aide.domain.TaskStatus
+import dev.aide.host.store.db.HostDatabase
+
+/**
+ * Задачи в хранилище хоста (§ 4, § 8.3).
+ *
+ * Поля, по которым ищут (`id`, `status`, `created_at`), лежат в колонках, задача
+ * целиком — в `payload`; поэтому фильтр по статусу работает индексом, а домен
+ * остаётся единственным описанием объекта.
+ */
+class TaskStore internal constructor(private val database: HostDatabase) {
+
+    /** Сохраняет задачу; повторная запись с тем же `id` заменяет прежнюю. */
+    fun save(task: Task) {
         database.taskQueries.insert(
             id = task.id.value,
             title = task.title,
@@ -10077,27 +10514,50 @@ class HostStore(
             branch = task.branch,
             status = task.status.name,
             created_at = task.createdAt.toEpochMilliseconds(),
-            payload = cbor.encodeToByteArray(Task.serializer(), task),
+            payload = StoreCodec.encode(Task.serializer(), task),
         )
     }
 
-    /** Читает задачу по идентификатору. */
-    fun loadTask(id: TaskId): Task? =
-        database.taskQueries.byId(id.value).executeAsOneOrNull()
-            ?.let { cbor.decodeFromByteArray(Task.serializer(), it.payload) }
+    /** Читает задачу по идентификатору; неизвестный идентификатор даёт null. */
+    fun load(id: TaskId): Task? =
+        database.taskQueries.byId(id.value).executeAsOneOrNull()?.let(RowMapper::task)
 
-    /** Читает задачи с указанным статусом, от новых к старым. */
-    fun tasksByStatus(status: String): List<Task> =
-        database.taskQueries.byStatus(status).executeAsList()
-            .map { cbor.decodeFromByteArray(Task.serializer(), it.payload) }
+    /** Читает задачи с указанным статусом, от новых к старым — сырьё инбокса ревью (§ 4). */
+    fun byStatus(status: TaskStatus): List<Task> =
+        database.taskQueries.byStatus(status.name).executeAsList().map(RowMapper::task)
 
     /** Удаляет задачу. Журнал её прогонов при этом не удаляется (§ 10.2). */
-    fun deleteTask(id: TaskId) = database.taskQueries.delete(id.value)
+    fun delete(id: TaskId) {
+        database.taskQueries.delete(id.value)
+    }
 
-    // ——— Прогоны ———
+    /** Сколько задач в базе. */
+    fun count(): Long = database.taskQueries.count().executeAsOne()
+}
+```
 
-    /** Сохраняет прогон. */
-    fun saveRun(run: AgentRun) {
+`host-core/src/main/kotlin/dev/aide/host/store/RunStore.kt`:
+
+```kotlin
+package dev.aide.host.store
+
+import dev.aide.domain.AgentRun
+import dev.aide.domain.Cost
+import dev.aide.domain.RunId
+import dev.aide.domain.TaskId
+import dev.aide.host.store.db.HostDatabase
+
+/**
+ * Прогоны агента в хранилище хоста (§ 4, FR-AGENT-10).
+ *
+ * Стоимость хранится дважды: числом в `cost_micros` (по нему идёт суммирование
+ * в SQL) и целиком в `payload`. Флаг `cost_known` вынесен в колонку, потому что
+ * по нему итог помечается неполным (FR-COST-5), а это фильтр, а не поле карточки.
+ */
+class RunStore internal constructor(private val database: HostDatabase) {
+
+    /** Сохраняет прогон; повторная запись с тем же `id` заменяет прежнюю. */
+    fun save(run: AgentRun) {
         database.agentRunQueries.insert(
             id = run.id.value,
             task_id = run.taskId.value,
@@ -10108,26 +10568,52 @@ class HostStore(
             elapsed_millis = run.elapsedMillis,
             cost_micros = run.cost.amountMicros,
             cost_known = if (run.cost.known) 1L else 0L,
-            payload = cbor.encodeToByteArray(AgentRun.serializer(), run),
+            payload = StoreCodec.encode(AgentRun.serializer(), run),
         )
     }
 
-    /** Читает прогон по идентификатору. */
-    fun loadRun(id: RunId): AgentRun? =
-        database.agentRunQueries.byId(id.value).executeAsOneOrNull()
-            ?.let { cbor.decodeFromByteArray(AgentRun.serializer(), it.payload) }
+    /** Читает прогон по идентификатору; неизвестный идентификатор даёт null. */
+    fun load(id: RunId): AgentRun? =
+        database.agentRunQueries.byId(id.value).executeAsOneOrNull()?.let(RowMapper::run)
 
-    /** Суммарная стоимость всех прогонов задачи с учётом неполноты данных (FR-AGENT-10, FR-COST-5). */
-    fun totalCostMicros(taskId: TaskId): Cost {
-        val sum = database.agentRunQueries.totalCostMicrosByTask(taskId.value).executeAsOne() ?: 0L
+    /** Читает прогоны задачи в порядке запуска. */
+    fun byTask(taskId: TaskId): List<AgentRun> =
+        database.agentRunQueries.byTask(taskId.value).executeAsList().map(RowMapper::run)
+
+    /**
+     * Суммарная стоимость всех прогонов задачи.
+     *
+     * [Cost.known] = false, если хотя бы у одного прогона цена неизвестна: тогда
+     * в [Cost.amountMicros] лежит сумма только известных частей, а потребитель
+     * обязан показать итог как неполный (FR-AGENT-10, FR-COST-5).
+     */
+    fun totalCost(taskId: TaskId): Cost {
+        val known = database.agentRunQueries.totalCostMicrosByTask(taskId.value).executeAsOne()
         val unknown = database.agentRunQueries.countUnknownCostByTask(taskId.value).executeAsOne()
-        return Cost(amountMicros = sum, known = unknown == 0L)
+        return Cost(amountMicros = known, known = unknown == 0L)
     }
+}
+```
 
-    // ——— Вызовы инструментов ———
+`host-core/src/main/kotlin/dev/aide/host/store/ToolCallStore.kt`:
+
+```kotlin
+package dev.aide.host.store
+
+import dev.aide.domain.RunId
+import dev.aide.domain.ToolCall
+import dev.aide.host.store.db.HostDatabase
+
+/**
+ * Вызовы инструментов в хранилище хоста (§ 4, T-1.14).
+ *
+ * Журнал читается по прогону и фильтруется по инструменту — оба поля
+ * проиндексированы, потому что журнал аудита листается страницами.
+ */
+class ToolCallStore internal constructor(private val database: HostDatabase) {
 
     /** Сохраняет вызов инструмента. */
-    fun saveToolCall(call: ToolCall) {
+    fun save(call: ToolCall) {
         database.toolCallQueries.insert(
             id = call.id.value,
             run_id = call.runId.value,
@@ -10136,77 +10622,167 @@ class HostStore(
             required_approval = if (call.requiredApproval) 1L else 0L,
             duration_millis = call.durationMillis,
             at = call.at.toEpochMilliseconds(),
-            payload = cbor.encodeToByteArray(ToolCall.serializer(), call),
+            payload = StoreCodec.encode(ToolCall.serializer(), call),
         )
     }
 
     /** Читает вызовы прогона в порядке выполнения; при [tool] не null — только по этому инструменту. */
-    fun toolCallsForRun(runId: RunId, tool: String? = null): List<ToolCall> {
+    fun forRun(runId: RunId, tool: String? = null): List<ToolCall> {
         val rows = if (tool == null) {
             database.toolCallQueries.byRun(runId.value).executeAsList()
         } else {
             database.toolCallQueries.byRunAndTool(runId.value, tool).executeAsList()
         }
-        return rows.map { cbor.decodeFromByteArray(ToolCall.serializer(), it.payload) }
+        return rows.map(RowMapper::toolCall)
     }
+}
+```
 
-    // ——— Решения ревью ———
+`host-core/src/main/kotlin/dev/aide/host/store/DecisionStore.kt`:
+
+```kotlin
+package dev.aide.host.store
+
+import dev.aide.domain.ClientPlatform
+import dev.aide.domain.PacketId
+import dev.aide.domain.ReviewDecision
+import dev.aide.host.store.db.HostDatabase
+
+/**
+ * Решения ревью в хранилище хоста (§ 9, § 2.3).
+ *
+ * Решение привязано к ревизии пакета: к новой ревизии оно не применяется
+ * (§ 9, правило 2). Платформа клиента, принявшего решение, лежит в колонке —
+ * по ней считается продуктовая метрика «доля задач, закрытых с телефона».
+ */
+class DecisionStore internal constructor(private val database: HostDatabase) {
 
     /** Сохраняет решение ревью. */
-    fun saveDecision(decision: ReviewDecision) {
+    fun save(decision: ReviewDecision) {
         database.reviewDecisionQueries.insert(
             packet_id = decision.packetId.value,
             packet_revision = decision.packetRevision.toLong(),
             scope = decision.scope.name,
             target_hunk_id = decision.targetHunkId?.value,
-            value = decision.value.name,
+            // Колонка `value` — ключевое слово Kotlin, генератор добавляет подчёркивание.
+            value_ = decision.value.name,
             client_platform = decision.clientPlatform.name,
             decided_at = decision.decidedAt.toEpochMilliseconds(),
-            payload = cbor.encodeToByteArray(ReviewDecision.serializer(), decision),
+            payload = StoreCodec.encode(ReviewDecision.serializer(), decision),
         )
     }
 
-    /** Читает решения по пакету; при [revision] не null — только по этой ревизии (§ 9, правило 2). */
-    fun decisionsForPacket(packetId: PacketId, revision: Int? = null): List<ReviewDecision> {
+    /** Читает решения по пакету от старых к новым; при [revision] не null — только по этой ревизии. */
+    fun forPacket(packetId: PacketId, revision: Int? = null): List<ReviewDecision> {
         val rows = if (revision == null) {
             database.reviewDecisionQueries.byPacket(packetId.value).executeAsList()
         } else {
             database.reviewDecisionQueries.byPacketAndRevision(packetId.value, revision.toLong()).executeAsList()
         }
-        return rows.map { cbor.decodeFromByteArray(ReviewDecision.serializer(), it.payload) }
+        return rows.map(RowMapper::decision)
     }
 
-    /** Читает решения, принятые с указанной платформы: от старых к новым (§ 2.3). */
-    fun decisionsByPlatform(platform: ClientPlatform): List<ReviewDecision> =
-        database.reviewDecisionQueries.byPlatform(platform.name).executeAsList()
-            .map { cbor.decodeFromByteArray(ReviewDecision.serializer(), it.payload) }
+    /** Читает решения, принятые с указанной платформы, от старых к новым (§ 2.3). */
+    fun byPlatform(platform: ClientPlatform): List<ReviewDecision> =
+        database.reviewDecisionQueries.byPlatform(platform.name).executeAsList().map(RowMapper::decision)
 
-    /** Число решений по платформам — сырьё для метрики «доля задач, закрытых с телефона» (§ 2.3). */
-    fun decisionCountsByPlatform(): Map<String, Long> =
+    /**
+     * Число решений по платформам — сырьё метрики «доля задач, закрытых с телефона» (§ 2.3).
+     *
+     * Ключ — имя платформы, а не [ClientPlatform]: запись, сделанная версией хоста
+     * со словарём шире текущего, не должна ронять подсчёт метрики.
+     */
+    fun countsByPlatform(): Map<String, Long> =
         database.reviewDecisionQueries.countByPlatform().executeAsList()
             .associate { it.client_platform to it.decisions }
+}
+```
 
-    // ——— Права ———
+`host-core/src/main/kotlin/dev/aide/host/store/PermissionStore.kt`:
 
-    /** Сохраняет права на инструмент. */
-    fun savePermission(permission: ToolPermission) {
+```kotlin
+package dev.aide.host.store
+
+import dev.aide.domain.ToolPermission
+import dev.aide.host.store.db.HostDatabase
+
+/**
+ * Права на инструменты в хранилище хоста (§ 10.1, FR-TOOLS-8).
+ *
+ * Права читаются и пишутся по инструменту целиком: раздельные колонки для чтения
+ * и записи нужны, чтобы показать матрицу прав без разбора `payload`.
+ */
+class PermissionStore internal constructor(private val database: HostDatabase) {
+
+    /** Сохраняет права на инструмент; повторная запись по тому же имени заменяет прежнюю. */
+    fun save(permission: ToolPermission) {
         database.toolPermissionQueries.insert(
             tool = permission.tool,
             read_permission = permission.read.name,
             write_permission = permission.write.name,
-            payload = cbor.encodeToByteArray(ToolPermission.serializer(), permission),
+            payload = StoreCodec.encode(ToolPermission.serializer(), permission),
         )
     }
 
-    /** Читает права на инструмент. */
-    fun loadPermission(tool: String): ToolPermission? =
-        database.toolPermissionQueries.byTool(tool).executeAsOneOrNull()
-            ?.let { cbor.decodeFromByteArray(ToolPermission.serializer(), it.payload) }
+    /** Читает права на инструмент; инструмент без настроенных прав даёт null. */
+    fun load(tool: String): ToolPermission? =
+        database.toolPermissionQueries.byTool(tool).executeAsOneOrNull()?.let(RowMapper::permission)
 
-    /** Читает все права. */
-    fun allPermissions(): List<ToolPermission> =
-        database.toolPermissionQueries.all().executeAsList()
-            .map { cbor.decodeFromByteArray(ToolPermission.serializer(), it.payload) }
+    /** Читает все настроенные права в порядке имён инструментов. */
+    fun all(): List<ToolPermission> =
+        database.toolPermissionQueries.all().executeAsList().map(RowMapper::permission)
+}
+```
+
+`host-core/src/main/kotlin/dev/aide/host/store/HostStore.kt` — фасад из пяти свойств:
+
+```kotlin
+package dev.aide.host.store
+
+import app.cash.sqldelight.db.SqlDriver
+import dev.aide.host.store.db.HostDatabase
+
+/**
+ * Точка входа в хранилище метаданных хоста (§ 8.3, § 9).
+ *
+ * Задачи, прогоны, вызовы инструментов, решения ревью и права хранятся в SQLite.
+ * Код репозитория в базе не хранится — он живёт в git. Модули `client-*` к базе
+ * не обращаются: им это запрещено правилом границ из задачи 4, а единственный
+ * путь к этим данным для клиента — сообщения протокола.
+ *
+ * Доступ сгруппирован по сущностям — [tasks], [runs], [toolCalls], [decisions],
+ * [permissions]: пять небольших наборов операций читаются лучше, чем класс на
+ * шестнадцать разнородных методов.
+ */
+class HostStore internal constructor(
+    database: HostDatabase,
+    private val driver: SqlDriver? = null,
+) : AutoCloseable {
+
+    /** Задачи: постановка, чтение по идентификатору и по статусу. */
+    val tasks: TaskStore = TaskStore(database)
+
+    /** Прогоны агента: состояние, стоимость, история по задаче. */
+    val runs: RunStore = RunStore(database)
+
+    /** Вызовы инструментов: журнал прогона с фильтром по инструменту. */
+    val toolCalls: ToolCallStore = ToolCallStore(database)
+
+    /** Решения ревью: по пакету, по ревизии и по платформе клиента. */
+    val decisions: DecisionStore = DecisionStore(database)
+
+    /** Права на инструменты. */
+    val permissions: PermissionStore = PermissionStore(database)
+
+    /**
+     * Закрывает соединение с базой.
+     *
+     * База, открытая в памяти драйвером, созданным вызывающей стороной, остаётся
+     * на её попечении: [driver] равен null, и закрывать нужно драйвер.
+     */
+    override fun close() {
+        driver?.close()
+    }
 }
 ```
 
@@ -10214,19 +10790,22 @@ class HostStore(
 
 `host-core/src/main/kotlin/dev/aide/host/store/DatabaseFactory.kt`:
 
+`DatabaseFactory.open` не создаёт схему и не мигрирует вручную: драйверу `JdbcSqliteDriver` передаётся `HostDatabase.Schema`, и он сам вызывает `create`/`migrate` и ведёт версию в `PRAGMA user_version`. Самодельные проверка «новая ли база» и чтение версии убраны намеренно: `HostDatabase.Schema.create(driver)` **не пишет** `user_version`, поэтому созданная хостом база имела версию 0, и на втором запуске ветка «не пустая база → мигрировать» вызывала `migrate(0, 2)` с падением `SQLITE_ERROR … duplicate column name: payload`. С драйвером после открытия базы версия становится 2.
+
 ```kotlin
 package dev.aide.host.store
 
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import dev.aide.host.store.db.HostDatabase
 import java.nio.file.Path
+import java.util.Properties
 import kotlin.io.path.createDirectories
 
 /**
  * Создание и открытие базы метаданных хоста.
  *
- * База лежит в каталоге данных приложения, а не в воркспейсе: иначе она попадала бы
- * в `git status`, в коммиты и в снапшоты, а этого быть не должно (§ 9).
+ * База лежит в каталоге данных приложения, а не в воркспейсе: иначе она попадала
+ * бы в `git status`, в коммиты и в снапшоты, а этого быть не должно (§ 9).
  */
 object DatabaseFactory {
 
@@ -10237,36 +10816,163 @@ object DatabaseFactory {
         return base.resolve("aide").resolve("host.db")
     }
 
-    /** Открывает базу, применяя миграции до текущей версии. */
+    /**
+     * Открывает базу: схему создаёт только для новой базы, старую доводит
+     * миграциями до текущей версии.
+     *
+     * Версию схемы ведёт драйвер в `PRAGMA user_version`, а не код хоста: иначе
+     * базу, созданную прошлым запуском, следующий запуск принял бы за пустую и
+     * попытался накатить миграцию поверх уже добавленных колонок.
+     */
     fun open(path: Path = defaultDatabasePath()): HostStore {
         path.parent?.createDirectories()
-        val driver = JdbcSqliteDriver("jdbc:sqlite:${path.toAbsolutePath()}")
-        val currentVersion = HostDatabase.Schema.version
-        // Создаём схему, если базы ещё нет; иначе доводим до текущей версии.
-        if (!path.toFile().exists() || isFresh(driver)) {
-            HostDatabase.Schema.create(driver)
-        } else {
-            HostDatabase.Schema.migrate(driver, readUserVersion(driver), currentVersion, *arrayOf())
-        }
-        return HostStore(HostDatabase(driver))
+        val driver = JdbcSqliteDriver("jdbc:sqlite:${path.toAbsolutePath()}", Properties(), HostDatabase.Schema)
+        return HostStore(HostDatabase(driver), driver)
     }
 
-    /** Открывает базу в памяти — для тестов. */
+    /** Открывает базу в памяти — для тестов и для пробного запуска. */
     fun openInMemory(): HostStore {
-        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
-        HostDatabase.Schema.create(driver)
-        return HostStore(HostDatabase(driver))
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY, Properties(), HostDatabase.Schema)
+        return HostStore(HostDatabase(driver), driver)
+    }
+}
+```
+
+`host-core/src/test/kotlin/dev/aide/host/store/DatabaseFactoryTest.kt`:
+
+```kotlin
+package dev.aide.host.store
+
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+import dev.aide.domain.ClientPlatform
+import dev.aide.domain.DecisionValue
+import dev.aide.domain.HunkId
+import dev.aide.domain.PacketId
+import dev.aide.domain.Permission
+import dev.aide.domain.RunId
+import dev.aide.domain.RunState
+import dev.aide.domain.TaskId
+import dev.aide.domain.TaskStatus
+import dev.aide.domain.ToolOutcome
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.absolutePathString
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+import kotlinx.datetime.Instant
+
+class DatabaseFactoryTest {
+
+    @Test
+    fun `новая база создаётся в текущей версии`() {
+        val directory = Files.createTempDirectory("aide-store-fresh-")
+        val path = directory.resolve("host.db")
+        try {
+            DatabaseFactory.open(path).use { store ->
+                store.tasks.save(StoreFixtures.task)
+                assertEquals(StoreFixtures.task, store.tasks.load(StoreFixtures.task.id))
+            }
+
+            assertEquals(2L, userVersionOf(path))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
     }
 
-    private fun isFresh(driver: JdbcSqliteDriver): Boolean =
-        driver.executeQuery(null, "SELECT count(*) FROM sqlite_master WHERE type='table'", { cursor ->
-            app.cash.sqldelight.db.QueryResult.Value(if (cursor.next().value) cursor.getLong(0) ?: 0L else 0L)
-        }, 0).value == 0L
+    @Test
+    fun `открытая база читается после повторного открытия`() {
+        val directory = Files.createTempDirectory("aide-store-reopen-")
+        val path = directory.resolve("host.db")
+        try {
+            DatabaseFactory.open(path).use { store ->
+                store.tasks.save(StoreFixtures.task)
+                store.runs.save(StoreFixtures.run)
+                store.permissions.save(StoreFixtures.toolPermission)
+            }
 
-    private fun readUserVersion(driver: JdbcSqliteDriver): Long =
-        driver.executeQuery(null, "PRAGMA user_version", { cursor ->
-            app.cash.sqldelight.db.QueryResult.Value(if (cursor.next().value) cursor.getLong(0) ?: 0L else 0L)
-        }, 0).value
+            DatabaseFactory.open(path).use { store ->
+                assertEquals(StoreFixtures.task, store.tasks.load(StoreFixtures.task.id))
+                assertEquals(StoreFixtures.run, store.runs.load(StoreFixtures.run.id))
+                assertEquals(StoreFixtures.toolPermission, store.permissions.load("fs.write"))
+                assertEquals(1L, store.tasks.count())
+            }
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `база предыдущей версии доводится миграцией и сохраняет записи`() {
+        val directory = Files.createTempDirectory("aide-store-legacy-")
+        val path = directory.resolve("host.db")
+        try {
+            // База версии 1: схема без payload, по записи в каждую таблицу и метка версии.
+            val legacyDriver = JdbcSqliteDriver("jdbc:sqlite:${path.absolutePathString()}")
+            try {
+                StoreTestSupport.createLegacyDatabase(legacyDriver)
+                StoreTestSupport.insertLegacyRows(legacyDriver)
+                assertEquals(1L, StoreTestSupport.userVersion(legacyDriver))
+            } finally {
+                legacyDriver.close()
+            }
+
+            // Открытие хоста после обновления: миграция 1 → 2 на непустой базе.
+            DatabaseFactory.open(path).use { store ->
+                val task = assertNotNull(store.tasks.load(TaskId("t-legacy")))
+                assertEquals("Старая задача", task.title)
+                assertEquals(TaskStatus.REVIEW, task.status)
+                assertEquals("ai/t-legacy", task.branch)
+                assertEquals(Instant.fromEpochMilliseconds(1_758_535_200_000), task.createdAt)
+
+                val run = assertNotNull(store.runs.load(RunId("r-legacy")))
+                assertEquals(TaskId("t-legacy"), run.taskId)
+                assertEquals(RunState.FINISHED, run.state)
+                assertEquals(12_500, run.cost.amountMicros)
+                assertTrue(run.cost.known)
+
+                val call = store.toolCalls.forRun(RunId("r-legacy")).single()
+                assertEquals("fs.write", call.tool)
+                assertEquals(ToolOutcome.SUCCESS, call.outcome)
+                assertTrue(call.requiredApproval)
+
+                val decision = store.decisions.forPacket(PacketId("p-legacy")).single()
+                assertEquals(DecisionValue.ACCEPTED, decision.value)
+                assertEquals(ClientPlatform.ANDROID, decision.clientPlatform)
+                assertEquals(HunkId("h-1"), decision.targetHunkId)
+
+                val permission = assertNotNull(store.permissions.load("fs.read"))
+                assertEquals(Permission.ALLOW, permission.read)
+                assertEquals(Permission.DENY, permission.write)
+
+                // Колонка payload, появившаяся миграцией, работает: новая запись читается вместе со старой.
+                store.tasks.save(StoreFixtures.queuedTask)
+                assertEquals(2L, store.tasks.count())
+            }
+
+            assertEquals(2L, userVersionOf(path))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `база в памяти принимает записи`() {
+        DatabaseFactory.openInMemory().use { store ->
+            store.tasks.save(StoreFixtures.task)
+            assertEquals(StoreFixtures.task, store.tasks.load(StoreFixtures.task.id))
+        }
+    }
+
+    private fun userVersionOf(path: Path): Long {
+        val driver = JdbcSqliteDriver("jdbc:sqlite:${path.absolutePathString()}")
+        try {
+            return StoreTestSupport.userVersion(driver)
+        } finally {
+            driver.close()
+        }
+    }
 }
 ```
 
@@ -10276,7 +10982,7 @@ object DatabaseFactory {
 ./gradlew :host-core:test
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 58 тестов (`MigrationTest` — 3, `HostStoreTest` — 11, `ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 10, `EmbeddedHostTest` — 3).
+Ожидаемо: `BUILD SUCCESSFUL`, 68 тестов (`DatabaseFactoryTest` — 4, `HostStoreTest` — 16, `MigrationTest` — 4, `ProtocolServerTest` — 5, `ReconnectTest` — 2, `WorkspaceFileSystemTest` — 18, `FileTreeBuilderTest` — 6, `JGitRepositoryTest` — 10, `EmbeddedHostTest` — 3).
 
 - [ ] **Шаг 11: проверить, что клиент не может обратиться к базе**
 
