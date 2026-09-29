@@ -232,7 +232,7 @@ local.properties
 
 Правило про wrapper здесь не формальность: `gradle/wrapper/gradle-wrapper.jar` обязан попадать в коммит, иначе на чистой машине `./gradlew` не существует, а все шаги плана запускаются именно через него.
 
-`.gitattributes` — рядом с `.gitignore` и в том же шаге: он должен лежать в репозитории до того, как репозиторий впервые склонируют на Windows. Windows-job из задачи 3 запускает `./gradlew` (POSIX-скрипт) через Git Bash, и если чекаут отдаст файл с CRLF, оболочка ответит `$'\r': command not found`.
+`.gitattributes` — рядом с `.gitignore` и **до** генерации wrapper'а (шаг 3), и это порядок, а не вкусовщина: атрибуты применяются в момент попадания файла в индекс, поэтому если `.gitattributes` появится после `git add gradlew.bat`, блоб запишется с CRLF, и после любого свежего чекаута файл будет вечно висеть изменённым (`git checkout -- gradlew.bat` не помогает, а fast-forward в `master` отказывается выполняться). Кроме того, файл должен лежать в репозитории до того, как его впервые склонируют на Windows: windows-job из задачи 3 запускает `./gradlew` (POSIX-скрипт) через Git Bash, и если чекаут отдаст файл с CRLF, оболочка ответит `$'\r': command not found`.
 
 ```gitattributes
 # gradlew — POSIX-скрипт: CRLF ломает его при запуске через Git Bash на Windows
@@ -243,18 +243,18 @@ gradlew text eol=lf
 
 - [ ] **Шаг 3: сгенерировать Gradle wrapper**
 
-В репозитории нет ни Gradle, ни wrapper'а, а каждая команда задачи — `./gradlew …`. Шаг идёт сразу после каталога версий: версия Gradle (8.11) — часть версий проекта, а `.gitignore` из шага 2 уже готов к тому, что первый же запуск Gradle создаст `.gradle/`. Дистрибутив Gradle кладём **вне репозитория** (в нём самом есть свой wrapper и свой `.gradle/`, которым в проекте делать нечего):
+В репозитории нет ни Gradle, ни wrapper'а, а каждая команда задачи — `./gradlew …`. Шаг идёт сразу после каталога версий: версия Gradle (8.11) — часть версий проекта, а `.gitignore` из шага 2 уже готов к тому, что первый же запуск Gradle создаст `.gradle/`. Дистрибутив Gradle кладём **вне репозитория** (в нём самом есть свой wrapper и свой `.gradle/`, которым в проекте делать нечего). Скачивание и распаковка идут в подоболочке, чтобы рабочий каталог самой оболочки остался прежним — следующим блоком wrapper генерируется из корня этого репозитория:
 
 ```bash
-mkdir -p /tmp/gradle-dist && cd /tmp/gradle-dist
-curl -fsSLO https://services.gradle.org/distributions/gradle-8.11-bin.zip
-unzip -q gradle-8.11-bin.zip
+( mkdir -p /tmp/gradle-dist && cd /tmp/gradle-dist \
+  && curl -fsSLO https://services.gradle.org/distributions/gradle-8.11-bin.zip \
+  && unzip -q gradle-8.11-bin.zip )
 ```
 
-Wrapper генерируется из корня репозитория — до появления `settings.gradle.kts` и build-файлов, поэтому `gradle wrapper` не пытается конфигурировать сборку, а только пишет свои четыре файла:
+Wrapper генерируется из корня этого репозитория — до появления `settings.gradle.kts` и build-файлов, поэтому `gradle wrapper` не пытается конфигурировать сборку, а только пишет свои четыре файла:
 
 ```bash
-cd /home/nico/packages/aide
+# выполняется из корня этого репозитория — каталога с созданными на шаге 2 файлами .gitignore и .gitattributes
 /tmp/gradle-dist/gradle-8.11/bin/gradle wrapper --gradle-version 8.11
 rm -rf /tmp/gradle-dist
 ```
@@ -804,6 +804,15 @@ git status --porcelain | grep -E '(^|/)(build|\.gradle|\.kotlin)/' && echo "АР
 
 Ожидаемо: `чисто`. Если печатается `АРТЕФАКТЫ В ИНДЕКСЕ` — `.gitignore` неполон: убрать артефакт из индекса (`git reset` и правка `.gitignore`) и повторить. Без этой проверки дефект возвращается незамеченным: именно так в индекс попадали `*/build/**`, `build-logic/.gradle/**` и `.kotlin/errors/*.log`.
 
+Убедиться, что `.gitattributes` успел примениться к wrapper'у до записи блоба:
+
+```bash
+git ls-files --eol gradlew.bat
+git status --porcelain
+```
+
+Ожидаемо: `i/lf w/crlf attr/text eol=crlf` — в индексе LF, на диске CRLF (это и означает, что атрибут сработал при добавлении) — и пустой `git status`. Если `git status` показывает `gradlew.bat` изменённым, значит блоб записан с CRLF: исправить `git add --renormalize gradlew.bat` и закоммитить заново. Без проверки файл остаётся вечно «изменённым» после каждого чекаута, а fast-forward в `master` отказывается выполняться.
+
 Только после этого коммитить:
 
 ```bash
@@ -1127,6 +1136,11 @@ subprojects {
     extensions.configure<io.gitlab.arturbosch.detekt.extensions.DetektExtension> {
         config.setFrom(rootProject.files("config/detekt/detekt.yml"))
         buildUponDefaultConfig = true
+        // Без этой строки detekt молчит на KMP-модулях: по умолчанию он смотрит только
+        // в `src/main/kotlin` и `src/test/kotlin`, а исходники KMP лежат в `src/commonMain/kotlin`,
+        // `src/androidMain/kotlin` и так далее. Прогон тогда печатает `:domain:detekt NO-SOURCE`,
+        // `:client-ui:detekt NO-SOURCE` и линтит только `androidApp` и `desktopApp`.
+        setSource(fileTree("src") { include("**/*.kt", "**/*.kts") })
     }
 }
 ```
@@ -1145,7 +1159,16 @@ style:
     ignoreNumbers: ['-1', '0', '1', '2', '100']
   MaxLineLength:
     maxLineLength: 120
+naming:
+  FunctionNaming:
+    # Compose требует PascalCase у composable-функций, поэтому `fun App()` — не нарушение.
+    # Исключение узкое: для всех остальных функций правило работает как обычно.
+    ignoreAnnotated: ['Composable']
 ```
+
+`FunctionNaming` лежит в наборе `naming`, а не в `style`: если положить его в `style`, detekt не примет конфиг — такого свойства в этом наборе нет, и ошибка будет вида `Property '…>FunctionNaming' is misspelled or does not exist`. Исключение для `@Composable` — вынужденное (имя `App()` задано соглашением Compose), но узкое: ни одно правило не отключено, у остальных функций имя по-прежнему проверяется.
+
+Про пороги: на текущем объёме кода они не несут нагрузки — прогон со стоковыми дефолтами detekt тоже зелёный, а `LongMethod: 80` и `TooManyFunctions: 25` сработают только на крупных файлах. Значение `'100'` в `ignoreNumbers` ничем не обосновано; когда какое-то из этих правил впервые помешает, порог нужно пересматривать осознанно, а не расширять список значений молча.
 
 - [ ] **Шаг 3: написать workflow**
 
@@ -1174,15 +1197,17 @@ jobs:
 
       - name: Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Дефолт действия — `tools platform-tools`, а пакета `tools` в репозитории Android SDK
+          # больше нет: шаг падает за секунды с `Failed to find package 'tools'`. Нужный набор
+          # (platform 35 и build-tools 35.0.0) всё равно ставится следующим шагом.
+          packages: platform-tools
 
       - name: Лицензии Android SDK
         run: yes | sdkmanager --licenses
 
       - name: Платформа и инструменты Android
         run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Метаданные общего кода
-        run: ./gradlew :client-ui:compileCommonMainKotlinMetadata
 
       - name: Юнит-тесты
         run: ./gradlew :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest
@@ -1228,9 +1253,13 @@ jobs:
 
 Почему в Windows-job'е идут ещё и тесты: единственный Windows-специфичный код этапа — путь к файлу настроек в `client-state/src/jvmMain/.../KeyValueStore.jvm.kt` (там `Path.of(System.getProperty("user.home"), ".config")`, то есть на Windows `%USERPROFILE%\.config`). Если этот job только собирает дистрибутив, такой код на Windows не проверяется вообще, поэтому здесь запускаются `jvmTest` обоих клиентских модулей. GUI-тесты (`compose.uiTest`) здесь не гоняются: они требуют графической сессии и остаются в Linux-job'е.
 
-Почему отдельный шаг «Метаданные общего кода»: `:client-ui:compileCommonMainKotlinMetadata` компилирует `commonMain` без платформенного stdlib, поэтому использование `java.*` (и любого другого платформенного API) в общем коде падает прямо на компиляции. Ни `jvmTest`, ни подстрочный тест из задачи 2 этого не ловят: первый компилирует общий код как часть JVM-таргета, второй ищет всего шесть подстрок. Эта задача — настоящий компиляторный барьер, поэтому она стоит и в workflow, и в локальном прогоне (шаг 6).
+Шаг `Android SDK` ставит только `platform-tools`, и это не мелочь: дефолтный набор действия (`tools platform-tools`) сегодня не резолвится — пакет `tools` из репозитория Android SDK убран, и шаг падает за секунды с `Warning: Failed to find package 'tools'`. Платформа и build-tools ставятся следующей командой `sdkmanager` с явными версиями из каталога (`android-35`, `35.0.0`), поэтому дефолт не нужен и оставлять его нельзя.
 
-`timeout-minutes: 30` у `desktop-windows` — с запасом больше, чем у `build`: холодная Windows-сборка скачивает Compose- и Skiko-артефакты под Windows и упаковывает дистрибутив через `jpackage`. Бюджет 15 минут из `T-0.3` относится к job `build` и не меняется: job'ы идут параллельно, поэтому Windows-сборка Linux-прогон не удлиняет.
+**Что с барьером против `java.*` в общем коде.** Задача метадата-компиляции общего кода для текущего набора таргетов не работает: в KGP 2.1.0 она отключена, когда у модуля только `jvm` и `androidJvm` (JVM и Android делят бэкенд — KT-42383, KT-42468), поэтому в CI она уходила в `SKIPPED`, а `java.util.UUID` в `client-ui/commonMain` компилируется зелёным. Настоящий компиляторный барьер появится, когда у модуля будет не-JVM таргет — это придёт на этапе 9 (iOS и macOS). До тех пор общий код защищает статический тест-сканер: тест из задачи 2, который в задаче 13 сводится к одному механизму и усиливается до проверки импортов платформенных пакетов (`java.`, `javax.`, `android.`, `kotlinx.cinterop`, `platform.`, `UIKit`).
+
+**Фактическое время прогона (первый прогон CI, оба job'а зелёные).** Холодный `build` — 7m0s из 15 минут бюджета; в логе видно `Gradle User Home cache not found. Will initialize empty.`, то есть кэш действительно пустой. `desktop-windows` — 6m5s из 30 минут. Тёплый прогон с прогретым кэшем — около 2m. Эти числа — ориентир для следующих правок CI: если холодный прогон перестанет укладываться в 15 минут, сначала смотреть, что именно добавилось, а не поднимать `timeout-minutes`.
+
+`timeout-minutes: 30` у `desktop-windows` — с запасом больше, чем у `build`: холодная Windows-сборка скачивает Compose- и Skiko-артефакты под Windows и упаковывает дистрибутив через `jpackage`; фактический холодный прогон занял 6m5s (см. замеры выше). Бюджет 15 минут из `T-0.3` относится к job `build` и не меняется: job'ы идут параллельно, поэтому Windows-сборка Linux-прогон не удлиняет.
 
 Почему в шаге «Юнит-тесты» модули перечислены явно: `test` поднимает тесты только у JVM-модулей (`host-core`), а тестовая задача KMP-модуля называется `jvmTest` — агрегат `allTests` вместо этого тянет тестовые задачи всех таргетов, включая Android, для которых план не задаёт ни ожидаемого результата, ни окружения. Явный список запускает ровно те тесты, что описаны в плане, и падает заметно при опечатке в имени задачи или переименовании модуля.
 
@@ -1244,21 +1273,21 @@ jobs:
 
 - [ ] **Шаг 5: проверить, что линт действительно ловит нарушение**
 
-Временно добавить в `domain/src/commonMain/kotlin/dev/aide/domain/PackageMarker.kt` строку длиннее 120 символов и запустить:
+Временно добавить по строке длиннее 120 символов в два KMP-модуля — в `domain/src/commonMain/kotlin/dev/aide/domain/PackageMarker.kt` и в `client-ui/src/commonMain/kotlin/dev/aide/client/ui/App.kt` — и запустить:
 
 ```bash
 ./gradlew detekt
 ```
 
-Ожидаемо: `FAILED`, в выводе — `PackageMarker.kt: MaxLineLength`. Вернуть файл.
+Ожидаемо: `FAILED`; в выводе есть `:domain:detekt FAILED` и `:client-ui:detekt FAILED` со строками `MaxLineLength`, при этом `:androidApp:detekt` и `:desktopApp:detekt` проходят. Оба KMP-модуля обязаны падать: если вместо `FAILED` видно `:domain:detekt NO-SOURCE` или `:client-ui:detekt NO-SOURCE`, значит источники KMP не подключены — вернуться к `setSource(...)` из шага 2, иначе линт молчит и проверка ничего не проверяет. Вернуть оба файла.
 
 - [ ] **Шаг 6: прогнать весь набор локально**
 
 ```bash
-./gradlew clean :client-ui:compileCommonMainKotlinMetadata :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest detekt :androidApp:assembleDebug :desktopApp:createDistributable
+./gradlew clean :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest detekt :androidApp:assembleDebug :desktopApp:createDistributable
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`. Список задач тот же, что в workflow: `:client-ui:compileCommonMainKotlinMetadata` — компиляторный барьер против платформенных API в общем коде, тестовые задачи — те же, что в Linux-job'е. Если хотя бы один тест KMP-модуля падает, прогон падает здесь, а не только в CI. Замерить время (в CI оно будет больше из-за отсутствия кэша) и убедиться, что локальный прогон укладывается в 15 минут — если нет, включить `org.gradle.caching` и кэш `gradle/actions/setup-gradle` уже включены; при превышении разобрать, какая задача дольше всех, командой `./gradlew build --profile` и посмотреть `build/reports/profile/`.
+Ожидаемо: `BUILD SUCCESSFUL`. Список задач тот же, что в workflow. Если хотя бы один тест KMP-модуля падает, прогон падает здесь, а не только в CI. Замерить время и сверить с измеренным CI: холодный `build` — 7m0s из 15 минут, тёплый прогон с прогретым кэшем — около 2m; локальный прогон без кэша должен укладываться в те же 15 минут. Если нет — включить `org.gradle.caching` и кэш `gradle/actions/setup-gradle` уже включены; при превышении разобрать, какая задача дольше всех, командой `./gradlew build --profile` и посмотреть `build/reports/profile/`.
 
 - [ ] **Шаг 7: проверить, что прогон ловит падение теста KMP-модуля**
 
@@ -3752,7 +3781,7 @@ class ProtocolCodecTest {
             requestId = requestId,
             tree = FileTreePayload(
                 workspaceId = workspaceId,
-                rootPath = "/home/dev/project",
+                rootPath = "/projects/aide",
                 entries = listOf(
                     FileTreeEntry(path = "src", isDirectory = true, sizeBytes = null),
                     FileTreeEntry(path = "src/auth", isDirectory = true, sizeBytes = null),
@@ -3830,7 +3859,7 @@ class ProtocolCodecTest {
 
     @Test
     fun `кодирование одного сообщения дважды даёт одинаковые байты`() {
-        val message = ClientMessage.OpenWorkspace(requestId, "/home/dev/project")
+        val message = ClientMessage.OpenWorkspace(requestId, "/projects/aide")
         assertContentEquals(ProtocolCodec.encode(message), ProtocolCodec.encode(message))
     }
 
@@ -4989,7 +5018,7 @@ class ProtocolServerTest {
                     requestId = message.requestId,
                     tree = FileTreePayload(
                         workspaceId = workspaceId,
-                        rootPath = "/home/dev/project",
+                        rootPath = "/projects/aide",
                         entries = listOf(
                             FileTreeEntry(path = "src", isDirectory = true, sizeBytes = null),
                             FileTreeEntry(path = "src/auth/Login.kt", isDirectory = false, sizeBytes = 128),
@@ -5014,7 +5043,7 @@ class ProtocolServerTest {
                 requestId = message.requestId,
                 state = dev.aide.protocol.HostStatePayload(
                     workspaceId = workspaceId,
-                    rootPath = "/home/dev/project",
+                    rootPath = "/projects/aide",
                     branch = "master",
                     headCommit = "abc1234",
                     uptimeMillis = 1,
@@ -5064,7 +5093,7 @@ class ProtocolServerTest {
             "Клиент не подключился за 5 секунд",
         )
 
-        val opened = client.openWorkspace("/home/dev/project")
+        val opened = client.openWorkspace("/projects/aide")
         assertEquals(workspaceId, opened)
 
         val tree = client.fileTree().getOrThrow()
@@ -5079,7 +5108,7 @@ class ProtocolServerTest {
         withTimeoutOrNull(5_000) {
             while (connection.state.value !is ConnectionState.Connected) kotlinx.coroutines.delay(20)
         }
-        client.openWorkspace("/home/dev/project")
+        client.openWorkspace("/projects/aide")
 
         val requestId = RequestId("dup-1")
         val first = connection.request(ClientMessage.FileTree(requestId, workspaceId))
@@ -5114,7 +5143,7 @@ class ProtocolServerTest {
             withTimeoutOrNull(5_000) {
                 while (connection.state.value !is ConnectionState.Connected) kotlinx.coroutines.delay(20)
             }
-            client.openWorkspace("/home/dev/project")
+            client.openWorkspace("/projects/aide")
             val result = client.fileContent("/etc/passwd")
             val error = result.exceptionOrNull()
             assertIs<dev.aide.client.state.HostCallException>(error)
@@ -5142,7 +5171,7 @@ class ProtocolServerTest {
             withTimeoutOrNull(5_000) {
                 while (connection.state.value !is ConnectionState.Connected) kotlinx.coroutines.delay(20)
             }
-            client.openWorkspace("/home/dev/project")
+            client.openWorkspace("/projects/aide")
 
             // Трижды просим дерево; хост отвечает неизвестным типом — клиент продолжает работать.
             repeat(3) {
@@ -5227,7 +5256,7 @@ class ReconnectTest {
                 requestId = message.requestId,
                 state = dev.aide.protocol.HostStatePayload(
                     workspaceId = workspaceId,
-                    rootPath = "/home/dev/project",
+                    rootPath = "/projects/aide",
                     branch = branchName,
                     headCommit = "abc1234",
                     uptimeMillis = 1,
@@ -5239,7 +5268,7 @@ class ReconnectTest {
                 requestId = message.requestId,
                 tree = FileTreePayload(
                     workspaceId = workspaceId,
-                    rootPath = "/home/dev/project",
+                    rootPath = "/projects/aide",
                     entries = listOf(
                         FileTreeEntry(path = "branch=$branchName.kt", isDirectory = false, sizeBytes = 1),
                     ),
@@ -5284,7 +5313,7 @@ class ReconnectTest {
 
         // 1. Первое подключение и рабочее состояние.
         awaitState(connection) { it is ConnectionState.Connected }
-        client.openWorkspace("/home/dev/project")
+        client.openWorkspace("/projects/aide")
         assertEquals("master", client.hostState().getOrThrow().branch)
         assertEquals("branch=master.kt", client.fileTree().getOrThrow().entries.single().path)
 
@@ -5333,7 +5362,7 @@ class ReconnectTest {
         val client = HostClient(connection, scope)
         client.start()
         awaitState(connection) { it is ConnectionState.Connected }
-        client.openWorkspace("/home/dev/project")
+        client.openWorkspace("/projects/aide")
 
         server.stop()
         awaitState(connection) { it is ConnectionState.Reconnecting }
@@ -7372,7 +7401,7 @@ import kotlin.test.assertTrue
 
 class SettingsStoreTest {
 
-    private val repositoryPath = "/home/dev/project"
+    private val repositoryPath = "/projects/aide"
 
     @Test
     fun `настройки по умолчанию`() {
@@ -7717,7 +7746,7 @@ class SettingsStore(private val backend: KeyValueStore) {
 
     <string name="settings_title">Настройки</string>
     <string name="settings_repository_path">Путь к репозиторию</string>
-    <string name="settings_repository_path_hint">Например, /home/dev/project</string>
+    <string name="settings_repository_path_hint">Например, /projects/aide</string>
     <string name="settings_repository_apply">Открыть</string>
     <string name="settings_host_endpoint">Адрес хоста</string>
     <string name="settings_host_endpoint_hint">Например, ws://192.168.1.10:8080/ws</string>
@@ -9005,7 +9034,7 @@ class AppStateStoreTest {
 
     private val tree = FileTreePayload(
         workspaceId = workspaceId,
-        rootPath = "/home/dev/project",
+        rootPath = "/projects/aide",
         entries = listOf(
             FileTreeEntry("src", isDirectory = true),
             FileTreeEntry("src/Login.kt", isDirectory = false, sizeBytes = 12),
@@ -9015,7 +9044,7 @@ class AppStateStoreTest {
 
     private val hostState = HostStatePayload(
         workspaceId = workspaceId,
-        rootPath = "/home/dev/project",
+        rootPath = "/projects/aide",
         branch = "master",
         headCommit = "abc1234",
         uptimeMillis = 10,
@@ -10150,7 +10179,7 @@ class ScreenStatesTest {
 
     private val tree = FileTreePayload(
         workspaceId = workspaceId,
-        rootPath = "/home/dev/project",
+        rootPath = "/projects/aide",
         entries = listOf(
             FileTreeEntry("src", isDirectory = true),
             FileTreeEntry("src/Login.kt", isDirectory = false, sizeBytes = 12),
@@ -10370,13 +10399,14 @@ class MainActivity : ComponentActivity() {
 
 ```bash
 # 1. Готовим репозиторий-фикстуру: тот же набор файлов, что создаёт TempRepoFixture в тестах
+# Блок выполняется из корня этого репозитория и возвращается в него в конце.
 mkdir -p /tmp/aide-fixture && cd /tmp/aide-fixture
 git init -b master && git config user.email dev@aide.local && git config user.name Dev
 mkdir -p src/auth && echo 'fun login() = Unit' > src/auth/Login.kt
 git add . && git commit -m "первый коммит"
 echo 'class Api' > src/Api.kt && git add . && git commit -m "второй коммит"
 echo 'fun login() = "token"' > src/auth/Login.kt   # незакоммиченное изменение
-cd /home/nico/packages/aide
+cd -   # возврат в каталог, из которого запускался блок (корень репозитория)
 ```
 
 ```bash
