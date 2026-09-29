@@ -48,6 +48,9 @@ jobs:
       - name: Границы модулей
         run: ./gradlew verifyModuleBoundaries
 
+      - name: Документация домена
+        run: ./gradlew :domain:dokkaGenerate
+
       - name: Сборка Android
         run: ./gradlew :androidApp:assembleDebug
 
