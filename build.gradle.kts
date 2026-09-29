@@ -1,4 +1,8 @@
 plugins {
+    // Правило границ модулей (T-0.4): конвенция регистрирует задачу `verifyModuleBoundaries`
+    // в защищаемых модулях и вешает её на `check`. Живёт в `build-logic`, потому что
+    // корневой скрипт не видит классы included-сборки и не может импортировать задачу напрямую.
+    id("aide.module-boundaries")
     alias(libs.plugins.kotlinMultiplatform) apply false
     alias(libs.plugins.kotlinJvm) apply false
     // Kotlin для AGP-модуля приложения: применяется в `androidApp` в задаче 2.
