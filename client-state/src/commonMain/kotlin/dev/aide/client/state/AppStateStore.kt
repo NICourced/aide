@@ -40,6 +40,11 @@ class AppStateStore {
     /** Последнее достоверное состояние связи; нужно, чтобы вернуться из [ScreenState.Offline]. */
     private var lastConnection: ConnectionState = ConnectionState.Idle
 
+    /** Что из сессии уже показано: сравнение по ссылке отличает новый ответ от повторной публикации. */
+    private var appliedTree: FileTreePayload? = null
+    private var appliedFile: FileContentPayload? = null
+    private var appliedHostState: HostStatePayload? = null
+
     /** Показывает загрузку дерева. */
     fun onTreeLoading() {
         _treeState.value = ScreenState.Loading
@@ -74,6 +79,35 @@ class AppStateStore {
     /** Сохраняет состояние хоста для шапки. */
     fun onHostState(state: HostStatePayload) {
         _hostState.value = state
+    }
+
+    /**
+     * Принимает состояние сессии клиента целиком.
+     *
+     * Нужно после реконнекта: [HostClient] сам перезапрашивает дерево и открытый файл,
+     * и без этой подписки обновлённые данные не дошли бы до экранов (T-0.10).
+     *
+     * Сравнение по ссылке, а не по значению, отличает новый ответ от повторной
+     * публикации того же объекта: сессия меняется и по другим поводам (например,
+     * обновилось только состояние хоста), и тогда перезаписывать экран нельзя —
+     * иначе уже показанная ошибка затиралась бы старыми данными.
+     */
+    fun onHostSession(session: HostSession) {
+        val tree = session.tree
+        if (tree != null && tree !== appliedTree) {
+            appliedTree = tree
+            onTreeLoaded(tree)
+        }
+        val file = session.openFile
+        if (file != null && file !== appliedFile) {
+            appliedFile = file
+            onFileLoaded(file)
+        }
+        val host = session.hostState
+        if (host != null && host !== appliedHostState) {
+            appliedHostState = host
+            onHostState(host)
+        }
     }
 
     /**

@@ -31,12 +31,15 @@ fun interface ClientMessageHandler {
  * запроса: [onBytes] возвращает false, вызывающий код (см. [ProtocolServer]) закрывает
  * WebSocket, и дальнейшие кадры не обрабатываются вовсе — § 8.4 требует явной ошибки
  * вместо частично работающего соединения.
+ *
+ * [dedup] передаётся снаружи и не имеет значения по умолчанию: кэш обязан жить
+ * дольше сессии, иначе реконнект его теряет. Владелец кэша — [ProtocolServer].
  */
 class ClientSession(
     private val handler: ClientMessageHandler,
     private val hostVersion: ProtocolVersion,
     private val send: suspend (ByteArray) -> Unit,
-    private val dedup: RequestDedupCache = RequestDedupCache(),
+    private val dedup: RequestDedupCache,
 ) {
 
     private val logger: Logger = LoggerFactory.getLogger(ClientSession::class.java)

@@ -2,6 +2,7 @@ package dev.aide.host.server
 
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.ProtocolVersion
+import dev.aide.protocol.RequestDedupCache
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -21,6 +22,10 @@ import org.slf4j.LoggerFactory
  *
  * Сервер не знает, локальный он или удалённый: это свойство того, кто его запустил
  * (задача 13). Благодаря этому клиент не различает режимы.
+ *
+ * [dedup] принадлежит серверу, а не сессии: обрыв связи закрывает сессию, но кэш
+ * ответов обязан пережить реконнект — иначе повтор запроса с тем же `requestId`
+ * после обрыва выполнится второй раз, что запрещает § 8.4 и T-0.10.
  */
 class ProtocolServer(
     private val handler: ClientMessageHandler,
@@ -28,6 +33,7 @@ class ProtocolServer(
     private val mode: HostMode = HostMode.LOCAL,
     private val port: Int = freeLoopbackPort(),
     private val host: String = "127.0.0.1",
+    private val dedup: RequestDedupCache = RequestDedupCache(),
 ) {
 
     private val logger = LoggerFactory.getLogger(ProtocolServer::class.java)
@@ -56,6 +62,7 @@ class ProtocolServer(
                         handler = handler,
                         hostVersion = hostVersion,
                         send = { bytes -> send(Frame.Binary(true, bytes)) },
+                        dedup = dedup,
                     )
                     logger.info("Клиент подключился, сессия ${session.sessionId.value}, режим $mode")
                     var closeReason = CloseReason(CloseReason.Codes.NORMAL, "Сессия завершена")

@@ -4,6 +4,7 @@ import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.KtorHostConnection
 import dev.aide.protocol.ClientMessage
+import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreeEntry
 import dev.aide.protocol.FileTreePayload
 import dev.aide.protocol.HostMessage
@@ -14,6 +15,7 @@ import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -37,6 +39,9 @@ class ReconnectTest {
     /** Меняемое содержимое ответа: им проверяется, что клиент не остаётся со старым состоянием. */
     @Volatile
     private var branchName = "master"
+
+    /** Сколько раз обработчик реально выполнил запрос файла: по нему видна идемпотентность. */
+    private val fileContentCalls = AtomicInteger(0)
 
     private val handler = ClientMessageHandler { message ->
         when (message) {
@@ -66,10 +71,19 @@ class ReconnectTest {
                 ),
             )
 
-            is ClientMessage.FileContent -> HostMessage.Failure(
-                requestId = message.requestId,
-                error = ProtocolError.NotImplemented("файл не нужен этому тесту"),
-            )
+            is ClientMessage.FileContent -> {
+                fileContentCalls.incrementAndGet()
+                HostMessage.Content(
+                    requestId = message.requestId,
+                    content = FileContentPayload(
+                        workspaceId = workspaceId,
+                        path = message.path,
+                        text = "// branch=$branchName\n",
+                        sizeBytes = 18,
+                        truncated = false,
+                    ),
+                )
+            }
 
             is ClientMessage.Hello -> HostMessage.Failure(
                 requestId = RequestId("x"),
@@ -133,6 +147,35 @@ class ReconnectTest {
     }
 
     @Test
+    fun `после реконнекта дерево в состоянии клиента обновляется автоматически`() = runBlocking {
+        server = ProtocolServer(handler = handler, port = port)
+        server.start()
+
+        val active = startClient()
+        val client = HostClient(active, scope)
+        client.start()
+        awaitState(active) { it is ConnectionState.Connected }
+        client.openWorkspace("/projects/aide")
+        client.fileTree()
+        assertEquals("branch=master.kt", client.session.value.tree?.entries?.single()?.path)
+
+        branchName = "feature/token"
+        server.stop()
+        awaitState(active) { it is ConnectionState.Reconnecting }
+        server = ProtocolServer(handler = handler, port = port)
+        server.start()
+        awaitState(active) { it is ConnectionState.Connected && it.reconnected }
+
+        // Ручной запрос дерева здесь не делается: клиент обязан обновить его сам.
+        val refreshed = withTimeoutOrNull(5_000) {
+            while (client.session.value.tree?.entries?.single()?.path != "branch=feature/token.kt") delay(50)
+            client.session.value.tree
+        }
+        assertNotNull(refreshed, "После реконнекта дерево в состоянии клиента должно обновиться само")
+        assertEquals("branch=feature/token.kt", refreshed.entries.single().path)
+    }
+
+    @Test
     fun `после реконнекта запросы с прежними идентификаторами обслуживаются`() = runBlocking {
         server = ProtocolServer(handler = handler, port = port)
         server.start()
@@ -151,6 +194,37 @@ class ReconnectTest {
 
         val state = client.hostState()
         assertTrue(state.isSuccess, "После реконнекта обычные запросы должны работать: ${state.exceptionOrNull()}")
+    }
+
+    @Test
+    fun `повтор запроса с тем же идентификатором после обрыва выполняется один раз`() = runBlocking {
+        server = ProtocolServer(handler = handler, port = port)
+        server.start()
+
+        val active = startClient()
+        val client = HostClient(active, scope)
+        client.start()
+        awaitState(active) { it is ConnectionState.Connected }
+        client.openWorkspace("/projects/aide")
+
+        // Запрос уходит на первом соединении; клиент не знает, дошёл ли ответ.
+        val requestId = RequestId("dup-across-reconnect")
+        val message = ClientMessage.FileContent(requestId, workspaceId, "src/Login.kt")
+        val first = active.request(message)
+        assertIs<HostMessage.Content>(first)
+        assertEquals(1, fileContentCalls.get(), "Первый запрос обрабатывается ровно один раз")
+
+        // Обрыв и реконнект: сессия новая, а кэш ответов должен уцелеть.
+        // Сервер — тот же экземпляр: обрыв связи не перезапускает хост.
+        server.stop()
+        awaitState(active) { it is ConnectionState.Reconnecting }
+        server.start()
+        awaitState(active) { it is ConnectionState.Connected && it.reconnected }
+
+        val repeated = active.request(message)
+        assertIs<HostMessage.Content>(repeated)
+        assertEquals(first, repeated, "Повтор должен вернуть прежний ответ")
+        assertEquals(1, fileContentCalls.get(), "После обрыва обработчик не должен выполниться второй раз")
     }
 
     private fun startClient(): KtorHostConnection = KtorHostConnection(

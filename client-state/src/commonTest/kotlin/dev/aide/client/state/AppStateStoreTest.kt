@@ -153,4 +153,28 @@ class AppStateStoreTest {
 
         assertEquals(ScreenState.Loading, store.treeState.value)
     }
+
+    @Test
+    fun `сессия клиента отдаёт обновлённое дерево на экран`() {
+        store.onHostSession(HostSession(tree = tree))
+        val loaded = assertIs<ScreenState.Loaded<FileTreePayload>>(store.treeState.value)
+        assertEquals(2, loaded.data.entries.size)
+
+        val updated = tree.copy(entries = listOf(FileTreeEntry("src/New.kt", isDirectory = false)))
+        store.onHostSession(HostSession(tree = updated))
+
+        val refreshed = assertIs<ScreenState.Loaded<FileTreePayload>>(store.treeState.value)
+        assertEquals("src/New.kt", refreshed.data.entries.single().path)
+    }
+
+    @Test
+    fun `сессия без нового дерева не затирает показанную ошибку`() {
+        store.onHostSession(HostSession(tree = tree))
+        store.onTreeFailed(ProtocolError.NotFound("путь не существует: /nope"))
+
+        // Сессия меняется по другому поводу (состояние хоста), дерево — тот же объект.
+        store.onHostSession(HostSession(tree = tree, hostState = hostState))
+
+        assertIs<ScreenState.Failed>(store.treeState.value)
+    }
 }

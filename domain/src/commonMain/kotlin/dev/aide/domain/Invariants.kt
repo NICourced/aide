@@ -27,6 +27,11 @@ class DomainViolation(
  * Проверяет инварианты 1 и 5 § 4.1. Вызывается из `init`-блока [ChangePacket],
  * поэтому некорректный пакет нельзя ни создать, ни разобрать из сериализованного вида.
  *
+ * Помимо § 4.1 проверяется усиление: файл, чьё содержимое меняется
+ * ([FileChangeKind.ADDED], [FileChangeKind.MODIFIED]), обязан иметь хотя бы один
+ * hunk. Пустой список hunk'ов допустим только там, где содержимое не меняется:
+ * [FileChangeKind.DELETED] и [FileChangeKind.RENAMED] (чистый `git mv`).
+ *
  * Проверки разнесены по функциям с одним `throw` каждая: детектор ограничивает
  * число `throw` в функции, а исключения здесь — единственный способ сообщить о нарушении.
  */
@@ -47,9 +52,17 @@ private fun requireUniquePaths(files: List<FileChange>) {
     }
 }
 
-/** Инвариант 1: у hunk'а тот же файл, что у [FileChange], и изменённый файл не пуст. */
+/**
+ * Инвариант 1: у hunk'а тот же файл, что у [FileChange], и файл с изменяемым
+ * содержимым не пуст.
+ *
+ * Пустой список hunk'ов допустим только для [FileChangeKind.DELETED] (файл удалён
+ * целиком) и [FileChangeKind.RENAMED] (чистый `git mv`: путь меняется, содержимое —
+ * нет). Для [FileChangeKind.ADDED] и [FileChangeKind.MODIFIED] отсутствие hunk'ов —
+ * ошибка: изменённый файл обязан объяснить, что именно изменилось.
+ */
 private fun requireHunksBelongToFile(file: FileChange) {
-    if (file.changeKind != FileChangeKind.DELETED && file.hunks.isEmpty()) {
+    if (file.changeKind.requiresHunks() && file.hunks.isEmpty()) {
         throw DomainViolation(
             DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE,
             "Файл '${file.path}' изменён (${file.changeKind}), но не содержит ни одного hunk'а",
@@ -61,6 +74,12 @@ private fun requireHunksBelongToFile(file: FileChange) {
         "Hunk '${foreign.id.value}' указывает файл '${foreign.filePath}', " +
             "но лежит в FileChange '${file.path}'",
     )
+}
+
+/** Меняет ли этот вид изменения содержимое: только тогда пакет обязан нести hunk'и. */
+private fun FileChangeKind.requiresHunks(): Boolean = when (this) {
+    FileChangeKind.ADDED, FileChangeKind.MODIFIED -> true
+    FileChangeKind.DELETED, FileChangeKind.RENAMED -> false
 }
 
 /** Инвариант 5: риск пакета не ниже риска самого опасного его hunk'а. */

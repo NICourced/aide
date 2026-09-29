@@ -20,6 +20,10 @@ data class HostSession(
     val workspaceId: WorkspaceId? = null,
     /** Состояние хоста: ветка, корень, режим. */
     val hostState: HostStatePayload? = null,
+    /** Последнее загруженное дерево воркспейса; null, пока дерево не запрошено. */
+    val tree: FileTreePayload? = null,
+    /** Последний открытый файл; null, если файл не выбран. */
+    val openFile: FileContentPayload? = null,
     /** Последняя ошибка запроса; null, если ошибок нет. */
     val lastError: ProtocolError? = null,
 )
@@ -29,8 +33,8 @@ data class HostSession(
  *
  * Отдельно решает задачу «после реконнекта клиент получает актуальное состояние»:
  * при переходе соединения в [ConnectionState.Connected] с признаком `reconnected`
- * клиент заново запрашивает состояние открытого воркспейса, а не полагается на
- * данные, полученные до обрыва.
+ * клиент заново запрашивает состояние открытого воркспейса, дерево и открытый файл,
+ * а не полагается на данные, полученные до обрыва.
  */
 class HostClient(
     private val connection: HostConnection,
@@ -73,7 +77,7 @@ class HostClient(
         }
     }
 
-    /** Запрашивает дерево файлов открытого воркспейса. */
+    /** Запрашивает дерево файлов открытого воркспейса; результат сохраняется в [session]. */
     suspend fun fileTree(): Result<FileTreePayload> = call { workspaceId ->
         val requestId = nextRequestId()
         when (val response = connection.request(ClientMessage.FileTree(requestId, workspaceId))) {
@@ -81,9 +85,9 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос дерева")))
         }
-    }
+    }.onSuccess { tree -> _session.value = _session.value.copy(tree = tree) }
 
-    /** Запрашивает содержимое файла. */
+    /** Запрашивает содержимое файла; результат сохраняется в [session] как открытый файл. */
     suspend fun fileContent(path: String): Result<FileContentPayload> = call { workspaceId ->
         val requestId = nextRequestId()
         when (val response = connection.request(ClientMessage.FileContent(requestId, workspaceId, path))) {
@@ -91,9 +95,14 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос файла")))
         }
+    }.onSuccess { content -> _session.value = _session.value.copy(openFile = content) }
+
+    /** Закрывает выбранный файл: после этого реконнект его уже не перезапрашивает. */
+    fun closeFile() {
+        _session.value = _session.value.copy(openFile = null)
     }
 
-    /** Запрашивает состояние хоста: ветку, корень, режим. */
+    /** Запрашивает состояние хоста: ветку, корень, режим; результат сохраняется в [session]. */
     suspend fun hostState(): Result<HostStatePayload> = call { workspaceId ->
         val requestId = nextRequestId()
         when (val response = connection.request(ClientMessage.HostState(requestId, workspaceId))) {
@@ -101,7 +110,7 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос состояния")))
         }
-    }
+    }.onSuccess { state -> _session.value = _session.value.copy(hostState = state, lastError = null) }
 
     private suspend fun <T> call(block: suspend (WorkspaceId) -> Result<T>): Result<T> {
         val workspaceId = _session.value.workspaceId
@@ -111,9 +120,17 @@ class HostClient(
         }
     }
 
+    /**
+     * Дозапрашивает состояние хоста, дерево и открытый файл после реконнекта.
+     *
+     * Одного состояния хоста мало: пока связи не было, дерево и содержимое открытого
+     * файла могли устареть, и экран показал бы старый кэш (T-0.10).
+     */
     private suspend fun refreshAfterReconnect() {
-        val workspaceId = _session.value.workspaceId ?: return
-        hostState().onSuccess { _session.value = _session.value.copy(hostState = it, lastError = null) }
+        if (_session.value.workspaceId == null) return
+        hostState()
+        fileTree()
+        _session.value.openFile?.path?.let { path -> fileContent(path) }
     }
 
     private fun nextRequestId(): RequestId = RequestId("req-${++sequence}")

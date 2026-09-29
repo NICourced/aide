@@ -50,6 +50,10 @@ fun App(
     val connectionState by connection.state.collectAsState()
     LaunchedEffect(connectionState) { state.onConnectionState(connectionState) }
 
+    // Данные приходят не только по явному действию пользователя: после реконнекта
+    // HostClient перезапрашивает дерево и файл сам, и их нужно отдать экрану.
+    LaunchedEffect(client) { client.session.collect { state.onHostSession(it) } }
+
     val tree by state.treeState.collectAsState()
     val file by state.fileState.collectAsState()
     val hostState by state.hostState.collectAsState()
@@ -91,7 +95,10 @@ fun App(
                         onRetry = {
                             coroutineScope.launch { openRepository(client, state, settings.repositoryPath.orEmpty()) }
                         },
-                        onBack = { state.selectFile(null) },
+                        onBack = {
+                            state.selectFile(null)
+                            client.closeFile()
+                        },
                     )
                 }
             }
@@ -134,21 +141,19 @@ private suspend fun openRepository(client: HostClient, state: AppStateStore, pat
         return
     }
 
-    client.fileTree()
-        .onSuccess { state.onTreeLoaded(it) }
-        .onFailure { error ->
-            val protocolError = (error as? HostCallException)?.error
-            if (protocolError != null) state.onTreeFailed(protocolError)
-        }
-    client.hostState().onSuccess { state.onHostState(it) }
+    // Успешные результаты попадают в состояние через подписку на сессию клиента
+    // (LaunchedEffect выше); здесь остаётся только типизированная ошибка.
+    client.fileTree().onFailure { error ->
+        val protocolError = (error as? HostCallException)?.error
+        if (protocolError != null) state.onTreeFailed(protocolError)
+    }
+    client.hostState()
 }
 
-/** Читает файл: на успехе кладёт содержимое в состояние, на ошибке — типизированную причину. */
+/** Читает файл: успех доходит до состояния через сессию клиента, здесь — только ошибка. */
 private suspend fun loadFile(client: HostClient, state: AppStateStore, path: String) {
-    client.fileContent(path)
-        .onSuccess { state.onFileLoaded(it) }
-        .onFailure { error ->
-            val protocolError = (error as? HostCallException)?.error
-            if (protocolError != null) state.onFileFailed(protocolError)
-        }
+    client.fileContent(path).onFailure { error ->
+        val protocolError = (error as? HostCallException)?.error
+        if (protocolError != null) state.onFileFailed(protocolError)
+    }
 }

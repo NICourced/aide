@@ -43,15 +43,19 @@ class InvariantsTest {
     }
 
     @Test
-    fun `файл без hunk-ов отвергается, кроме удаления файла`() {
-        val violation = assertFailsWith<DomainViolation> {
-            DomainFixtures.packet.copy(
-                files = listOf(DomainFixtures.fileChange.copy(hunks = emptyList())),
-            )
+    fun `файл с изменяемым содержимым без hunk-ов отвергается`() {
+        listOf(FileChangeKind.MODIFIED, FileChangeKind.ADDED).forEach { kind ->
+            val violation = assertFailsWith<DomainViolation> {
+                DomainFixtures.packet.copy(
+                    files = listOf(DomainFixtures.fileChange.copy(changeKind = kind, hunks = emptyList())),
+                )
+            }
+            assertEquals(DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE, violation.invariant, "вид: $kind")
         }
-        assertEquals(DomainInvariant.HUNK_HAS_EXACTLY_ONE_FILE, violation.invariant)
+    }
 
-        // Удаление файла — единственный случай, когда hunk-ов может не быть.
+    @Test
+    fun `удаление файла без hunk-ов разрешено`() {
         val deleted = DomainFixtures.packet.copy(
             files = listOf(
                 DomainFixtures.fileChange.copy(
@@ -63,6 +67,23 @@ class InvariantsTest {
             risk = RiskLevel.RISKY,
         )
         assertEquals(FileChangeKind.DELETED, deleted.files.single().changeKind)
+    }
+
+    @Test
+    fun `чистое переименование без hunk-ов создаётся и оставляет счётчики строк нулевыми`() {
+        val renamed = DomainFixtures.packet.copy(
+            files = listOf(
+                DomainFixtures.fileChangeRenamed.copy(hunks = emptyList(), addedLines = 0, removedLines = 0),
+            ),
+        )
+
+        val file = renamed.files.single()
+        assertEquals(FileChangeKind.RENAMED, file.changeKind)
+        assertEquals("src/auth/Login.kt", file.previousPath)
+        assertEquals(0, file.addedLines)
+        assertEquals(0, file.removedLines)
+        assertEquals(0, renamed.addedLines)
+        assertEquals(0, renamed.removedLines)
     }
 
     @Test
