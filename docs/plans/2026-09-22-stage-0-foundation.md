@@ -8495,18 +8495,21 @@ git commit -m "feat(host): запуск хоста в локальном реж�
 ## Задача 14: настройки, тема и ресурсные строки (`T-0.14`)
 
 **Файлы:**
-- Создать: `client-state/src/commonMain/kotlin/dev/aide/client/state/settings/KeyValueStore.kt` (expect)
+- Создать: `client-state/src/commonMain/kotlin/dev/aide/client/state/settings/KeyValueStore.kt` (интерфейс и `expect fun createKeyValueStore`)
 - Создать: `client-state/src/androidMain/kotlin/dev/aide/client/state/settings/KeyValueStore.android.kt` (actual)
 - Создать: `client-state/src/jvmMain/kotlin/dev/aide/client/state/settings/KeyValueStore.jvm.kt` (actual)
 - Создать: `client-state/src/commonMain/kotlin/dev/aide/client/state/settings/SettingsStore.kt`
 - Создать: `client-state/src/commonTest/kotlin/dev/aide/client/state/settings/FakeKeyValueStore.kt`
 - Тест: `client-state/src/commonTest/kotlin/dev/aide/client/state/settings/SettingsStoreTest.kt`
+- Тест: `client-state/src/jvmTest/kotlin/dev/aide/client/state/settings/FileKeyValueStoreTest.kt`
 - Создать: `client-ui/src/commonMain/composeResources/values/strings.xml`
 - Создать: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/strings/Strings.kt`
 - Создать: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/theme/Theme.kt`
 - Создать: `androidApp/src/main/res/values/strings.xml`
 - Изменить: `client-ui/build.gradle.kts`, `client-state/build.gradle.kts`
-- Изменить: `androidApp/src/main/AndroidManifest.xml`, `desktopApp/src/main/kotlin/dev/aide/desktop/Main.kt`
+- Изменить: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/App.kt`
+- Изменить: `androidApp/src/main/AndroidManifest.xml`, `androidApp/src/main/kotlin/dev/aide/android/MainActivity.kt`
+- Изменить: `desktopApp/src/main/kotlin/dev/aide/desktop/Main.kt`
 - Тест: `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/NoLiteralUiStringsTest.kt`
 - Тест: `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/EntryPointStringsTest.kt`
 
@@ -8635,7 +8638,9 @@ class SettingsStoreTest {
 
 Ожидаемо: `FAILED`, `Unresolved reference: KeyValueStore`.
 
-- [ ] **Шаг 3: написать `expect`-интерфейс хранилища и реализации**
+- [ ] **Шаг 3: написать хранилище настроек: интерфейс, фабрику и реализации**
+
+`KeyValueStore` — обычный интерфейс в `commonMain`, а `expect` стоит только у фабрики `createKeyValueStore()`. Так сделано из-за тестируемости: `expect`-класс финален по определению, и наследовать от него `FakeKeyValueStore` в `commonTest` нельзя (компилятор скажет `This type is final, so it cannot be extended`), а подставлять фейк в тесты настроек нужно — иначе они писали бы в настоящий файл или `SharedPreferences`. Побочно это снимает предупреждение компилятора о бета-статусе `expect`/`actual`-классов (иначе понадобился бы флаг `-Xexpect-actual-classes`).
 
 `client-state/src/commonMain/kotlin/dev/aide/client/state/settings/KeyValueStore.kt`:
 
@@ -8645,10 +8650,12 @@ package dev.aide.client.state.settings
 /**
  * Простое хранилище «ключ — строка» с платформенной реализацией.
  *
- * Значения, а не потокобезопасность: настройки меняются из главного потока
- * приложения, конкуренции за них нет.
+ * Интерфейс, а не `expect class`: `expect`-классы финальны и их конструктор не виден
+ * общему коду, поэтому подменить хранилище в `commonTest` было бы нельзя — тесты
+ * настроек писали бы в настоящий файл или в `SharedPreferences`. Платформенная
+ * часть — только фабрика [createKeyValueStore].
  */
-expect class KeyValueStore {
+interface KeyValueStore {
 
     /** Возвращает значение или null, если ключ не задан. */
     fun getString(key: String): String?
@@ -8673,22 +8680,28 @@ import android.content.Context
 import android.content.SharedPreferences
 
 /** Реализация на SharedPreferences; контекст приложения задаётся при старте. */
-actual class KeyValueStore internal constructor(private val preferences: SharedPreferences) {
+private class SharedPreferencesKeyValueStore(
+    private val preferences: SharedPreferences,
+) : KeyValueStore {
 
-    actual fun getString(key: String): String? = preferences.getString(key, null)
+    override fun getString(key: String): String? = preferences.getString(key, null)
 
-    actual fun putString(key: String, value: String) {
+    override fun putString(key: String, value: String) {
         preferences.edit().putString(key, value).apply()
     }
 
-    actual fun remove(key: String) {
+    override fun remove(key: String) {
         preferences.edit().remove(key).apply()
     }
 }
 
 private var applicationContext: Context? = null
 
-/** Вызывается один раз при старте Android-приложения. */
+/**
+ * Задаёт контекст для хранилища настроек. Вызывается до первого [createKeyValueStore];
+ * иначе фабрика падает, а не подставляет пустое хранилище: молчаливая потеря настроек
+ * хуже явной ошибки при старте.
+ */
 fun initKeyValueStore(context: Context) {
     applicationContext = context.applicationContext
 }
@@ -8697,8 +8710,11 @@ actual fun createKeyValueStore(): KeyValueStore {
     val context = requireNotNull(applicationContext) {
         "Перед созданием настроек вызовите initKeyValueStore(context) в Application или Activity"
     }
-    return KeyValueStore(context.getSharedPreferences("aide-settings", Context.MODE_PRIVATE))
+    return SharedPreferencesKeyValueStore(context.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE))
 }
+
+/** Имя файла SharedPreferences с настройками клиента. */
+private const val STORE_NAME: String = "aide-settings"
 ```
 
 `client-state/src/jvmMain/kotlin/dev/aide/client/state/settings/KeyValueStore.jvm.kt`:
@@ -8706,7 +8722,6 @@ actual fun createKeyValueStore(): KeyValueStore {
 ```kotlin
 package dev.aide.client.state.settings
 
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Properties
 import kotlin.io.path.createDirectories
@@ -8718,19 +8733,13 @@ import kotlin.io.path.outputStream
  * Реализация на файле `settings.properties` в каталоге конфигурации пользователя.
  * Чтение и запись — под замком: настройки могут менять несколько окон приложения.
  */
-actual class KeyValueStore internal constructor(private val file: Path) {
+private class FileKeyValueStore(private val file: Path) : KeyValueStore {
 
     private val lock = Any()
 
-    private fun read(): Properties = Properties().apply {
-        if (file.exists()) {
-            file.inputStream().use { load(it) }
-        }
-    }
+    override fun getString(key: String): String? = synchronized(lock) { read().getProperty(key) }
 
-    actual fun getString(key: String): String? = synchronized(lock) { read().getProperty(key) }
-
-    actual fun putString(key: String, value: String) {
+    override fun putString(key: String, value: String) {
         synchronized(lock) {
             file.parent?.createDirectories()
             val properties = read()
@@ -8739,36 +8748,96 @@ actual class KeyValueStore internal constructor(private val file: Path) {
         }
     }
 
-    actual fun remove(key: String) {
+    override fun remove(key: String) {
         synchronized(lock) {
             val properties = read()
             properties.remove(key)
             file.outputStream().use { properties.store(it, "AI Studio settings") }
         }
     }
+
+    private fun read(): Properties = Properties().apply {
+        if (file.exists()) {
+            file.inputStream().use { load(it) }
+        }
+    }
 }
 
-/** Каталог конфигурации: `$XDG_CONFIG_HOME/aide` или `~/.config/aide`. */
-private fun settingsFile(): Path {
+/**
+ * Файл настроек по умолчанию: `$XDG_CONFIG_HOME/aide/settings.properties`,
+ * а если переменная не задана — `~/.config/aide/settings.properties`.
+ */
+fun defaultSettingsFile(): Path {
     val xdg = System.getenv("XDG_CONFIG_HOME")?.takeIf { it.isNotBlank() }
-    val base = if (xdg != null) {
-        Path.of(xdg)
-    } else {
-        Path.of(System.getProperty("user.home"), ".config")
-    }
+    val base = if (xdg != null) Path.of(xdg) else Path.of(System.getProperty("user.home"), ".config")
     return base.resolve("aide").resolve("settings.properties")
 }
 
-actual fun createKeyValueStore(): KeyValueStore = KeyValueStore(settingsFile())
+actual fun createKeyValueStore(): KeyValueStore = FileKeyValueStore(defaultSettingsFile())
 
-/** Переопределение пути для тестов и для переносимого режима. */
-fun createKeyValueStoreAt(file: Path): KeyValueStore = KeyValueStore(file)
+/** Переопределение пути: нужно тестам, которые проверяют запись и чтение файла. */
+fun createKeyValueStoreAt(file: Path): KeyValueStore = FileKeyValueStore(file)
+```
 
-/** Файл, в котором лежат настройки; нужен диагностике. */
-fun defaultSettingsFile(): Path = settingsFile()
+Настольную реализацию проверяет отдельный тест — иначе `defaultSettingsFile()` остался бы непроверенным (и мёртвым):
 
-/** Проверка, что каталог создаваем: используется в тестах переносимости. */
-internal fun Path.parentIsWritable(): Boolean = Files.isWritable(parent ?: this)
+`client-state/src/jvmTest/kotlin/dev/aide/client/state/settings/FileKeyValueStoreTest.kt`:
+
+```kotlin
+package dev.aide.client.state.settings
+
+import java.nio.file.Path
+import kotlin.io.path.createTempDirectory
+import kotlin.io.path.name
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/**
+ * Десктопная реализация пишет настройки в файл, а не только в память.
+ *
+ * Проверяется на настоящем файле: хранилище в памяти (`FakeKeyValueStore`) этого
+ * не показывает, а критерий T-0.14 требует, чтобы настройки переживали перезапуск.
+ */
+class FileKeyValueStoreTest {
+
+    private fun tempSettingsFile(): Path =
+        createTempDirectory("aide-settings").resolve("settings.properties")
+
+    @Test
+    fun `настройки переживают перезапуск через файл`() {
+        val file = tempSettingsFile()
+        SettingsStore(createKeyValueStoreAt(file)).apply {
+            repositoryPath = "/projects/aide"
+            theme = ThemePreference.DARK
+            controlMode = ControlMode.BUTTONS
+        }
+        assertTrue(file.toFile().isFile, "После записи настройки файл должен появиться на диске: $file")
+
+        // Перезапуск: новое хранилище читает тот же файл заново.
+        val afterRestart = SettingsStore(createKeyValueStoreAt(file))
+        assertEquals("/projects/aide", afterRestart.repositoryPath)
+        assertEquals(ThemePreference.DARK, afterRestart.theme)
+        assertEquals(ControlMode.BUTTONS, afterRestart.controlMode)
+    }
+
+    @Test
+    fun `удаление ключа убирает его из файла`() {
+        val file = tempSettingsFile()
+        val store = createKeyValueStoreAt(file)
+        store.putString(SettingsStore.KEY_HOST_ENDPOINT, "ws://127.0.0.1:8080/ws")
+        store.remove(SettingsStore.KEY_HOST_ENDPOINT)
+
+        assertNull(createKeyValueStoreAt(file).getString(SettingsStore.KEY_HOST_ENDPOINT))
+    }
+
+    @Test
+    fun `файл настроек по умолчанию лежит в каталоге конфигурации`() {
+        assertEquals("settings.properties", defaultSettingsFile().name)
+        assertEquals("aide", defaultSettingsFile().parent.name)
+    }
+}
 ```
 
 - [ ] **Шаг 4: написать `SettingsStore`**
@@ -8850,13 +8919,74 @@ class SettingsStore(private val backend: KeyValueStore) {
 }
 ```
 
+Android-точка входа берёт адрес хоста из настроек — иначе хранилище к приложению не подключено. Контекст задаётся до первой фабрики, иначе она падает: молчаливая потеря настроек хуже явной ошибки при старте.
+
+`androidApp/src/main/kotlin/dev/aide/android/MainActivity.kt`:
+
+```kotlin
+package dev.aide.android
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import dev.aide.client.state.KtorHostConnection
+import dev.aide.client.state.settings.SettingsStore
+import dev.aide.client.state.settings.createKeyValueStore
+import dev.aide.client.state.settings.initKeyValueStore
+import dev.aide.client.ui.App
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+
+/**
+ * Точка входа Android-приложения.
+ *
+ * Хост здесь не поднимается: на телефоне приложение подключается к хосту по адресу
+ * из настроек. Автоматическое обнаружение хоста и сопряжение устройств появятся
+ * в T-1.51 и на этапе 5 (T-5.11) — до тех пор адрес вводится вручную.
+ *
+ * Настройки уже есть (T-0.14), но экран, который их меняет, появится в задаче 16.
+ * Пока адрес берётся из хранилища, а если его там нет — из значения по умолчанию:
+ * пустое хранилище не должно ронять запуск.
+ */
+class MainActivity : ComponentActivity() {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Контекст задаётся до первой фабрики хранилища, иначе она падает: молчаливая
+        // потеря настроек хуже явной ошибки при старте.
+        initKeyValueStore(applicationContext)
+        val endpoint = SettingsStore(createKeyValueStore()).hostEndpoint ?: DEFAULT_ENDPOINT
+        val connection = KtorHostConnection(endpoint = endpoint, scope = scope)
+
+        setContent {
+            App(connection = connection)
+        }
+    }
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    companion object {
+        /** Адрес хоста по умолчанию для эмулятора: 10.0.2.2 указывает на машину-хост. */
+        private const val DEFAULT_ENDPOINT: String = "ws://10.0.2.2:8080/ws"
+    }
+}
+```
+
 - [ ] **Шаг 5: прогнать тесты настроек**
 
 ```bash
 ./gradlew :client-state:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 8 тестов из `SettingsStoreTest` плюс 1 из `NoLocalityBranchingTest`.
+Ожидаемо: `BUILD SUCCESSFUL`, 8 тестов из `SettingsStoreTest`, 3 из `FileKeyValueStoreTest` плюс 1 из `NoLocalityBranchingTest`.
 
 - [ ] **Шаг 6: написать ресурсные строки**
 
@@ -9118,7 +9248,7 @@ class NoLiteralUiStringsTest {
 
         val offenders = commonMain.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
-            .filterNot { it.path.contains("/strings/") }
+            .filterNot { it.invariantSeparatorsPath.contains("/$STRINGS_DIRECTORY/") }
             .flatMap { file ->
                 val text = file.readText()
                 buildList {
@@ -9134,10 +9264,48 @@ class NoLiteralUiStringsTest {
                 offenders.joinToString("\n"),
         )
     }
+
+    private companion object {
+        /** Сам доступ к строкам держит литералы ресурсов — он и есть их объявление. */
+        const val STRINGS_DIRECTORY = "strings"
+    }
 }
 ```
 
-Обратить внимание: `App.kt` из задачи 13 содержит `Text("AI Studio")` и на этом шаге тест упадёт — это ожидаемо. Заменить в `App.kt` литерал на `Strings.text(Strings.appName)` и добавить `import dev.aide.client.ui.strings.Strings`. Тем самым подтверждается, что тест работает на настоящем нарушении, а не на выдуманном.
+Обратить внимание: `App.kt` из задачи 13 содержит `Text("AI Studio")` и `MaterialTheme`, и на этом шаге тест упадёт — это ожидаемо. Заменить литерал на `Strings.text(Strings.appName)` и переключить тему на `AideTheme` (значение по умолчанию — `ThemePreference.SYSTEM`): иначе `Theme.kt` остался бы мёртвым кодом, а критерий «тема следует системной по умолчанию» закрывался бы неиспользуемым файлом. Подпись `App` при этом не меняется.
+
+`client-ui/src/commonMain/kotlin/dev/aide/client/ui/App.kt`:
+
+```kotlin
+package dev.aide.client.ui
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import dev.aide.client.state.HostConnection
+import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.theme.AideTheme
+
+// Соединение принимается уже сейчас, хотя экраны появятся в задаче 16: подпись
+// точки входа иначе пришлось бы менять дважды. Параметр осознанно не используется —
+// детектор про это и предупреждает.
+@Suppress("UnusedParameter")
+@Composable
+fun App(connection: HostConnection) {
+    // Значение по умолчанию — системная тема (FR-EDITOR-11); выбор пользователя
+    // подставится из SettingsStore, когда появится экран настроек (задача 16).
+    AideTheme {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Text(Strings.text(Strings.appName))
+            }
+        }
+    }
+}
+```
 
 - [ ] **Шаг 9: вынести имя приложения и заголовок окна в ресурсы**
 
@@ -9199,7 +9367,10 @@ class EntryPointStringsTest {
         assertTrue(desktopMain.isDirectory, "Каталог не найден: $desktopMain")
 
         val scanned = desktopMain.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
-        assertTrue(scanned.isNotEmpty(), "В $desktopMain нет ни одного .kt-файла — проверь системное свойство repoRootDir")
+        assertTrue(
+            scanned.isNotEmpty(),
+            "В $desktopMain нет ни одного .kt-файла — проверь системное свойство repoRootDir",
+        )
 
         val offenders = scanned.filter { literalInTitle.containsMatchIn(it.readText()) }
             .map { it.relativeTo(repoRoot).path }
@@ -9244,17 +9415,13 @@ class EntryPointStringsTest {
 
 - [ ] **Шаг 11: проверить, что настройки действительно сохраняются на диске**
 
+На этом этапе `createKeyValueStore()` не вызывает никто: ни десктопная точка входа, ни экран настроек (он в задаче 16). Поэтому простой запуск приложения файл настроек не создаёт — он появляется только при первой записи. Проверять надо не `cat` после запуска, а тестом записи в настоящий файл:
+
 ```bash
-rm -f ~/.config/aide/settings.properties
-./gradlew :desktopApp:createDistributable
-./desktopApp/build/compose/binaries/main/app/desktopApp/bin/desktopApp
-# в приложении ещё нет экрана настроек — он появится в задаче 16;
-# поэтому проверить хранилище напрямую тестом:
-./gradlew :client-state:jvmTest --tests '*SettingsStore*'
-cat ~/.config/aide/settings.properties 2>/dev/null || echo "файл создаётся только при первой записи настройки"
+./gradlew :client-state:jvmTest --tests 'dev.aide.client.state.settings.FileKeyValueStoreTest'
 ```
 
-Ожидаемо: тесты зелёные, файл появится после первого изменения настройки на экране из задачи 16.
+Ожидаемо: `BUILD SUCCESSFUL`. Тест пишет во временный файл и читает его заново новым хранилищем — то есть проверяет именно сохранение на диск, а не состояние в памяти.
 
 - [ ] **Шаг 12: коммит**
 
@@ -9262,6 +9429,11 @@ cat ~/.config/aide/settings.properties 2>/dev/null || echo "файл созда�
 git add client-state client-ui androidApp desktopApp
 git commit -m "feat(client): хранилище настроек, тема по системной и ресурсные строки интерфейса"
 ```
+
+**Известные ограничения и что всплывёт дальше (не шагами).**
+- `MainActivity` не вызывает `connection.start()` — на Android соединение вообще не открывается. Логика фолбэка адреса покрыта юнит-тестом, но сетевое поведение не проверено; закрыть это надо в задаче 16, где появляется клиентский рантайм Android.
+- На Android нет провайдера SLF4J: приложение печатает только предупреждение про NOP, то есть диагностировать Android-клиент по логам нечем. На десктопе эту же проблему закрыли `runtimeOnly(libs.slf4j.simple)` в задаче 13; для Android решение надо принять отдельно.
+- `ws://` — cleartext, а `targetSdk = 35` по умолчанию запрещает cleartext-трафик. Пока соединение не стартует, это незаметно, но при включении `start()` подключение к `ws://` может упасть. Всплывёт в задаче `T-1.51`.
 
 ---
 
