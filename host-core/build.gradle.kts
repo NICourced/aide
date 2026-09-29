@@ -19,6 +19,8 @@ dependencies {
     implementation(libs.slf4j.api)
     // Композиционный корень хоста (задача 13) собирает граф на Koin — DI-фреймворк стека.
     implementation(libs.koin.core)
+    // Чтение состояния git (ветка, изменения, история) — задача 12.
+    implementation(libs.jgit)
 
     testImplementation(libs.kotlin.test)
     // Клиент нужен интеграционным тестам транспорта. Правило границ проверяет
