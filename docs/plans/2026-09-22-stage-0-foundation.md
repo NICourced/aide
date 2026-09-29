@@ -5462,7 +5462,7 @@ class ProtocolServer(
         }
         engine = server
         server.start(wait = false)
-        logger.info("Хост слушает $endpoint")
+        logger.info("Хост слушает $endpoint, режим $mode")
     }
 
     /** Останавливает сервер и освобождает порт. */
@@ -7628,10 +7628,13 @@ git commit -m "feat(host): чтение состояния git через JGit �
 - Создать: `host-core/src/main/kotlin/dev/aide/host/EmbeddedHost.kt`
 - Создать: `host-core/src/main/kotlin/dev/aide/host/server/StageZeroHandler.kt`
 - Изменить: `client-ui/src/commonMain/kotlin/dev/aide/client/ui/App.kt`
+- Изменить: `client-ui/build.gradle.kts` (системное свойство для теста)
 - Изменить: `desktopApp/src/main/kotlin/dev/aide/desktop/Main.kt`
+- Изменить: `desktopApp/build.gradle.kts`
 - Изменить: `androidApp/src/main/kotlin/dev/aide/android/MainActivity.kt`
 - Тест: `host-core/src/test/kotlin/dev/aide/host/EmbeddedHostTest.kt`
 - Тест: `client-state/src/jvmTest/kotlin/dev/aide/client/state/NoLocalityBranchingTest.kt`
+- Тест: `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/NoLocalityBranchingTest.kt`
 - Изменить: `client-state/build.gradle.kts` (системные свойства для теста)
 
 **Что именно проверяет `T-0.13`.** Два утверждения. Первое: на десктопе приложение поднимает хост само, а остановка приложения завершает хост. Второе, более важное: тот же клиентский артефакт, запущенный с адресом удалённого хоста, показывает то же дерево, и в исходниках клиента нет ни одной ветки по признаку локальности. Второе проверяется двумя тестами: интеграционным (клиент работает с хостом по адресу) и статическим (поиск по исходникам не находит признаков локальности).
@@ -7645,13 +7648,15 @@ git commit -m "feat(host): чтение состояния git через JGit �
 ```kotlin
 package dev.aide.host
 
-import dev.aide.host.workspace.TempRepoFixture
 import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.KtorHostConnection
+import dev.aide.host.git.GitCliFixture
+import dev.aide.host.workspace.TempRepoFixture
 import dev.aide.protocol.HostMode
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
+import java.net.ServerSocket
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -7666,9 +7671,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
+/**
+ * T-0.13: хост, поднятый в том же процессе, — это тот же [dev.aide.host.server.ProtocolServer],
+ * что и удалённый, а клиент отличается от него только адресом.
+ *
+ * `TempRepoFixture` даёт файлы, `GitCliFixture` — историю: `StageZeroHandler` открывает
+ * git-репозиторий, и без `.git` открытие воркспейса вернуло бы `NotAGitRepository`.
+ */
 class EmbeddedHostTest {
 
-    private val fixture = TempRepoFixture()
+    private val fixture = TempRepoFixture().also { GitCliFixture.createRepo(it.root) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @AfterTest
@@ -7678,86 +7690,94 @@ class EmbeddedHostTest {
     }
 
     @Test
-    fun `хост поднимается, объявляет локальный режим и отдаёт состояние репозитория`() = runBlocking {
-        val host = EmbeddedHost.open(fixture.root)
-        try {
-            assertTrue(host.endpoint.startsWith("ws://127.0.0.1:"), "Локальный хост слушает loopback: ${host.endpoint}")
+    fun `хост поднимается, объявляет локальный режим и отдаёт состояние репозитория`() {
+        runBlocking {
+            val host = EmbeddedHost.open()
+            try {
+                assertTrue(
+                    host.endpoint.startsWith("ws://127.0.0.1:"),
+                    "Локальный хост слушает loopback: ${host.endpoint}",
+                )
 
+                val connection = newConnection(host.endpoint)
+                val client = HostClient(connection, scope)
+                client.start()
+                awaitConnected(connection)
+
+                assertNotNull(client.openWorkspace(fixture.root.toString()))
+
+                val state = client.hostState().getOrThrow()
+                assertEquals(HostMode.LOCAL, state.mode)
+                assertEquals("master", state.branch)
+                assertEquals(fixture.root.toRealPath().toString(), state.rootPath)
+
+                val tree = client.fileTree().getOrThrow()
+                assertTrue(tree.entries.any { it.path == "src/auth/Login.kt" })
+            } finally {
+                host.close()
+            }
+        }
+    }
+
+    @Test
+    fun `остановка хоста освобождает порт и не роняет клиент`() {
+        runBlocking {
+            val host = EmbeddedHost.open()
+            val port = host.port
             val connection = KtorHostConnection(
                 endpoint = host.endpoint,
                 scope = scope,
                 httpClient = HttpClient { install(WebSockets) },
+                initialRetryMillis = 50,
+                maxRetryMillis = 100,
             )
             val client = HostClient(connection, scope)
             client.start()
             awaitConnected(connection)
 
-            val workspaceId = assertNotNull(client.openWorkspace(fixture.root.toString()))
-
-            val state = client.hostState().getOrThrow()
-            assertEquals(HostMode.LOCAL, state.mode)
-            assertEquals("master", state.branch)
-            assertEquals(fixture.root.toRealPath().toString(), state.rootPath)
-
-            val tree = client.fileTree().getOrThrow()
-            assertTrue(tree.entries.any { it.path == "src/auth/Login.kt" })
-        } finally {
             host.close()
-        }
-    }
 
-    @Test
-    fun `остановка хоста освобождает порт и закрывает сессии`() = runBlocking {
-        val host = EmbeddedHost.open(fixture.root)
-        val endpoint = host.endpoint
-        val port = host.port
+            // Порт освобождён: его можно занять снова.
+            ServerSocket(port).use { socket -> assertTrue(socket.isBound) }
 
-        val connection = KtorHostConnection(
-            endpoint = endpoint,
-            scope = scope,
-            httpClient = HttpClient { install(WebSockets) },
-            initialRetryMillis = 50,
-            maxRetryMillis = 100,
-        )
-        val client = HostClient(connection, scope)
-        client.start()
-        awaitConnected(connection)
-
-        host.close()
-
-        // Порт освобождён: его можно занять снова.
-        java.net.ServerSocket(port).use { socket -> assertTrue(socket.isBound) }
-
-        // Клиент замечает обрыв, но не закрывается окончательно — он будет переподключаться.
-        val state = withTimeoutOrNull(5_000) {
-            while (connection.state.value !is ConnectionState.Reconnecting) delay(20)
-            connection.state.value
-        }
-        assertIs<ConnectionState.Reconnecting>(state)
-        connection.stopSafely()
-    }
-
-    @Test
-    fun `клиент работает с хостом по указанному адресу и не знает, локальный он или нет`() = runBlocking {
-        // Тот же клиентский код, но адрес — единственное, что отличает случай.
-        val host = EmbeddedHost.open(fixture.root)
-        try {
-            val connection = KtorHostConnection(
-                endpoint = "ws://127.0.0.1:${host.port}/ws",
-                scope = scope,
-                httpClient = HttpClient { install(WebSockets) },
+            // Клиент замечает обрыв, но не закрывается окончательно — он будет переподключаться.
+            val state = withTimeoutOrNull(5_000) {
+                while (connection.state.value !is ConnectionState.Reconnecting) delay(20)
+                connection.state.value
+            }
+            assertIs<ConnectionState.Reconnecting>(
+                state,
+                "Состояние после остановки хоста: ${connection.state.value}",
             )
-            val client = HostClient(connection, scope)
-            client.start()
-            awaitConnected(connection)
-
-            assertNotNull(client.openWorkspace(fixture.root.toString()))
-            assertEquals("master", client.hostState().getOrThrow().branch)
-            assertEquals(1, client.session.value.workspaceId?.let { 1 })
-        } finally {
-            host.close()
+            connection.stopSafely()
         }
     }
+
+    @Test
+    fun `клиент работает с хостом по указанному адресу и не знает, локальный он или нет`() {
+        runBlocking {
+            val host = EmbeddedHost.open()
+            try {
+                // Тот же клиентский код, но адрес — единственное, что отличает случай.
+                val connection = newConnection("ws://127.0.0.1:${host.port}/ws")
+                val client = HostClient(connection, scope)
+                client.start()
+                awaitConnected(connection)
+
+                assertNotNull(client.openWorkspace(fixture.root.toString()))
+                assertEquals("master", client.hostState().getOrThrow().branch)
+                assertNotNull(client.session.value.workspaceId, "Клиент должен знать открытый воркспейс")
+            } finally {
+                host.close()
+            }
+        }
+    }
+
+    private fun newConnection(endpoint: String): KtorHostConnection = KtorHostConnection(
+        endpoint = endpoint,
+        scope = scope,
+        httpClient = HttpClient { install(WebSockets) },
+    )
 
     private suspend fun awaitConnected(connection: KtorHostConnection) {
         val state = withTimeoutOrNull(10_000) {
@@ -7790,6 +7810,8 @@ package dev.aide.host.server
 
 import dev.aide.host.git.GitAccessException
 import dev.aide.host.git.GitRepository
+import dev.aide.host.git.JGitRepository
+import dev.aide.host.workspace.FileTreeBuilder
 import dev.aide.host.workspace.Workspace
 import dev.aide.host.workspace.WorkspaceAccessException
 import dev.aide.host.workspace.WorkspaceFileSystem
@@ -7800,6 +7822,7 @@ import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
+import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -7808,11 +7831,13 @@ import java.util.concurrent.ConcurrentHashMap
  * Держит открытые воркспейсы и их ресурсы. Изменяющих операций нет: агент, коммиты
  * и снапшоты появляются в этапе 1, поэтому этот класс — единственное место, где
  * хост читает диск по запросу клиента.
+ *
+ * @param openGit как открыть git-репозиторий воркспейса; подменяется в тестах.
+ * @param mode режим, который хост объявляет клиенту; на поведение обработчика не влияет.
+ * @param startedAtMillis момент запуска — от него считается время работы хоста.
  */
 class StageZeroHandler(
-    private val openGit: (java.nio.file.Path) -> GitRepository = { path ->
-        dev.aide.host.git.JGitRepository.open(path)
-    },
+    private val openGit: (Path) -> GitRepository = { path -> JGitRepository.open(path) },
     private val mode: HostMode = HostMode.LOCAL,
     private val startedAtMillis: Long = System.currentTimeMillis(),
 ) : ClientMessageHandler, AutoCloseable {
@@ -7820,7 +7845,7 @@ class StageZeroHandler(
     private class OpenWorkspace(
         val workspace: Workspace,
         val fileSystem: WorkspaceFileSystem,
-        val treeBuilder: dev.aide.host.workspace.FileTreeBuilder,
+        val treeBuilder: FileTreeBuilder,
         val git: GitRepository,
     )
 
@@ -7828,6 +7853,7 @@ class StageZeroHandler(
 
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
         is ClientMessage.OpenWorkspace -> openWorkspace(message)
+
         is ClientMessage.FileTree -> withWorkspace(message.workspaceId, message.requestId) { open ->
             HostMessage.Tree(message.requestId, open.treeBuilder.build())
         }
@@ -7839,8 +7865,8 @@ class StageZeroHandler(
 
         is ClientMessage.HostState -> withWorkspace(message.workspaceId, message.requestId) { open ->
             HostMessage.State(
-                message.requestId,
-                HostStatePayload(
+                requestId = message.requestId,
+                state = HostStatePayload(
                     workspaceId = open.workspace.id,
                     rootPath = open.workspace.root.toString(),
                     branch = open.git.currentBranch(),
@@ -7857,28 +7883,45 @@ class StageZeroHandler(
         )
     }
 
+    /**
+     * Открывает воркспейс. Любая неудача — типизированный ответ, а не исключение
+     * наружу: одно плохое сообщение не должно ронять сессию.
+     */
+    @Suppress("TooGenericExceptionCaught")
     private fun openWorkspace(message: ClientMessage.OpenWorkspace): HostMessage = try {
-        val workspace = Workspace.open(java.nio.file.Path.of(message.path))
-        val git = try {
-            openGit(workspace.root)
-        } catch (error: GitAccessException) {
-            throw WorkspaceAccessException(error.error)
-        }
+        val workspace = Workspace.open(Path.of(message.path))
         val fileSystem = WorkspaceFileSystem(workspace)
-        opened[workspace.id] = OpenWorkspace(workspace, fileSystem, dev.aide.host.workspace.FileTreeBuilder(fileSystem, workspace), git)
+        opened[workspace.id] = OpenWorkspace(
+            workspace = workspace,
+            fileSystem = fileSystem,
+            treeBuilder = FileTreeBuilder(fileSystem, workspace),
+            git = openGitFor(workspace),
+        )
         HostMessage.WorkspaceOpened(message.requestId, workspace.id)
     } catch (error: WorkspaceAccessException) {
         HostMessage.Failure(message.requestId, error.error)
     } catch (error: Exception) {
-        HostMessage.Failure(message.requestId, ProtocolError.Internal("не удалось открыть репозиторий", error.message))
+        HostMessage.Failure(
+            message.requestId,
+            ProtocolError.Internal("не удалось открыть репозиторий", error.message),
+        )
     }
 
+    /** Отсутствие `.git` — это отказ в доступе к воркспейсу, а не внутренняя ошибка хоста. */
+    private fun openGitFor(workspace: Workspace): GitRepository = try {
+        openGit(workspace.root)
+    } catch (error: GitAccessException) {
+        throw WorkspaceAccessException(error.error)
+    }
+
+    @Suppress("TooGenericExceptionCaught")
     private inline fun withWorkspace(
         workspaceId: WorkspaceId,
         requestId: RequestId,
         block: (OpenWorkspace) -> HostMessage,
     ): HostMessage {
-        val open = opened[workspaceId] ?: return HostMessage.Failure(requestId, ProtocolError.WorkspaceClosed(workspaceId))
+        val open = opened[workspaceId]
+            ?: return HostMessage.Failure(requestId, ProtocolError.WorkspaceClosed(workspaceId))
         return try {
             block(open)
         } catch (error: WorkspaceAccessException) {
@@ -7904,6 +7947,7 @@ class StageZeroHandler(
 ```kotlin
 package dev.aide.host
 
+import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ProtocolServer
 import dev.aide.host.server.StageZeroHandler
 import dev.aide.host.server.freeLoopbackPort
@@ -7913,6 +7957,7 @@ import org.koin.core.KoinApplication
 import org.koin.core.module.Module
 import org.koin.core.qualifier.Qualifier
 import org.koin.core.qualifier.named
+import org.koin.dsl.bind
 import org.koin.dsl.module
 
 /**
@@ -7921,7 +7966,7 @@ import org.koin.dsl.module
  * Модуль параметризован режимом, портом и версией протокола: на этапе 0 эти значения
  * отличают локальный хост от удалённого, разделяемым состоянием они не являются.
  *
- * Граф изолированный (`KoinApplication.init()`, а не глобальный контекст): хост поднимается
+ * Граф изолированный ([KoinApplication.init], а не глобальный контекст): хост поднимается
  * и в приложении, и в тестах — `EmbeddedHostTest` открывает его несколько раз за прогон,
  * а глобальный контекст Koin допускает только один запуск на процесс.
  */
@@ -7936,7 +7981,13 @@ object HostApp {
     /** Квалификатор версии протокола, которую хост объявляет клиенту. */
     val versionQualifier: Qualifier = named("hostVersion")
 
-    /** Собирает части хоста: обработчик сообщений и сервер. */
+    /**
+     * Собирает части хоста: обработчик сообщений и сервер.
+     *
+     * `StageZeroHandler` регистрируется дополнительно как [ClientMessageHandler]: сервер
+     * зависит от интерфейса, а Koin сопоставляет определение по объявленному типу, поэтому
+     * без `bind` вызов `get<ClientMessageHandler>()` не нашёл бы определение.
+     */
     fun module(
         mode: HostMode,
         port: Int,
@@ -7945,7 +7996,7 @@ object HostApp {
         single(modeQualifier) { mode }
         single(portQualifier) { port }
         single(versionQualifier) { protocolVersion }
-        single { StageZeroHandler(mode = get(modeQualifier)) }
+        single { StageZeroHandler(mode = get(modeQualifier)) } bind ClientMessageHandler::class
         single {
             ProtocolServer(
                 handler = get(),
@@ -7967,7 +8018,8 @@ object HostApp {
         port: Int = freeLoopbackPort(),
         protocolVersion: ProtocolVersion = ProtocolVersion.CURRENT,
     ): EmbeddedHost {
-        val graph = KoinApplication.init().modules(module(mode = mode, port = port, protocolVersion = protocolVersion))
+        val graph = KoinApplication.init()
+            .modules(module(mode = mode, port = port, protocolVersion = protocolVersion))
         val server = graph.koin.get<ProtocolServer>()
         server.start()
         return EmbeddedHost(server = server, handler = graph.koin.get(), graph = graph)
@@ -8022,6 +8074,10 @@ class EmbeddedHost internal constructor(
         /**
          * Поднимает хост на свободном порту loopback.
          *
+         * Путь к репозиторию в подписи отсутствует намеренно: воркспейс открывает клиент
+         * сообщением `OpenWorkspace`, и хост не решает за него, что открывать, — ровно так
+         * же ведёт себя удалённый хост. Сборка зависимостей остаётся в [HostApp].
+         *
          * @param port конкретный порт; по умолчанию берётся свободный, чтобы два запуска
          *   приложения на одной машине не конфликтовали.
          */
@@ -8030,17 +8086,43 @@ class EmbeddedHost internal constructor(
 }
 ```
 
-Путь к репозиторию в подпись не входит намеренно: воркспейс открывает клиент сообщением `OpenWorkspace`, и хост не решает за него, что открывать — это то же поведение, что и у удалённого хоста. Поэтому сигнатура честная, и сборка зависимостей остаётся в одном месте — в `HostApp`:
-
-```kotlin
-        fun open(port: Int = freeLoopbackPort()): EmbeddedHost = HostApp.open(port = port)
-```
-
-Тесты из шага 1 должны вызывать `EmbeddedHost.open()` без аргумента — заменить `EmbeddedHost.open(fixture.root)` во всех трёх местах.
-
 - [ ] **Шаг 5: подключить хост к десктопному приложению**
 
-`desktopApp/build.gradle.kts` — править не нужно. `Main.kt` импортирует `EmbeddedHost` из `host-core`, `KtorHostConnection` из `client-state` и `App` из `client-ui`; первые две приходят через `api(project(":host-core"))` и `api(project(":client-state"))` у `platform-desktop` (задача 1, шаг 8), третья объявлена прямой зависимостью в задаче 2. До правила `api`/`implementation` из задачи 4 эту зависимость приходилось дублировать здесь — теперь дублировать нечего.
+`Main.kt` импортирует `EmbeddedHost` и `KtorHostConnection` напрямую, поэтому `desktopApp/build.gradle.kts` объявляет оба модуля явно. Полагаться на транзитивный `api` у `platform-desktop` (задача 1, шаг 8) нельзя: сегодня этот модуль без исходников, и смена видимости в нём ломала бы сборку десктопа по чужой причине. Правило: **зависимость объявляется там, где тип импортируется напрямую, а транзитивный `api` — не замена.** В `androidApp` дублирования нет: там `client-ui` держит `api(project(":client-state"))` именно потому, что тип стоит в публичной подписи `App`.
+
+`desktopApp/build.gradle.kts`:
+
+```kotlin
+plugins {
+    alias(libs.plugins.kotlinJvm)
+    alias(libs.plugins.composeMultiplatform)
+    alias(libs.plugins.composeCompiler)
+}
+
+kotlin { jvmToolchain(libs.versions.jvmTarget.get().toInt()) }
+
+dependencies {
+    implementation(project(":client-ui"))
+    implementation(project(":platform-desktop"))
+    // Точка входа импортирует EmbeddedHost и KtorHostConnection напрямую, поэтому модули
+    // объявлены явно. Иначе они приходили бы только через `api` у platform-desktop и
+    // client-ui: смена видимости в любом из них ломала бы сборку десктопа по чужой причине.
+    implementation(project(":client-state"))
+    implementation(project(":host-core"))
+    implementation(compose.desktop.currentOs)
+    // Без провайдера SLF4J логи хоста не выводятся вообще: slf4j-api подключается как
+    // implementation, и в приложении оставался NOP-логгер — ни «Хост слушает», ни «режим
+    // LOCAL» в выводе не появлялись (T-0.13 требует обратного). Выбор провайдера — дело
+    // приложения, поэтому он здесь, а не в host-core.
+    runtimeOnly(libs.slf4j.simple)
+}
+
+compose.desktop {
+    application {
+        mainClass = "dev.aide.desktop.MainKt"
+    }
+}
+```
 
 `desktopApp/src/main/kotlin/dev/aide/desktop/Main.kt`:
 
@@ -8058,17 +8140,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 
 fun main() = application {
     // Хост поднимается вместе с приложением и завершается вместе с ним (T-0.13).
     val host = remember { EmbeddedHost.open() }
     val scope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
-    val connection = remember {
-        KtorHostConnection(endpoint = host.endpoint, scope = scope)
-    }
+    val connection = remember { KtorHostConnection(endpoint = host.endpoint, scope = scope) }
 
     DisposableEffect(Unit) {
+        connection.start()
         onDispose {
+            // Соединение закрывает свой HttpClient; если только отменить scope, сокет
+            // останется открытым до конца процесса.
+            runBlocking { connection.stop() }
             host.close()
             scope.cancel()
         }
@@ -8096,6 +8181,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import dev.aide.client.state.HostConnection
 
+// Соединение принимается уже сейчас, хотя экраны появятся в задачах 14 и 16: подпись
+// точки входа иначе пришлось бы менять дважды. Параметр осознанно не используется —
+// детектор про это и предупреждает.
+@Suppress("UnusedParameter")
 @Composable
 fun App(connection: HostConnection) {
     MaterialTheme {
@@ -8177,21 +8266,31 @@ class MainActivity : ComponentActivity() {
 
 - [ ] **Шаг 8: написать статический тест «в клиенте нет ветвлений по локальности»**
 
-`client-state/build.gradle.kts` — добавить в блок `kotlin`:
+`client-state/build.gradle.kts` — добавить импорт в начало файла и системное свойство после блока `kotlin`:
 
 ```kotlin
-        jvmTest.dependencies {
-            implementation(libs.kotlin.test)
-        }
+import org.gradle.api.tasks.testing.Test
 ```
-
-и после блока `kotlin`:
 
 ```kotlin
 tasks.named<Test>("jvmTest") {
     systemProperty("clientSourcesDir", layout.projectDirectory.dir("src").asFile.path)
 }
 ```
+
+`client-ui/build.gradle.kts` — то же самое, но со своим системным свойством:
+
+```kotlin
+import org.gradle.api.tasks.testing.Test
+```
+
+```kotlin
+tasks.named<Test>("jvmTest") {
+    systemProperty("clientUiSourcesDir", layout.projectDirectory.dir("src").asFile.path)
+}
+```
+
+Отдельная зависимость `libs.kotlin.test` в `jvmTest` не заводится: конвенция `aide.kmp-base` кладёт `kotlin("test")` в `commonTest`, а `jvmTest` наследует набор через default hierarchy; алиас `libs.kotlin.test` закреплён за JVM-модулями.
 
 `client-state/src/jvmTest/kotlin/dev/aide/client/state/NoLocalityBranchingTest.kt`:
 
@@ -8205,16 +8304,16 @@ import kotlin.test.assertTrue
 /**
  * T-0.13: клиент не различает локальный хост и удалённый.
  *
- * Проверяется статически: в исходниках [client-state] и [client-ui] не должно быть
- * признаков локальности. Если они появятся, интеграционный тест «клиент работает
- * с хостом по указанному адресу» перестанет быть достаточным — он не заметит
- * ветку, которую исполнят только в одном из режимов.
+ * Проверяется статически: в исходниках `client-state` не должно быть признаков
+ * локальности. Если они появятся, интеграционный тест «клиент работает с хостом
+ * по указанному адресу» перестанет быть достаточным — он не заметит ветку, которую
+ * исполнят только в одном из режимов.
  */
 class NoLocalityBranchingTest {
 
-    private val clientStateRoot = File(
-        System.getProperty("clientSourcesDir")
-            ?: error("Не задано системное свойство clientSourcesDir — проверь блок jvmTest в build.gradle.kts"),
+    private val sourcesRoot = File(
+        System.getProperty(SOURCES_DIR_PROPERTY)
+            ?: error("Не задано системное свойство $SOURCES_DIR_PROPERTY — проверь блок jvmTest в build.gradle.kts"),
     )
 
     /** Признаки того, что код знает о локальности хоста. */
@@ -8232,31 +8331,131 @@ class NoLocalityBranchingTest {
 
     @Test
     fun `в клиентском коде нет признаков локальности хоста`() {
-        assertTrue(clientStateRoot.isDirectory, "Каталог исходников не найден: $clientStateRoot")
+        assertTrue(sourcesRoot.isDirectory, "Каталог исходников не найден: $sourcesRoot")
 
+        var scanned = 0
         val offenders = mutableListOf<String>()
-        clientStateRoot.walkTopDown()
+        sourcesRoot.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
-            .filterNot { it.path.contains("/jvmTest/") || it.path.contains("/commonTest/") }
+            .filterNot { it.isTestSource() }
             .forEach { file ->
+                scanned += 1
                 val text = file.readText()
                 forbidden.forEach { needle ->
-                    if (text.contains(needle)) offenders += "${file.relativeTo(clientStateRoot)}: $needle"
+                    if (text.contains(needle)) offenders += "${file.relativeTo(sourcesRoot)}: $needle"
                 }
             }
 
+        assertTrue(scanned > 0, "В $sourcesRoot не найдено ни одного .kt — проверка шла бы по пустоте")
         assertTrue(
             offenders.isEmpty(),
             "Клиент не должен ветвиться по признаку локальности хоста (§ 3.3). Найдено:\n" +
                 offenders.joinToString("\n"),
         )
     }
+
+    /**
+     * Тестовые наборы исключаются: запрещённые подстроки перечислены в самом этом тесте,
+     * и без исключения он находил бы себя. Сравнение идёт по `invariantSeparatorsPath`:
+     * на Windows `path` содержит обратные слэши, и фильтр по «/jvmTest/» не сработал бы.
+     */
+    private fun File.isTestSource(): Boolean =
+        invariantSeparatorsPath.contains("/$JVM_TEST_SET/") ||
+            invariantSeparatorsPath.contains("/$COMMON_TEST_SET/")
+
+    private companion object {
+        /** Системное свойство с путём к `src` клиента; задаётся в build.gradle.kts модуля. */
+        const val SOURCES_DIR_PROPERTY = "clientSourcesDir"
+
+        /** Наборы с тестовым кодом: статическая проверка смотрит только продуктовый код. */
+        const val JVM_TEST_SET = "jvmTest"
+        const val COMMON_TEST_SET = "commonTest"
+    }
 }
 ```
 
-Тот же тест продублировать в `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/NoLocalityBranchingTest.kt` с системным свойством `clientUiSourcesDir` — критерий `T-0.13` требует нуля совпадений в обоих модулях.
+Тот же тест — в `client-ui/src/jvmTest/kotlin/dev/aide/client/ui/NoLocalityBranchingTest.kt`, с системным свойством `clientUiSourcesDir` — критерий `T-0.13` требует нуля совпадений в обоих модулях:
 
-**Заметка на будущее (не отдельный шаг).** К этому моменту в проекте три разных способа читать исходники в тестах: `okio` (тест из задачи 2), `java.io.File` плюс системное свойство (этот тест и тест из задачи 14). Их стоит свести к одному механизму — `jvmTest` плюс системное свойство, без `okio`, — и заодно усилить правило: проверять не список из шести подстрок, а импорты платформенных пакетов (`java.`, `javax.`, `android.`, `kotlinx.cinterop`, `platform.`, `UIKit`), объявления `expect `/`actual ` и обращения `System.`, плюс утверждение «просканировано N файлов, N > 0» — иначе тест молча проходит, если путь к исходникам не найден или файлов нет.
+```kotlin
+package dev.aide.client.ui
+
+import java.io.File
+import kotlin.test.Test
+import kotlin.test.assertTrue
+
+/**
+ * T-0.13: клиент не различает локальный хост и удалённый.
+ *
+ * Проверяется статически: в исходниках `client-ui` не должно быть признаков
+ * локальности. Критерий требует нуля совпадений в обоих клиентских модулях,
+ * поэтому тот же тест есть в `client-state`.
+ */
+class NoLocalityBranchingTest {
+
+    private val sourcesRoot = File(
+        System.getProperty(SOURCES_DIR_PROPERTY)
+            ?: error("Не задано системное свойство $SOURCES_DIR_PROPERTY — проверь блок jvmTest в build.gradle.kts"),
+    )
+
+    /** Признаки того, что код знает о локальности хоста. */
+    private val forbidden = listOf(
+        "isLocalHost",
+        "isRemoteHost",
+        "HostMode.LOCAL",
+        "HostMode.REMOTE",
+        "localHost",
+        "remoteHost",
+        "embeddedHost",
+        "EmbeddedHost",
+        "if (local)",
+    )
+
+    @Test
+    fun `в клиентском коде нет признаков локальности хоста`() {
+        assertTrue(sourcesRoot.isDirectory, "Каталог исходников не найден: $sourcesRoot")
+
+        var scanned = 0
+        val offenders = mutableListOf<String>()
+        sourcesRoot.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .filterNot { it.isTestSource() }
+            .forEach { file ->
+                scanned += 1
+                val text = file.readText()
+                forbidden.forEach { needle ->
+                    if (text.contains(needle)) offenders += "${file.relativeTo(sourcesRoot)}: $needle"
+                }
+            }
+
+        assertTrue(scanned > 0, "В $sourcesRoot не найдено ни одного .kt — проверка шла бы по пустоте")
+        assertTrue(
+            offenders.isEmpty(),
+            "Клиент не должен ветвиться по признаку локальности хоста (§ 3.3). Найдено:\n" +
+                offenders.joinToString("\n"),
+        )
+    }
+
+    /**
+     * Тестовые наборы исключаются: запрещённые подстроки перечислены в самом этом тесте,
+     * и без исключения он находил бы себя. Сравнение идёт по `invariantSeparatorsPath`:
+     * на Windows `path` содержит обратные слэши, и фильтр по «/jvmTest/» не сработал бы.
+     */
+    private fun File.isTestSource(): Boolean =
+        invariantSeparatorsPath.contains("/$JVM_TEST_SET/") ||
+            invariantSeparatorsPath.contains("/$COMMON_TEST_SET/")
+
+    private companion object {
+        /** Системное свойство с путём к `src` клиента; задаётся в build.gradle.kts модуля. */
+        const val SOURCES_DIR_PROPERTY = "clientUiSourcesDir"
+
+        /** Наборы с тестовым кодом: статическая проверка смотрит только продуктовый код. */
+        const val JVM_TEST_SET = "jvmTest"
+        const val COMMON_TEST_SET = "commonTest"
+    }
+}
+```
+
+**Заметка на будущее (не отдельный шаг).** К этому моменту в проекте три разных способа читать исходники в тестах: `okio` (тест из задачи 2), `java.io.File` плюс системное свойство (этот тест и тест из задачи 14). Их стоит свести к одному механизму — `jvmTest` плюс системное свойство, без `okio`, — и заодно усилить правило: проверять не список из шести подстрок, а импорты платформенных пакетов (`java.`, `javax.`, `android.`, `kotlinx.cinterop`, `platform.`, `UIKit`), объявления `expect `/`actual ` и обращения `System.`.
 
 - [ ] **Шаг 9: прогнать тесты**
 
@@ -8274,7 +8473,7 @@ class NoLocalityBranchingTest {
 ./gradlew :desktopApp:createDistributable && ./desktopApp/build/compose/binaries/main/app/desktopApp/bin/desktopApp
 ```
 
-Ожидаемо: окно открывается, в логе есть строка `Хост слушает ws://127.0.0.1:<порт>/ws`. Закрыть окно — хост останавливается, порт освобождается. Проверить:
+Ожидаемо: окно открывается, в логе есть строка `Хост слушает ws://127.0.0.1:<порт>/ws, режим LOCAL`. Без провайдера SLF4J (`runtimeOnly(libs.slf4j.simple)` в `desktopApp`) шаг недостижим: приложение печатало бы `No SLF4J providers were found` и ни строки хоста. Закрыть окно — хост останавливается, порт освобождается. Проверить:
 
 ```bash
 ss -ltn | grep <порт> || echo "порт освобождён"
@@ -8286,6 +8485,10 @@ ss -ltn | grep <порт> || echo "порт освобождён"
 git add host-core desktopApp androidApp client-ui client-state
 git commit -m "feat(host): запуск хоста в локальном режиме и статическая проверка отсутствия локальности в клиенте"
 ```
+
+**Известные ограничения проверки (не шагами).**
+- Вторая половина критерия («тот же клиентский артефакт с адресом удалённого хоста») буквально невоспроизводима до задачи 16: адрес у десктопного приложения берётся из настроек, которых пока нет. Покрытие обеспечивают интеграционный тест `EmbeddedHostTest` (те же `KtorHostConnection`/`HostClient`, различается только адрес) и два статических теста `NoLocalityBranchingTest`; полная сверка ложится на `T-0.15`.
+- В окружении нет оконного менеджера, поэтому путь «клик по крестику» невоспроизводим; закрытие подтверждено отправкой `WM_DELETE_WINDOW` напрямую. Это ограничение проверки, а не дефект.
 
 ---
 
@@ -8866,15 +9069,7 @@ fun AideTheme(
 
 - [ ] **Шаг 8: подключить ресурсы и написать тест на отсутствие литералов**
 
-`client-ui/build.gradle.kts` — добавить в `sourceSets` внутри `kotlin`:
-
-```kotlin
-        jvmTest.dependencies {
-            implementation(libs.kotlin.test)
-        }
-```
-
-и после блока `kotlin`:
+`client-ui/build.gradle.kts` — добавить после блока `kotlin` (тестовый набор `jvmTest` наследует `kotlin("test")` из `commonTest`, отдельная зависимость не нужна):
 
 ```kotlin
 compose.resources {
