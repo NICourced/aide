@@ -32,13 +32,12 @@ kotlin {
         }
         jvmTest.dependencies {
             // ScreenStatesTest — настоящий UI-тест (runComposeUiTest), а не проверка
-            // состояний вручную. compose.uiTest даёт сам API теста, coroutines.test нужен
-            // для rule о главном диспетчере Compose.
+            // состояний вручную: compose.uiTest даёт сам API теста.
             implementation(compose.uiTest)
-            implementation(libs.kotlinx.coroutines.test)
-            // runComposeUiTest на десктопе рисует через Skiko: без рантайма текущей ОС
-            // тест падает с UnsatisfiedLinkError на нативной библиотеке. Одна эта
-            // зависимость и приносит нужный skiko-awt-runtime.
+            // Проверено снятием: без рантайма Skiko текущей ОС тесты падают на
+            // `NoClassDefFoundError: Could not initialize class org.jetbrains.skia.Surface`
+            // внутри SkikoComposeUiTest — то есть compose.uiTest сам нативную библиотеку
+            // не приносит, её даёт только compose.desktop.currentOs.
             implementation(compose.desktop.currentOs)
         }
         androidMain.dependencies {

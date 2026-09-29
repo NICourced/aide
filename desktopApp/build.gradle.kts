@@ -27,7 +27,6 @@ dependencies {
     // из конвенции: она добавляет его только KMP-модулям, а этот модуль — обычный JVM.
     testImplementation(libs.kotlin.test)
     testImplementation(compose.uiTest)
-    testImplementation(libs.kotlinx.coroutines.test)
 }
 
 compose.desktop {
