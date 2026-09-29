@@ -4398,6 +4398,8 @@ git commit -m "feat(protocol): бинарный CBOR-кодек, типизир�
 
 **Правило совместимости.** Несовпадение `major` означает несовместимость в любую сторону: частично работающий UI запрещён (§ 8.4), соединение закрывается, клиент показывает требование обновления. При совпадающем `major` хост обслуживает клиента с `minor` не выше своего; клиент с более высоким `minor` получает требование обновить хост.
 
+**Почему `HostMessage.Incompatible` не несёт текст для пользователя.** Сообщение протокола содержит только машиночитаемые данные — `reason` и `hostVersion`; `userMessage` из результата `check` по сети не передаётся. Потери данных здесь нет: `check` — чистая детерминированная функция, поэтому клиент, получив `Incompatible(reason, hostVersion)`, вызывает **ту же** `check(clientVersion, hostVersion)` с версией хоста из сообщения и получает ровно тот же текст. Так текст для пользователя строится одной реализацией и имеет один источник, а по проводу едут только версии и причина — их достаточно, чтобы любая сторона построила сообщение сама. `userMessage` существует как часть результата `check`, а не как поле протокола; если `check` на стороне клиента вернёт `Compatible` (хост закрыл соединение по другой причине), клиент показывает резервный текст с версией хоста. Именно так это и сделано в задаче 10 в `KtorHostConnection`.
+
 - [ ] **Шаг 1: написать падающие тесты**
 
 `protocol/src/commonTest/kotlin/dev/aide/protocol/ProtocolCompatibilityTest.kt`:
@@ -4466,6 +4468,15 @@ class ProtocolCompatibilityTest {
     }
 
     @Test
+    fun `сообщение о несовпадении major называет обе версии`() {
+        val result = assertIs<ProtocolCompatibility.Incompatible>(
+            ProtocolCompatibility.check(client = ProtocolVersion(1, 0), host = ProtocolVersion(2, 0)),
+        )
+        assertTrue(result.userMessage.contains("1.0"))
+        assertTrue(result.userMessage.contains("2.0"))
+    }
+
+    @Test
     fun `ответ хоста при несовместимости содержит причину и версию хоста`() {
         val incompatible = ProtocolCompatibility.toHostMessage(
             result = ProtocolCompatibility.Incompatible(
@@ -4518,13 +4529,14 @@ object ProtocolCompatibility {
 
     /** Сравнивает версии клиента и хоста. */
     fun check(client: ProtocolVersion, host: ProtocolVersion): ProtocolCompatibilityResult = when {
-        client.major != host.major && client.major < host.major -> Incompatible(
+        client.major < host.major -> Incompatible(
             reason = IncompatibilityReason.CLIENT_OUTDATED,
             userMessage = "Версия протокола не поддерживается: обновите приложение " +
                 "(клиент $client, хост $host).",
         )
 
-        client.major != host.major -> Incompatible(
+        // После первой ветки major у клиента не меньше, чем у хоста, значит эта ветка — про «клиент новее».
+        client.major > host.major -> Incompatible(
             reason = IncompatibilityReason.HOST_OUTDATED,
             userMessage = "Версия протокола не поддерживается: обновите хост " +
                 "(клиент $client, хост $host).",
@@ -4545,13 +4557,9 @@ object ProtocolCompatibility {
 
 /** Результат проверки совместимости: либо [ProtocolCompatibility.Compatible], либо причина несовместимости. */
 sealed interface ProtocolCompatibilityResult
-
-/** Псевдоним для читаемости объявлений вида `when (result) { is Compatible -> … }`. */
-typealias Compatible = ProtocolCompatibility.Compatible
-
-/** Псевдоним для читаемости обработки несовместимости. */
-typealias Incompatible = ProtocolCompatibility.Incompatible
 ```
+
+Псевдонимов для вложенных имён (`Compatible` и `Incompatible` на верхнем уровне) здесь нет намеренно: вложенные имена и так читаются квалифицированно (`ProtocolCompatibility.Compatible`, `ProtocolCompatibility.Incompatible`), а лишний псевдоним создаёт второе имя для того же типа в модуле-контракте, которым пользуются все остальные задачи.
 
 - [ ] **Шаг 4: прогнать тесты**
 
@@ -4559,7 +4567,7 @@ typealias Incompatible = ProtocolCompatibility.Incompatible
 ./gradlew :protocol:jvmTest
 ```
 
-Ожидаемо: `BUILD SUCCESSFUL`, 17 тестов (10 из задачи 8 + 7 из этой).
+Ожидаемо: `BUILD SUCCESSFUL`, 28 тестов (20 из `ProtocolCodecTest` + 8 из `ProtocolCompatibilityTest`).
 
 - [ ] **Шаг 5: коммит**
 
