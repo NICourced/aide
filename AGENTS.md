@@ -93,6 +93,21 @@ git status --porcelain
 
 **Тест, который не запустился, — красная сборка.** В CI есть шаг, который сравнивает число `@Test` в исходниках модуля с числом `<testcase>` в его отчёте: JUnit молча пропускает `@Test` с не-`Unit` типом возврата, и без такой сверки проверка исчезает, а отчёт остаётся зелёным. Поэтому: не пиши `@Test` в комментариях и KDoc (guard считает по тексту исходников) и, добавляя модуль или новую тестовую конфигурацию, дописывай её и в шаг «Юнит-тесты», и в этот guard.
 
+## Сборка артефактов
+
+Пакеты собираются одной командой на своей платформе: jpackage не умеет кросс-сборку, поэтому `.exe` и `.msi` получаются только на Windows, а `.AppImage`, `.deb` и APK — на Linux.
+
+```bash
+./gradlew :androidApp:assembleDebug          # androidApp/build/outputs/apk/debug/*.apk
+./gradlew :desktopApp:createDistributable    # каталог с запускаемым приложением (JDK не нужен)
+./gradlew :desktopApp:packageDeb             # desktopApp/build/compose/binaries/main/deb/*.deb
+tools/appimage.sh                            # desktopApp/build/compose/binaries/main/appimage/*.AppImage
+```
+
+`tools/appimage.sh` — не украшение: задача `packageAppImage` у Compose доводит дело только до каталога app-image (jpackage формата AppImage не знает), а файл делает `appimagetool`, который скрипт скачивает сам. Метаданные пакета (`packageName`, `packageVersion`) заданы в `desktopApp/build.gradle.kts` и только латиницей: на Windows jpackage падает на не-ASCII в описании, причём ошибка уходит в файл, которого в логе CI нет — поэтому шаги упаковки печатают `*-err.txt`.
+
+В CI те же пакеты собираются на каждый push и лежат артефактами прогона: `android-apk`, `linux-packages` (`.deb` + `.AppImage`), `windows-exe`, `windows-msi`.
+
 ## Git
 
 - Рабочая ветка — ветка текущего этапа. `master` **защищён**: обязательные проверки `build` и `desktop-windows`, прямая отправка проходит только когда проверки на этом коммите уже зелёные.

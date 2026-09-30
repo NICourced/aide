@@ -104,6 +104,29 @@ jobs:
       - name: Сборка десктопа
         run: ./gradlew :desktopApp:createDistributable
 
+      - name: Пакеты Linux: .deb и .AppImage
+        # Пакеты собираются здесь же, в job сборки: это те же артефакты, что и у релиза,
+        # и держать для них отдельный раннер незачем.
+        run: |
+          ./gradlew :desktopApp:packageDeb
+          tools/appimage.sh
+
+      - name: Выгрузка APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          if-no-files-found: error
+          path: androidApp/build/outputs/apk/debug/*.apk
+
+      - name: Выгрузка пакетов Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          if-no-files-found: error
+          path: |
+            desktopApp/build/compose/binaries/main/deb/*.deb
+            desktopApp/build/compose/binaries/main/appimage/AIStudio-*.AppImage
+
       - name: Бюджет времени прогона
         run: echo "Прогон без кэша не должен превышать 15 минут — ограничение задано job.timeout-minutes"
 
@@ -153,11 +176,16 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      - name: Выгрузка установщиков Windows
+      - name: Выгрузка установщика .exe
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-windows-installers
+          name: windows-exe
           if-no-files-found: error
-          path: |
-            desktopApp/build/compose/binaries/main/msi/*.msi
-            desktopApp/build/compose/binaries/main/exe/*.exe
+          path: desktopApp/build/compose/binaries/main/exe/*.exe
+
+      - name: Выгрузка установщика .msi
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          if-no-files-found: error
+          path: desktopApp/build/compose/binaries/main/msi/*.msi
