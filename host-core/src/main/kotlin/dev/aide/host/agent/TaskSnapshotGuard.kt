@@ -13,6 +13,7 @@ import dev.aide.host.store.HostStore
 import dev.aide.host.workspace.OpenWorkspaces
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
+import org.slf4j.LoggerFactory
 
 /**
  * Порт снапшотов поверх открытого воркспейса (T-1.19).
@@ -32,6 +33,8 @@ class TaskSnapshotGuard(
     private val clock: () -> Instant = Clock.System::now,
 ) : Snapshots {
 
+    private val logger = LoggerFactory.getLogger(TaskSnapshotGuard::class.java)
+
     override suspend fun create(trigger: SnapshotTrigger): TaskSnapshot {
         val opened = workspaces.current() ?: return TaskSnapshot.Refused(RunInterruptReason.NO_WORKSPACE)
         val ref = snapshotRefName(clock().toEpochMilliseconds(), trigger.label)
@@ -39,8 +42,11 @@ class TaskSnapshotGuard(
             // Коммитов нет: ссылаться не на что; прогон из-за этого не падает (решение 5).
             SnapshotOutcome.NoHead -> TaskSnapshot.NoHead
 
+            // Сбой записи — отказ, а не исключение: задача получает код причины (T-1.19).
+            SnapshotOutcome.Refused -> TaskSnapshot.Refused(RunInterruptReason.SNAPSHOT_FAILED)
+
             SnapshotOutcome.Created -> {
-                evict(opened.git)
+                evict(opened.git, keep = ref)
                 TaskSnapshot.Created(SnapshotRef(ref))
             }
         }
@@ -52,10 +58,19 @@ class TaskSnapshotGuard(
      * Используемые — снапшоты прогонов незакрытых задач: к ним пользователь ещё вернётся
      * (откат T-1.6, чекпоинты T-1.17), и вытеснение, снёсшее такой снапшот, сделало бы
      * обещание «стоп обратим» пустым. Задача закрыта — её снапшоты становятся обычными.
+     *
+     * @param keep только что созданная ссылка: в хранилище она попадёт лишь после возврата
+     *   из порта, а вытеснение идёт прямо сейчас, поэтому без этого запаса ссылка могла бы
+     *   снести саму себя — и прогон записал бы снапшот, которого в репозитории нет.
+     *
+     * Сбой уборки прогон не роняет: снапшот уже поставлен, обещание «перед изменением есть
+     * снапшот» выполнено, а тихое несоблюдение лимита хуже шумной записи о нём.
      */
-    private fun evict(git: GitRepository) {
-        val extra = SnapshotPolicy.evictable(git.snapshotRefs(), inUse())
-        if (extra.isNotEmpty()) git.deleteSnapshots(extra)
+    private fun evict(git: GitRepository, keep: String) {
+        runCatching {
+            val extra = SnapshotPolicy.evictable(git.snapshotRefs(), inUse() + keep)
+            if (extra.isNotEmpty()) git.deleteSnapshots(extra)
+        }.onFailure { error -> logger.warn("Снапшоты не вытеснены: ${error.message}", error) }
     }
 
     /** Ссылки, на которые ссылается незакрытая задача: снапшоты её прогонов. */

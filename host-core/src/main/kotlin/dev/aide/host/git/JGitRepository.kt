@@ -9,6 +9,7 @@ import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.RenameDetector
 import org.eclipse.jgit.lib.Constants
+import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.RefUpdate
 import org.eclipse.jgit.lib.Repository
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
@@ -223,18 +224,45 @@ private class TaskBranchOperation(private val repository: Repository, private va
  */
 private class SnapshotOperation(private val repository: Repository) {
 
+    private val logger = LoggerFactory.getLogger(SnapshotOperation::class.java)
+
     /** Ставит ссылку [ref] на текущий HEAD, не создавая коммит и не трогая рабочее дерево. */
     fun create(ref: String): SnapshotOutcome {
         val head = runCatching { repository.resolve(Constants.HEAD) }.getOrNull()
-            ?: return SnapshotOutcome.NoHead
-        // Перезапись ссылки с тем же именем допустима: имя и есть метка времени, поэтому
-        // два снапшота в одну миллисекунду с одним поводом — это один и тот же снапшот.
+        return if (head == null) SnapshotOutcome.NoHead else writeRef(ref, head)
+    }
+
+    /**
+     * Записывает ссылку на [head]; сбой — отказ, а не исключение.
+     *
+     * Так же, как у ветки задачи: «ссылка не пишется» — состояние репозитория, и движок
+     * обязан получить код причины и пометить задачу, а не оставить прогон брошенным
+     * исключением (иначе он застрянет в `PLANNED`, а задача — в `RUNNING` без объяснения).
+     *
+     * Успешные исходы — только те, при которых ссылка указывает на нужный коммит:
+     * [RefUpdate.Result.NEW] (ссылки не было), [RefUpdate.Result.FORCED] (была и перезаписана),
+     * [RefUpdate.Result.NO_CHANGE] (уже указывала на него). Остальные, включая
+     * [RefUpdate.Result.LOCK_FAILURE] и [RefUpdate.Result.IO_FAILURE], — отказ.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun writeRef(ref: String, head: ObjectId): SnapshotOutcome = try {
         val update = repository.updateRef(ref).apply {
             setNewObjectId(head)
             isForceUpdate = true
         }
-        write(update, ref)
-        return SnapshotOutcome.Created
+        val result = update.update()
+        if (result in WRITTEN) {
+            // FORCED значит, что ссылка уже была: два снапшота в одну миллисекунду с одним
+            // поводом неразличимы, и первый теряется молча — поэтому о нём есть запись.
+            if (result == RefUpdate.Result.FORCED) {
+                logger.warn("Снапшот $ref перезаписан: два снапшота в одну миллисекунду с одним поводом")
+            }
+            SnapshotOutcome.Created
+        } else {
+            refused(ref, "исход ${result.name}")
+        }
+    } catch (error: Exception) {
+        refused(ref, error.message.orEmpty())
     }
 
     /** Ссылки снапшотов, от старых к новым: метка времени в имени сортируется как число. */
@@ -246,24 +274,33 @@ private class SnapshotOperation(private val repository: Repository) {
         throw GitAccessException(ProtocolError.Internal("не удалось прочитать снапшоты", error.message))
     }
 
-    /** Удаляет ссылки; коммиты остаются в истории — снапшот это ссылка, а не ветка. */
+    /**
+     * Удаляет ссылки; коммиты остаются в истории — снапшот это ссылка, а не ветка.
+     *
+     * Исход удаления проверяется [requireDeleted]: `RefUpdate.delete()` сообщает о неудаче
+     * значением, и без проверки неудачное удаление выглядело бы успехом — ссылки копились бы,
+     * а лимит соблюдался бы только на бумаге.
+     */
     fun delete(refs: List<String>) {
-        refs.forEach { ref ->
-            val update = repository.updateRef(ref).apply { isForceUpdate = true }
-            runCatching { update.delete() }.getOrElse { error ->
-                throw GitAccessException(ProtocolError.Internal("не удалось удалить снапшот $ref", error.message))
-            }
-        }
+        refs.forEach(::deleteOne)
     }
 
-    /** Выполняет запись ссылки, превращая сбой в типизированную ошибку доступа. */
-    private fun write(update: RefUpdate, ref: String) {
-        val result = runCatching { update.update() }.getOrElse { error ->
-            throw GitAccessException(ProtocolError.Internal("не удалось поставить снапшот $ref", error.message))
+    /** Удаляет одну ссылку; неудачный исход — отказ с диагностикой в журнале, а не тишина. */
+    @Suppress("TooGenericExceptionCaught")
+    private fun deleteOne(ref: String) {
+        val result = runCatching {
+            repository.updateRef(ref).apply { isForceUpdate = true }.delete()
+        }.getOrElse { error ->
+            throw GitAccessException(ProtocolError.Internal("не удалось удалить снапшот $ref", error.message))
         }
-        if (result !in WRITTEN) {
-            throw GitAccessException(ProtocolError.Internal("не удалось поставить снапшот $ref", result.name))
-        }
+        if (!result.isDeleted()) logger.warn("Снапшот $ref не удалён: исход ${result.name}")
+        requireDeleted(ref, result)
+    }
+
+    /** Отказ постановки снапшота: причина — в журнал, наружу — значение-отказ. */
+    private fun refused(ref: String, detail: String): SnapshotOutcome {
+        logger.warn("Снапшот $ref не поставлен: $detail")
+        return SnapshotOutcome.Refused
     }
 
     /** Метка времени из имени ссылки: число до первого дефиса, как его собирает [snapshotRefName]. */
@@ -273,6 +310,26 @@ private class SnapshotOperation(private val repository: Repository) {
     private companion object {
         /** Исходы записи ссылки, означающие, что она записана; остальные — отказ. */
         val WRITTEN = setOf(RefUpdate.Result.NEW, RefUpdate.Result.FORCED, RefUpdate.Result.NO_CHANGE)
+    }
+}
+
+/**
+ * Означает ли исход `RefUpdate.delete()`, что ссылки больше нет.
+ *
+ * [RefUpdate.Result.FORCED] — ссылка была и удалена, [RefUpdate.Result.NEW] — её не было,
+ * то есть она уже отсутствует. Остальные исходы ([RefUpdate.Result.LOCK_FAILURE],
+ * [RefUpdate.Result.REJECTED], [RefUpdate.Result.IO_FAILURE]) означают, что ссылка могла
+ * остаться, и выбрасывать их из вида нельзя: на этом держится лимит снапшотов.
+ */
+internal fun RefUpdate.Result.isDeleted(): Boolean =
+    this == RefUpdate.Result.NEW || this == RefUpdate.Result.FORCED
+
+/** Проверяет исход удаления и превращает неудачу в типизированный отказ доступа. */
+internal fun requireDeleted(ref: String, result: RefUpdate.Result) {
+    if (!result.isDeleted()) {
+        throw GitAccessException(
+            ProtocolError.Internal("не удалось удалить снапшот $ref", "исход ${result.name}"),
+        )
     }
 }
 

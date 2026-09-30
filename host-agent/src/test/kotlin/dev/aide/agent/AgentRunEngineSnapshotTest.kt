@@ -78,7 +78,9 @@ class AgentRunEngineSnapshotTest {
     @Test
     fun `отказ снапшота помечает задачу кодом причины, а не молчит`() {
         runBlocking {
-            snapshots.answer(TaskSnapshot.Refused(RunInterruptReason.NO_WORKSPACE))
+            // Так выглядит сбой записи ссылки на стороне движка: порт вернул отказ,
+            // задача обязана получить код, а прогон — завершиться, а не остаться `PLANNED`.
+            snapshots.answer(TaskSnapshot.Refused(RunInterruptReason.SNAPSHOT_FAILED))
             val engine = engine()
 
             engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -86,11 +88,11 @@ class AgentRunEngineSnapshotTest {
 
             val task = tasks.all().single()
             assertEquals(TaskStatus.FAILED, task.status)
-            assertEquals(RunInterruptReason.NO_WORKSPACE, task.failureReason)
+            assertEquals(RunInterruptReason.SNAPSHOT_FAILED, task.failureReason)
             assertEquals(
                 RunState.FAILED,
                 runs.all().single().state,
-                "прогон завершён отказом, а не остался running",
+                "прогон завершён отказом, а не остался planned или running",
             )
         }
     }

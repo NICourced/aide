@@ -10,6 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import org.eclipse.jgit.lib.RefUpdate
 
 private const val LOG_LIMIT = 10
 private const val MILLIS_PER_SECOND = 1_000L
@@ -376,6 +377,53 @@ class JGitRepositoryTest {
             // должен читать и планировать, а не падать из-за отсутствия снапшота.
             assertEquals(SnapshotOutcome.NoHead, repository.createSnapshot(snapshotRefName(SNAPSHOT_MILLIS, LABEL)))
             assertTrue(repository.snapshotRefs().isEmpty())
+        }
+    }
+
+    @Test
+    fun `сбой записи ссылки даёт отказ, а не исключение`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        // Права снимаются у каталога `refs`: ссылка снапшота пишется в `refs/ai/snap/`,
+        // а создание новых каталогов под `refs` без записи в него невозможно. Снятия прав
+        // с самого `.git` мало — запись глубже по дереву его не требует.
+        val refsDir = root.resolve(".git/refs").toFile()
+        val ref = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+
+        JGitRepository.open(root).use { repository ->
+            // Ссылку записать некуда: это состояние репозитория, а не сбой чтения — движку
+            // нужен отказ-значение, а не исключение, иначе прогон останется `PLANNED`,
+            // а задача — `RUNNING` без причины.
+            check(refsDir.setWritable(false, false)) { "не удалось снять права на ${refsDir.path}" }
+            try {
+                assertEquals(SnapshotOutcome.Refused, repository.createSnapshot(ref))
+            } finally {
+                refsDir.setWritable(true, true)
+            }
+        }
+
+        assertEquals(emptyList(), GitCliFixture.snapshotRefs(root), "ссылка не появилась")
+    }
+
+    @Test
+    fun `неудачный исход удаления ссылки не считается успехом`() {
+        // JGit сообщает о неудаче удаления значением, а не исключением: без этой проверки
+        // ссылки копились бы, а лимит 50 соблюдался бы только на бумаге (T-1.19).
+        val ref = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+
+        // Ссылки не было — она уже отсутствует; ссылка была — удалена.
+        requireDeleted(ref, RefUpdate.Result.NEW)
+        requireDeleted(ref, RefUpdate.Result.FORCED)
+
+        listOf(
+            RefUpdate.Result.LOCK_FAILURE,
+            RefUpdate.Result.REJECTED,
+            RefUpdate.Result.IO_FAILURE,
+            RefUpdate.Result.NOT_ATTEMPTED,
+            RefUpdate.Result.REJECTED_OTHER_REASON,
+        ).forEach { result ->
+            assertFailsWith<GitAccessException>("исход $result означает, что ссылка могла остаться") {
+                requireDeleted(ref, result)
+            }
         }
     }
 

@@ -8,10 +8,13 @@ import dev.aide.domain.SnapshotRef
 import dev.aide.domain.SnapshotTrigger
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import dev.aide.host.git.ChangedFile
+import dev.aide.host.git.CommitInfo
 import dev.aide.host.git.GitCliFixture
 import dev.aide.host.git.GitRepository
 import dev.aide.host.git.JGitRepository
 import dev.aide.host.git.SnapshotOutcome
+import dev.aide.host.git.TaskBranchOutcome
 import dev.aide.host.git.snapshotRefName
 import dev.aide.host.store.HostStore
 import dev.aide.host.store.StoreFixtures
@@ -91,7 +94,7 @@ class TaskSnapshotGuardTest {
     fun `снапшот незакрытой задачи не вытесняется, даже когда он самый старый`() {
         runBlocking {
             val seeded = seed(51)
-            protect(seeded.first(), TaskStatus.REVIEW)
+            protectAll(listOf(seeded.first()), TaskStatus.REVIEW)
 
             val created = assertIs<TaskSnapshot.Created>(guard(NEW_MILLIS).create(SnapshotTrigger.BEFORE_AGENT_STEP))
 
@@ -106,7 +109,7 @@ class TaskSnapshotGuardTest {
     fun `снапшот закрытой задачи вытесняется наравне с прочими`() {
         runBlocking {
             val seeded = seed(51)
-            protect(seeded.first(), TaskStatus.ACCEPTED)
+            protectAll(listOf(seeded.first()), TaskStatus.ACCEPTED)
 
             guard(NEW_MILLIS).create(SnapshotTrigger.BEFORE_AGENT_STEP)
 
@@ -114,6 +117,43 @@ class TaskSnapshotGuardTest {
                 seeded.first() in GitCliFixture.snapshotRefs(fixture.root),
                 "задача закрыта — её снапшот защищать больше не от чего",
             )
+        }
+    }
+
+    @Test
+    fun `новый снапшот не вытесняет сам себя, когда все прочие в использовании`() {
+        runBlocking {
+            // Все пятьдесят ссылок защищены: единственная неиспользуемая — та, что ставится
+            // сейчас, и вытеснение без запаса снесло бы именно её (тогда прогон записал бы
+            // снапшот, которого в репозитории нет).
+            val seeded = seed(50)
+            protectAll(seeded, TaskStatus.REVIEW)
+
+            val created = assertIs<TaskSnapshot.Created>(guard(NEW_MILLIS).create(SnapshotTrigger.BEFORE_AGENT_STEP))
+
+            val alive = GitCliFixture.snapshotRefs(fixture.root)
+            assertTrue(created.ref.value in alive, "только что созданный снапшот не может вытеснить сам себя")
+            assertEquals(51, alive.size, "защищённые не вытесняются, удалять нечего — и новая ссылка на месте")
+            assertTrue(seeded.all { it in alive }, "ни одна защищённая ссылка не пострадала")
+        }
+    }
+
+    @Test
+    fun `сбой записи ссылки переводится в код отказа, а не в исключение`() {
+        runBlocking {
+            // Репозиторий, у которого ссылка не записывается: у ветки задачи такой же сбой
+            // обработан значением, и снапшот обязан вести себя так же — иначе исключение
+            // уйдёт в предохранитель воркера и прогон останется `PLANNED` без причины.
+            val workspaces = OpenWorkspaces().also { it.add(openedWith(RefusingGit())) }
+            val guard = TaskSnapshotGuard(
+                workspaces = workspaces,
+                store = store,
+                clock = { Instant.fromEpochMilliseconds(NEW_MILLIS) },
+            )
+
+            val refused = assertIs<TaskSnapshot.Refused>(guard.create(SnapshotTrigger.BEFORE_AGENT_STEP))
+
+            assertEquals(RunInterruptReason.SNAPSHOT_FAILED, refused.reason)
         }
     }
 
@@ -142,8 +182,8 @@ class TaskSnapshotGuardTest {
         ref
     }
 
-    /** Помечает [ref] снапшотом задачи в статусе [status]: так проверяется защита «в использовании». */
-    private fun protect(ref: String, status: TaskStatus) {
+    /** Помечает все [refs] снапшотами одной задачи в статусе [status]: так проверяется защита «в использовании». */
+    private fun protectAll(refs: List<String>, status: TaskStatus) {
         val task = StoreFixtures.task.copy(
             id = TaskId("t-protected"),
             status = status,
@@ -154,7 +194,7 @@ class TaskSnapshotGuardTest {
             StoreFixtures.run.copy(
                 id = RunId("r-protected"),
                 taskId = task.id,
-                snapshots = listOf(SnapshotRef(ref)),
+                snapshots = refs.map(::SnapshotRef),
             ),
         )
     }
@@ -169,6 +209,28 @@ class TaskSnapshotGuardTest {
             boundary = WorkspaceBoundaryAdapter(fileSystem),
             git = git,
         )
+    }
+
+    /** Репозиторий, у которого ссылка снапшота не записывается: так проверяется перевод отказа в код. */
+    private class RefusingGit : GitRepository {
+
+        override fun currentBranch(): String = "master"
+
+        override fun headCommit(): String = "0000000"
+
+        override fun changedFiles(): List<ChangedFile> = emptyList()
+
+        override fun commitLog(limit: Int): List<CommitInfo> = emptyList()
+
+        override fun ensureTaskBranch(branch: String): TaskBranchOutcome = TaskBranchOutcome.Existing
+
+        override fun createSnapshot(ref: String): SnapshotOutcome = SnapshotOutcome.Refused
+
+        override fun snapshotRefs(): List<String> = emptyList()
+
+        override fun deleteSnapshots(refs: List<String>) = Unit
+
+        override fun close() = Unit
     }
 
     private companion object {
