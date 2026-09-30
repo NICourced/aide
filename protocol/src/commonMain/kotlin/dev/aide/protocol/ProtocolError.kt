@@ -1,6 +1,7 @@
 package dev.aide.protocol
 
 import dev.aide.domain.AgentConfigRejection
+import dev.aide.domain.ModelSecretRejection
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -64,6 +65,21 @@ sealed interface ProtocolError {
     data class InvalidAgentConfig(
         /** Что именно не так с конфигурацией. */
         val rejection: AgentConfigRejection,
+    ) : ProtocolError
+
+    /**
+     * Ключ провайдера не принят по существу (T-1.58).
+     *
+     * Отдельный вариант, а не [Internal]: пустое значение и неизвестный провайдер —
+     * это не сбой хоста, и пользователь обязан увидеть причину словами (NFR-13).
+     * Отказ хранилища сюда не попадает: он едет состоянием `ModelSecretStatus.StoreUnavailable`,
+     * потому что ключ не отвергнут — его просто негде сохранить на этой платформе.
+     */
+    @Serializable
+    @SerialName("invalidModelSecret")
+    data class InvalidModelSecret(
+        /** Что именно не так с записью ключа. */
+        val rejection: ModelSecretRejection,
     ) : ProtocolError
 
     /** Внутренняя ошибка хоста. */

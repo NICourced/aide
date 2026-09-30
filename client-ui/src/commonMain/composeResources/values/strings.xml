@@ -74,7 +74,7 @@
 
     <string name="settings_model_title">Модель</string>
     <string name="settings_model_loading">Загрузка настроек моделей…</string>
-    <string name="settings_model_key_note">Ключ в файле настроек не хранится: сохраняется только имя переменной окружения, а сам ключ хост читает из своего окружения.</string>
+    <string name="settings_model_key_note">Ключ в файле настроек не хранится. Он сохраняется в защищённом хранилище платформы хоста (Linux — libsecret, Windows — DPAPI), а если ключа там нет — берётся из переменной окружения хоста по имени.</string>
     <string name="settings_model_default">Модель по умолчанию: %1$s</string>
     <string name="settings_model_default_none">не выбрана</string>
     <string name="settings_model_providers">Провайдеры</string>
@@ -104,6 +104,19 @@
     <string name="settings_model_field_price_out">Ставка вывода, микро за 1M токенов</string>
     <string name="settings_model_check_ok">Доступ подтверждён</string>
     <string name="settings_model_check_missing_key">Нет переменной окружения %1$s — задайте её и перезапустите хост</string>
+    <string name="settings_model_check_missing_key_or_store">Ключ не задан: задайте переменную %1$s или сохраните ключ провайдера «%2$s» в разделе «Модель»</string>
+    <string name="settings_model_secret_in_store">Ключ задан в защищённом хранилище</string>
+    <string name="settings_model_secret_from_env">Ключ берётся из переменной окружения %1$s</string>
+    <string name="settings_model_secret_absent">Ключ не задан</string>
+    <string name="settings_model_secret_unavailable">Хранилище ключей недоступно: %1$s</string>
+    <string name="settings_model_secret_reason_not_supported">платформа хоста не поддержана — задать ключ можно только переменной окружения</string>
+    <string name="settings_model_secret_reason_keyring">системное хранилище не отвечает или заперто</string>
+    <string name="settings_model_secret_reason_tool_missing">на хосте не найдена программа secret-tool (libsecret)</string>
+    <string name="settings_model_secret_label">Ключ</string>
+    <string name="settings_model_secret_save">Сохранить ключ</string>
+    <string name="settings_model_secret_delete">Удалить ключ</string>
+    <string name="settings_model_secret_rejection_empty">Пустой ключ не сохраняется: удалите ключ отдельной кнопкой</string>
+    <string name="settings_model_secret_rejection_unknown_provider">Провайдер «%1$s» не найден в настройках — сохраните конфигурацию и повторите</string>
     <string name="settings_model_check_unauthorized">Провайдер отверг ключ</string>
     <string name="settings_model_check_rate_limited">Провайдер ограничил частоту запросов</string>
     <string name="settings_model_check_unsupported">Провайдер не поддерживает проверку списком моделей</string>

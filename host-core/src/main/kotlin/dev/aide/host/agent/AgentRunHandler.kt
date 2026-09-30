@@ -3,13 +3,13 @@ package dev.aide.host.agent
 import dev.aide.agent.AgentRunEngine
 import dev.aide.agent.UnknownRunException
 import dev.aide.host.server.ClientMessageHandler
-import dev.aide.host.server.requestIdOrNull
 import dev.aide.host.store.RunStore
 import dev.aide.host.store.TaskStore
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.RequestId
+import dev.aide.protocol.requestIdOrNull
 
 /**
  * Обработчик сообщений агента (T-1.1).
@@ -41,7 +41,7 @@ class AgentRunHandler(
         // «Чужое» сообщение сюда попадает только из-за ошибки маршрутизации; отвечаем
         // его же идентификатором, иначе клиент ждал бы ответа до таймаута.
         else -> HostMessage.Failure(
-            requestId = message.requestIdOrNull() ?: RequestId("agent"),
+            requestId = message.requestIdOrNull ?: RequestId("agent"),
             error = ProtocolError.Internal("AgentRunHandler получил сообщение другого вида"),
         )
     }

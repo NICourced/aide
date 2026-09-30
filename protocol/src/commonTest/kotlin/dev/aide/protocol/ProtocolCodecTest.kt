@@ -6,6 +6,7 @@ import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelProfile
+import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.ProviderProfile
 import dev.aide.domain.ProviderType
@@ -21,6 +22,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -221,6 +223,9 @@ class ProtocolCodecTest {
             ClientMessage.SaveAgentConfig(requestId, agentConfig()),
             ClientMessage.SaveAgentConfig(requestId, AgentConfig()),
             ClientMessage.CheckModel(requestId, "deepseek/deepseek-chat"),
+            ClientMessage.SetModelSecret(requestId, "deepseek", "ключ"),
+            ClientMessage.DeleteModelSecret(requestId, "deepseek"),
+            ClientMessage.ModelSecrets(requestId),
         )
         messages.forEach { message ->
             assertEquals(message, clientMessage(ProtocolCodec.encode(message)))

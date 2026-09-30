@@ -6,6 +6,7 @@ import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolCodec
 import dev.aide.protocol.ProtocolVersion
 import dev.aide.protocol.RequestId
+import dev.aide.protocol.requestIdOrNull
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -95,7 +96,7 @@ class KtorHostConnection(
     }
 
     override suspend fun request(message: ClientMessage, timeoutMillis: Long): HostMessage? {
-        val requestId = message.requestIdOrNull()
+        val requestId = message.requestIdOrNull
             ?: return null // Приветствие отправляет цикл соединения; отдельного ответа здесь нет.
 
         // Если соединение уже установлено, отправляем сразу; иначе кладём в очередь —
@@ -203,7 +204,7 @@ class KtorHostConnection(
                     else -> {
                         // Ответ забираем из очереди под замком, а будим ожидающего уже без него:
                         // разбуженная корутина сама обращается к очереди.
-                        val requestId = message.requestIdOrNull()
+                        val requestId = message.requestIdOrNull
                         val waiter = pendingLock.withLock { requestId?.let { pending.remove(it) } }
                         if (waiter != null) waiter.complete(message) else _events.tryEmit(message)
                     }
@@ -231,35 +232,4 @@ class KtorHostConnection(
         /** Буфер событий хоста до подписки; события сверх него теряются, не блокируя чтение. */
         private const val EVENT_BUFFER_CAPACITY: Int = 64
     }
-}
-
-/** Идентификатор запроса, если сообщение является ответом; null для событий. */
-internal fun HostMessage.requestIdOrNull(): RequestId? = when (this) {
-    is HostMessage.WorkspaceOpened -> requestId
-    is HostMessage.Tree -> requestId
-    is HostMessage.Content -> requestId
-    is HostMessage.State -> requestId
-    is HostMessage.Failure -> requestId
-    is HostMessage.TaskPosted -> requestId
-    is HostMessage.AgentSnapshot -> requestId
-    is HostMessage.RunControlled -> requestId
-    is HostMessage.AgentConfigSnapshot -> requestId
-    is HostMessage.AgentConfigSaved -> requestId
-    is HostMessage.ModelCheckResult -> requestId
-    else -> null
-}
-
-/** Идентификатор запроса, если сообщение клиента является запросом; null для приветствия. */
-internal fun ClientMessage.requestIdOrNull(): RequestId? = when (this) {
-    is ClientMessage.OpenWorkspace -> requestId
-    is ClientMessage.FileTree -> requestId
-    is ClientMessage.FileContent -> requestId
-    is ClientMessage.HostState -> requestId
-    is ClientMessage.PostTask -> requestId
-    is ClientMessage.AgentStatus -> requestId
-    is ClientMessage.RunControl -> requestId
-    is ClientMessage.AgentConfigRequest -> requestId
-    is ClientMessage.SaveAgentConfig -> requestId
-    is ClientMessage.CheckModel -> requestId
-    is ClientMessage.Hello -> null
 }

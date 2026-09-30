@@ -130,7 +130,9 @@ class AnthropicProviderEndToEndTest {
 
                 val check = client.models.check(alias()).getOrThrow()
 
-                assertEquals(ModelCheckFailure.MissingKey(ABSENT_KEY_VARIABLE), check.failure)
+                // Отказ называет оба имени — переменную окружения и провайдера (T-1.58):
+                // ключ можно задать и переменной, и через приложение в защищённое хранилище.
+                assertEquals(ModelCheckFailure.MissingKey(ABSENT_KEY_VARIABLE, "anthropic"), check.failure)
                 assertEquals(0, stub.modelRequests(), "без ключа ходить к провайдеру не за чем")
             } finally {
                 host.close()

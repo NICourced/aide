@@ -26,6 +26,7 @@ import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.state.settings.ThemePreference
 import dev.aide.client.ui.strings.Strings
 import dev.aide.domain.AgentConfig
+import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 
 /**
@@ -128,6 +129,8 @@ data class ModelSettingsState(
     val config: AgentConfig?,
     /** Заготовки популярных сервисов. */
     val catalog: List<ProviderCatalogEntry>,
+    /** Состояние ключей провайдеров по идентификатору (T-1.58); значений ключей здесь нет. */
+    val secrets: Map<String, ModelSecretStatus> = emptyMap(),
     /** Последний результат проверки модели. */
     val check: ModelCheckOutcome?,
     /** Последний отказ настроек; null, если всё прошло (T-1.56). */
@@ -136,6 +139,10 @@ data class ModelSettingsState(
     val onSave: (AgentConfig) -> Unit,
     /** Проверить доступ к модели. */
     val onCheck: (String) -> Unit,
+    /** Сохранить ключ провайдера в защищённом хранилище хоста (T-1.58). */
+    val onSetSecret: (String, String) -> Unit = { _, _ -> },
+    /** Удалить ключ провайдера из защищённого хранилища хоста (T-1.58). */
+    val onDeleteSecret: (String) -> Unit = {},
 )
 
 @Composable

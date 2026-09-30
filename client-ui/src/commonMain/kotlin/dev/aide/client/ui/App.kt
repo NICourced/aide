@@ -192,19 +192,31 @@ private fun SettingsDestination(
     scope: CoroutineScope,
     onOpenRepository: (String) -> Unit,
 ) {
-    LaunchedEffect(Unit) { client.models.load() }
+    // Ключи запрашиваются вместе с конфигурацией: состояние ключа — это состояние
+    // провайдера, и показывать его без таблицы провайдеров нечего (T-1.58).
+    LaunchedEffect(Unit) {
+        client.models.load()
+        client.models.loadSecrets()
+    }
 
     SettingsScreen(
         settings = settings,
         modelConfig = ModelSettingsState(
             config = session.agentConfig,
             catalog = session.providerCatalog,
+            secrets = session.modelSecrets,
             check = session.modelCheck,
             // Отказ ведёт клиент: он знает и про связь, и про непринятую конфигурацию,
             // а экран только показывает его — в том числе после рекомпозиции.
             error = session.modelError,
-            onSave = { config -> scope.launch { client.models.save(config) } },
+            // После сохранения конфигурации состояние ключей перезапрашивается: у нового
+            // провайдера своей строки в карте ещё нет, а показывать «ключа нет» наугад нельзя.
+            onSave = { config ->
+                scope.launch { client.models.save(config).onSuccess { client.models.loadSecrets() } }
+            },
             onCheck = { alias -> scope.launch { client.models.check(alias) } },
+            onSetSecret = { providerId, value -> scope.launch { client.models.setSecret(providerId, value) } },
+            onDeleteSecret = { providerId -> scope.launch { client.models.deleteSecret(providerId) } },
         ),
         onOpenRepository = onOpenRepository,
     )

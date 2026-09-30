@@ -60,6 +60,12 @@ dependencies {
     implementation(libs.koin.core)
     // Чтение состояния git (ветка, изменения, история) — задача 12.
     implementation(libs.jgit)
+    // DPAPI для защищённого хранилища ключей на Windows (T-1.58). Почему JNA, а не
+    // самодельная криптография и не обёртка над PowerShell — в KDoc DpapiSecretCipher:
+    // коротко, это вызов системного шифрования в процессе хоста, без передачи секрета
+    // через командную строку или временный файл. Зависимость платформенная (JVM-only)
+    // и нужна одному классу — выбор хранилища делает SecretStoreFactory по платформе.
+    implementation(libs.jna.platform)
 
     testImplementation(libs.kotlin.test)
     // MockEngine: сборка HTTP-клиента провайдеров и адаптер проверяются на записанных

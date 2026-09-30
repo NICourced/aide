@@ -8,6 +8,7 @@ import dev.aide.protocol.ProtocolCodec
 import dev.aide.protocol.ProtocolCompatibility
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.ProtocolVersion
+import dev.aide.protocol.requestIdOrNull
 import dev.aide.protocol.RequestDedupCache
 import dev.aide.protocol.RequestId
 import dev.aide.protocol.SessionId
@@ -78,7 +79,7 @@ class ClientSession(
     }
 
     private suspend fun onMessage(message: ClientMessage): Boolean {
-        val requestId = message.requestIdOrNull()
+        val requestId = message.requestIdOrNull
         return when {
             message is ClientMessage.Hello -> greet(message)
             !greeted -> {
@@ -150,19 +151,4 @@ class ClientSession(
             }
         }
     }
-}
-
-/** Идентификатор запроса сообщения клиента; null для приветствия. */
-internal fun ClientMessage.requestIdOrNull(): RequestId? = when (this) {
-    is ClientMessage.OpenWorkspace -> requestId
-    is ClientMessage.FileTree -> requestId
-    is ClientMessage.FileContent -> requestId
-    is ClientMessage.HostState -> requestId
-    is ClientMessage.PostTask -> requestId
-    is ClientMessage.AgentStatus -> requestId
-    is ClientMessage.RunControl -> requestId
-    is ClientMessage.AgentConfigRequest -> requestId
-    is ClientMessage.SaveAgentConfig -> requestId
-    is ClientMessage.CheckModel -> requestId
-    is ClientMessage.Hello -> null
 }

@@ -5,7 +5,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.onNodeWithTag
@@ -23,9 +25,12 @@ import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentConfigRejection
 import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelProfile
+import dev.aide.domain.ModelSecretRejection
+import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.ProviderProfile
 import dev.aide.domain.ProviderType
+import dev.aide.domain.SecretStoreUnavailableReason
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -44,19 +49,25 @@ class ModelSettingsScreenTest {
 
     private var saved: AgentConfig? = null
     private var checked: String? = null
+    private val secretWrites = mutableListOf<Pair<String, String>>()
+    private val secretDeletes = mutableListOf<String>()
 
     private fun state(
         config: AgentConfig?,
         catalog: List<ProviderCatalogEntry> = emptyList(),
+        secrets: Map<String, ModelSecretStatus> = emptyMap(),
         check: ModelCheckOutcome? = null,
         error: ModelConfigError? = null,
     ): ModelSettingsState = ModelSettingsState(
         config = config,
         catalog = catalog,
+        secrets = secrets,
         check = check,
         error = error,
         onSave = { saved = it },
         onCheck = { checked = it },
+        onSetSecret = { providerId, value -> secretWrites += providerId to value },
+        onDeleteSecret = { providerId -> secretDeletes += providerId },
     )
 
     /**
@@ -70,10 +81,11 @@ class ModelSettingsScreenTest {
         }
     }
 
-    /** Точный текст предупреждения: раздел обязан говорить, что ключ в файле не хранится. */
+    /** Точный текст предупреждения: раздел обязан говорить, где хранится ключ. */
     private val keyNote =
-        "Ключ в файле настроек не хранится: сохраняется только имя переменной окружения, " +
-            "а сам ключ хост читает из своего окружения."
+        "Ключ в файле настроек не хранится. Он сохраняется в защищённом хранилище платформы хоста " +
+            "(Linux — libsecret, Windows — DPAPI), а если ключа там нет — берётся из переменной " +
+            "окружения хоста по имени."
 
     @Test
     fun `загруженная конфигурация показывает провайдера, модели и выбранную по умолчанию`() = runComposeUiTest {
@@ -281,6 +293,94 @@ class ModelSettingsScreenTest {
         assertTrue(check.ok)
         onNodeWithText("Доступ подтверждён").performScrollTo().assertIsDisplayed()
     }
+
+    @Test
+    fun `ключ задан показывается состоянием хранилища`() = runComposeUiTest {
+        setContent(screen(state(config(), secrets = mapOf("stub" to ModelSecretStatus.InStore))))
+
+        onNodeWithTag("provider-secret-status-stub").performScrollTo().assertIsDisplayed()
+        onNodeWithText("Ключ задан в защищённом хранилище").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `ключ из окружения показывается с именем переменной`() = runComposeUiTest {
+        setContent(screen(state(config(), secrets = mapOf("stub" to ModelSecretStatus.FromEnv))))
+
+        onNodeWithText("Ключ берётся из переменной окружения STUB_KEY").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `недоступное хранилище показывается с причиной`() = runComposeUiTest {
+        // Причина — словами, а не кодом перечисления: пользователю нужно понять, почему
+        // ключ нельзя сохранить, а не прочитать `TOOL_MISSING` (NFR-13).
+        val secrets = mapOf(
+            "stub" to ModelSecretStatus.StoreUnavailable(SecretStoreUnavailableReason.TOOL_MISSING),
+        )
+
+        setContent(screen(state(config(), secrets = secrets)))
+
+        onNodeWithText("Хранилище ключей недоступно: на хосте не найдена программа secret-tool (libsecret)")
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
+
+    @Test
+    fun `сохранение ключа передаёт значение и очищает поле`() = runComposeUiTest {
+        // Значение хост не возвращает, поэтому поле обязано опустеть: показывать в нём
+        // прежний текст значило бы утверждать, что приложение знает ключ.
+        setContent(screen(state(config())))
+
+        onNodeWithTag("provider-secret-input-stub").performScrollTo().performTextInput("живой-ключ")
+        onNodeWithTag("provider-secret-save-stub").performScrollTo().performClick()
+
+        assertEquals(listOf("stub" to "живой-ключ"), secretWrites)
+        assertEquals("", onNodeWithTag("provider-secret-input-stub").editableText())
+    }
+
+    @Test
+    fun `кнопка сохранения молчит, пока ключ не введён`() = runComposeUiTest {
+        setContent(screen(state(config())))
+
+        onNodeWithTag("provider-secret-save-stub").performScrollTo().performClick()
+
+        assertTrue(secretWrites.isEmpty(), "пустое значение отправлять нечего: это отказ, а не удаление")
+    }
+
+    @Test
+    fun `удаление ключа вызывается кнопкой`() = runComposeUiTest {
+        setContent(screen(state(config(), secrets = mapOf("stub" to ModelSecretStatus.InStore))))
+
+        onNodeWithTag("provider-secret-delete-stub").performScrollTo().performClick()
+
+        assertEquals(listOf("stub"), secretDeletes)
+    }
+
+    @Test
+    fun `отказ записи ключа показывается словами`() = runComposeUiTest {
+        val error = ModelConfigError.SecretRejected(ModelSecretRejection.UnknownProvider("нет-такого"))
+
+        setContent(screen(state(config(), error = error)))
+
+        onNodeWithText("Провайдер «нет-такого» не найден в настройках — сохраните конфигурацию и повторите")
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
+
+    @Test
+    fun `отказ проверки без ключа называет и переменную, и провайдера`() = runComposeUiTest {
+        // Ключ можно задать двумя способами, и в отказе обязаны быть оба имени (T-1.58).
+        val check = ModelCheckOutcome("stub/model", ModelCheckFailure.MissingKey("STUB_KEY", "stub"))
+
+        setContent(screen(state(config(), check = check)))
+
+        val expected = "Ключ не задан: задайте переменную STUB_KEY или сохраните ключ " +
+            "провайдера «stub» в разделе «Модель»"
+        onNodeWithText(expected).performScrollTo().assertIsDisplayed()
+    }
+
+    /** Текст, который реально введён в поле: так проверяется очистка поля после сохранения. */
+    private fun SemanticsNodeInteraction.editableText(): String =
+        fetchSemanticsNode().config[SemanticsProperties.EditableText].text
 
     /** Конфигурация с одним провайдером и двумя моделями: одна из них — по умолчанию. */
     private fun config(): AgentConfig = AgentConfig(

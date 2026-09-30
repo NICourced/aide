@@ -48,6 +48,9 @@ object ClientMessageType {
     const val AGENT_CONFIG_REQUEST = "agentConfigRequest"
     const val SAVE_AGENT_CONFIG = "saveAgentConfig"
     const val CHECK_MODEL = "checkModel"
+    const val SET_MODEL_SECRET = "setModelSecret"
+    const val DELETE_MODEL_SECRET = "deleteModelSecret"
+    const val MODEL_SECRETS = "modelSecrets"
 }
 
 /** Имена типов сообщений хоста. */
@@ -65,6 +68,8 @@ object HostMessageType {
     const val AGENT_CONFIG_SNAPSHOT = "agentConfigSnapshot"
     const val AGENT_CONFIG_SAVED = "agentConfigSaved"
     const val MODEL_CHECK_RESULT = "modelCheckResult"
+    const val MODEL_SECRET_CHANGED = "modelSecretChanged"
+    const val MODEL_SECRETS_SNAPSHOT = "modelSecretsSnapshot"
     const val EVENT = "event"
 }
 
@@ -98,6 +103,9 @@ object ProtocolCodec {
 
         is ClientMessage.AgentConfigRequest, is ClientMessage.SaveAgentConfig, is ClientMessage.CheckModel ->
             encodeModelConfig(message)
+
+        is ClientMessage.SetModelSecret, is ClientMessage.DeleteModelSecret, is ClientMessage.ModelSecrets ->
+            encodeModelSecrets(message)
     }
 
     /** Кодирует сообщение хоста; полнота таблицы гарантируется исчерпывающим `when`. */
@@ -110,6 +118,8 @@ object ProtocolCodec {
 
         is HostMessage.AgentConfigSnapshot, is HostMessage.AgentConfigSaved, is HostMessage.ModelCheckResult ->
             encodeModelConfig(message)
+
+        is HostMessage.ModelSecretChanged, is HostMessage.ModelSecretsSnapshot -> encodeModelSecrets(message)
     }
 
     fun decodeClientMessage(bytes: ByteArray): DecodeResult<ClientMessage> {
@@ -117,6 +127,7 @@ object ProtocolCodec {
         return decodeStageZeroClient(env)
             ?: decodeAgentClient(env)
             ?: decodeModelConfigClient(env)
+            ?: decodeModelSecretsClient(env)
             ?: DecodeResult.Ignored(env.type, "неизвестный тип сообщения клиента")
     }
 
@@ -125,6 +136,7 @@ object ProtocolCodec {
         return decodeStageZeroHost(env)
             ?: decodeAgentHost(env)
             ?: decodeModelConfigHost(env)
+            ?: decodeModelSecretsHost(env)
             ?: DecodeResult.Ignored(env.type, "неизвестный тип сообщения хоста")
     }
 
@@ -301,5 +313,46 @@ private fun decodeModelConfigHost(env: WireEnvelope): DecodeResult<HostMessage>?
     HostMessageType.AGENT_CONFIG_SNAPSHOT -> decode(env, HostMessage.AgentConfigSnapshot.serializer())
     HostMessageType.AGENT_CONFIG_SAVED -> decode(env, HostMessage.AgentConfigSaved.serializer())
     HostMessageType.MODEL_CHECK_RESULT -> decode(env, HostMessage.ModelCheckResult.serializer())
+    else -> null
+}
+
+// ——— Ключи провайдеров: запись, удаление, состояние (T-1.58) ———
+//
+// Отдельная группа, а не строки в группе моделей: у ключей свой повод меняться — они
+// единственные данные, которые уходят к хосту и никогда не возвращаются обратно.
+
+private fun encodeModelSecrets(message: ClientMessage): ByteArray = when (message) {
+    is ClientMessage.SetModelSecret ->
+        envelope(ClientMessageType.SET_MODEL_SECRET, ClientMessage.SetModelSecret.serializer(), message)
+
+    is ClientMessage.DeleteModelSecret ->
+        envelope(ClientMessageType.DELETE_MODEL_SECRET, ClientMessage.DeleteModelSecret.serializer(), message)
+
+    is ClientMessage.ModelSecrets ->
+        envelope(ClientMessageType.MODEL_SECRETS, ClientMessage.ModelSecrets.serializer(), message)
+
+    else -> wrongGroup(message)
+}
+
+private fun encodeModelSecrets(message: HostMessage): ByteArray = when (message) {
+    is HostMessage.ModelSecretChanged ->
+        envelope(HostMessageType.MODEL_SECRET_CHANGED, HostMessage.ModelSecretChanged.serializer(), message)
+
+    is HostMessage.ModelSecretsSnapshot ->
+        envelope(HostMessageType.MODEL_SECRETS_SNAPSHOT, HostMessage.ModelSecretsSnapshot.serializer(), message)
+
+    else -> wrongGroup(message)
+}
+
+private fun decodeModelSecretsClient(env: WireEnvelope): DecodeResult<ClientMessage>? = when (env.type) {
+    ClientMessageType.SET_MODEL_SECRET -> decode(env, ClientMessage.SetModelSecret.serializer())
+    ClientMessageType.DELETE_MODEL_SECRET -> decode(env, ClientMessage.DeleteModelSecret.serializer())
+    ClientMessageType.MODEL_SECRETS -> decode(env, ClientMessage.ModelSecrets.serializer())
+    else -> null
+}
+
+private fun decodeModelSecretsHost(env: WireEnvelope): DecodeResult<HostMessage>? = when (env.type) {
+    HostMessageType.MODEL_SECRET_CHANGED -> decode(env, HostMessage.ModelSecretChanged.serializer())
+    HostMessageType.MODEL_SECRETS_SNAPSHOT -> decode(env, HostMessage.ModelSecretsSnapshot.serializer())
     else -> null
 }

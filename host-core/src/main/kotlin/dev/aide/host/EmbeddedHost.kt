@@ -3,6 +3,7 @@ package dev.aide.host
 import dev.aide.agent.LlmRunPlanner
 import dev.aide.agent.RunPlanner
 import dev.aide.agent.provider.AgentModels
+import dev.aide.agent.provider.SecretStore
 import java.nio.file.Path
 import dev.aide.host.server.ProtocolServer
 import dev.aide.host.server.StageZeroHandler
@@ -84,11 +85,13 @@ class EmbeddedHost internal constructor(
             databasePath: Path? = null,
             models: AgentModels? = null,
             planner: RunPlanner = LlmRunPlanner(),
+            secrets: SecretStore? = null,
         ): EmbeddedHost = HostApp.open(
             port = port,
             databasePath = databasePath,
             models = models,
             planner = planner,
+            secrets = secrets,
         )
     }
 }

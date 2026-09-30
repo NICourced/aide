@@ -14,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.aide.client.state.ModelCheckOutcome
 import dev.aide.client.state.ModelConfigError
@@ -21,9 +22,11 @@ import dev.aide.client.ui.strings.Strings
 import dev.aide.client.ui.strings.modelCheckResource
 import dev.aide.client.ui.strings.modelErrorString
 import dev.aide.client.ui.strings.providerTypeResource
+import dev.aide.client.ui.strings.secretStatusString
 import dev.aide.domain.AgentConfig
 import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelProfile
+import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.ProviderProfile
 import dev.aide.domain.ProviderType
@@ -74,7 +77,15 @@ fun ModelSettingsScreen(state: ModelSettingsState, modifier: Modifier = Modifier
         DefaultModelLine(current.defaultModel)
         ProvidersSection(
             providers = current.providers,
-            onEdit = { index, provider -> draft = current.withProvider(index, provider) },
+            secrets = state.secrets,
+            callbacks = ProviderSectionCallbacks(
+                onEdit = { index, provider -> draft = current.withProvider(index, provider) },
+                // Ключ сохраняется сразу, а не вместе с черновиком: это отдельное действие
+                // над отдельным хранилищем, и «сохранить ключ» не должно зависеть от того,
+                // правил ли пользователь соседнее поле.
+                onSetSecret = state.onSetSecret,
+                onDeleteSecret = state.onDeleteSecret,
+            ),
         )
         ModelsSection(
             models = current.models,
@@ -135,21 +146,49 @@ private fun DefaultModelLine(defaultModel: String?) {
     )
 }
 
-/** Таблица провайдеров: протокол, адрес и имя переменной окружения с ключом. */
+/**
+ * Действия над таблицей провайдеров: правка полей профиля и работа с ключом (T-1.58).
+ *
+ * Собраны в один тип по тому же доводу, что и [ModelSectionCallbacks]: каждой строке
+ * таблицы нужны все три действия, и три лямбда-параметра в каждой подписи читались бы хуже.
+ */
+private class ProviderSectionCallbacks(
+    val onEdit: (Int, ProviderProfile) -> Unit,
+    val onSetSecret: (String, String) -> Unit,
+    val onDeleteSecret: (String) -> Unit,
+)
+
+/** Таблица провайдеров: протокол, адрес, имя переменной окружения с ключом и сам ключ. */
 @Composable
-private fun ProvidersSection(providers: List<ProviderProfile>, onEdit: (Int, ProviderProfile) -> Unit) {
+private fun ProvidersSection(
+    providers: List<ProviderProfile>,
+    secrets: Map<String, ModelSecretStatus>,
+    callbacks: ProviderSectionCallbacks,
+) {
     Text(Strings.text(Strings.settingsModelProviders), style = MaterialTheme.typography.titleSmall)
     if (providers.isEmpty()) {
         Text(Strings.text(Strings.settingsModelProvidersEmpty), style = MaterialTheme.typography.bodySmall)
     }
     providers.forEachIndexed { index, provider ->
-        ProviderFields(provider = provider, onEdit = { onEdit(index, it) })
+        ProviderFields(
+            provider = provider,
+            secret = secrets[provider.id],
+            onEdit = { callbacks.onEdit(index, it) },
+            onSetSecret = callbacks.onSetSecret,
+            onDeleteSecret = callbacks.onDeleteSecret,
+        )
     }
 }
 
 /** Поля одного провайдера; всё правится вручную, включая протокол и адрес. */
 @Composable
-private fun ProviderFields(provider: ProviderProfile, onEdit: (ProviderProfile) -> Unit) {
+private fun ProviderFields(
+    provider: ProviderProfile,
+    secret: ModelSecretStatus?,
+    onEdit: (ProviderProfile) -> Unit,
+    onSetSecret: (String, String) -> Unit,
+    onDeleteSecret: (String) -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         LabeledField(
             label = Strings.settingsModelFieldId,
@@ -170,8 +209,65 @@ private fun ProviderFields(provider: ProviderProfile, onEdit: (ProviderProfile) 
             hint = Strings.settingsModelFieldKeyEnvHint,
             onValueChange = { entered -> onEdit(provider.copy(apiKeyEnv = entered.takeIf { it.isNotBlank() })) },
         )
+        SecretFields(
+            provider = provider,
+            secret = secret,
+            onSetSecret = onSetSecret,
+            onDeleteSecret = onDeleteSecret,
+        )
         ProtocolChoice(selected = provider.type, tagPrefix = "provider-type-${provider.id}") { type ->
             onEdit(provider.copy(type = type))
+        }
+    }
+}
+
+/**
+ * Ключ провайдера: строка состояния, поле ввода и две кнопки (T-1.58).
+ *
+ * После сохранения поле очищается: хост значения не возвращает, и показать в нём прежний
+ * текст значило бы утверждать, что ключ известен приложению. Пока состояние неизвестно
+ * (карты ещё нет), показывается «ключ не задан» — это честнее пустой строки.
+ */
+@Composable
+private fun SecretFields(
+    provider: ProviderProfile,
+    secret: ModelSecretStatus?,
+    onSetSecret: (String, String) -> Unit,
+    onDeleteSecret: (String) -> Unit,
+) {
+    val status = secret ?: ModelSecretStatus.Absent
+    var value by remember(provider.id) { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(
+            secretStatusString(provider, status),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (status is ModelSecretStatus.StoreUnavailable) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.testTag("provider-secret-status-${provider.id}"),
+        )
+        SecretField(
+            value = value,
+            tag = "provider-secret-input-${provider.id}",
+            onValueChange = { value = it },
+        )
+        Button(
+            onClick = {
+                onSetSecret(provider.id, value)
+                value = ""
+            },
+            enabled = value.isNotBlank(),
+            modifier = Modifier.testTag("provider-secret-save-${provider.id}"),
+        ) {
+            Text(Strings.text(Strings.settingsModelSecretSave))
+        }
+        Button(
+            onClick = { onDeleteSecret(provider.id) },
+            modifier = Modifier.testTag("provider-secret-delete-${provider.id}"),
+        ) {
+            Text(Strings.text(Strings.settingsModelSecretDelete))
         }
     }
 }
@@ -360,12 +456,25 @@ private fun CustomProviderSection(onAdd: (ProviderProfile) -> Unit) {
     }
 }
 
-/** Строка результата проверки: имя отсутствующей переменной показывается как есть. */
+/**
+ * Строка результата проверки: имя отсутствующей переменной показывается как есть.
+ *
+ * Отказ «ключ не задан» называет **оба** имени — переменную окружения и провайдера:
+ * ключ можно задать и здесь, в разделе «Модель», и это видно из подсказки (T-1.58).
+ */
 @Composable
 private fun CheckResultLine(check: ModelCheckOutcome) {
     val failure = check.failure
     val text = when (failure) {
-        is ModelCheckFailure.MissingKey -> Strings.text(modelCheckResource(failure), failure.variable)
+        is ModelCheckFailure.MissingKey -> {
+            val provider = failure.provider
+            if (provider != null) {
+                Strings.text(Strings.settingsModelCheckMissingKeyOrStore, failure.variable, provider)
+            } else {
+                Strings.text(modelCheckResource(failure), failure.variable)
+            }
+        }
+
         else -> Strings.text(modelCheckResource(failure))
     }
     Text(
@@ -403,7 +512,9 @@ private fun ToggleField(label: StringResource, value: Boolean, tag: String, onCh
     }
 }
 
-/** Поле с подписью: единственный вид ввода в разделе, поэтому вынесен отдельно. */
+/**
+ * Поле с подписью: единственный вид ввода в разделе, поэтому вынесен отдельно.
+ */
 @Composable
 private fun LabeledField(
     label: StringResource,
@@ -417,6 +528,25 @@ private fun LabeledField(
         onValueChange = onValueChange,
         label = { Text(Strings.text(label)) },
         placeholder = hint?.let { resource -> { Text(Strings.text(resource)) } },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth().testTag(tag),
+    )
+}
+
+/**
+ * Поле секрета: значение скрыто точками.
+ *
+ * Отдельный composable, а не параметр «скрывать ли ввод» у [LabeledField]: подпись у него
+ * одна и та же, а скрытие — не оформление, а свойство поля, которое не должно включаться
+ * где-то ещё по невнимательности.
+ */
+@Composable
+private fun SecretField(value: String, tag: String, onValueChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(Strings.text(Strings.settingsModelSecretLabel)) },
+        visualTransformation = PasswordVisualTransformation(),
         singleLine = true,
         modifier = Modifier.fillMaxWidth().testTag(tag),
     )

@@ -3,6 +3,7 @@ package dev.aide.client.state
 import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
@@ -47,6 +48,8 @@ data class HostSession(
     val providerCatalog: List<ProviderCatalogEntry> = emptyList(),
     /** Последний результат проверки модели (T-1.56); null, если проверку не запускали. */
     val modelCheck: ModelCheckOutcome? = null,
+    /** Состояние ключей провайдеров по идентификатору (T-1.58); значений ключей здесь нет. */
+    val modelSecrets: Map<String, ModelSecretStatus> = emptyMap(),
     /** Последний отказ настроек моделей (T-1.56); null, если всё прошло. */
     val modelError: ModelConfigError? = null,
     /** Последняя ошибка запроса; null, если ошибок нет. */

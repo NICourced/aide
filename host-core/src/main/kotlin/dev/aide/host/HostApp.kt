@@ -8,9 +8,11 @@ import dev.aide.agent.provider.AgentModels
 import dev.aide.agent.provider.ProviderCatalog
 import dev.aide.agent.provider.ProviderClients
 import dev.aide.agent.provider.ProviderRegistry
+import dev.aide.agent.provider.SecretStore
 import dev.aide.host.agent.AgentConfigHandler
 import dev.aide.host.agent.AgentRunHandler
 import dev.aide.host.agent.ClientMessageRouter
+import dev.aide.host.agent.ModelSecretHandler
 import dev.aide.host.agent.RunWorker
 import dev.aide.host.agent.ServerRunEventSink
 import dev.aide.host.agent.StoreRunRepository
@@ -69,18 +71,21 @@ object HostApp {
      * сессий ([ClientSessions]) — общий для сервера и рассылки событий прогона;
      * это и разрывает цикл «сервер → обработчик → движок → сервер».
      *
+     * Режим хоста объявляется константой [HostMode.LOCAL]: параметром его никто не
+     * подменял (режим — диагностическая надпись для клиента, поведение от него не
+     * зависит), а привязка к адресу для реального удалённого хоста появляется в T-1.51.
+     *
      * @param storage состояние хоста на диске: база и настройки моделей. Идёт сюда готовым,
      *   потому что экземпляр хранилища настроек должен быть один на хост: он же держит
      *   замок записи, и второй экземпляр на том же пути означал бы его отсутствие.
      */
     fun module(
-        mode: HostMode,
         port: Int,
         storage: HostStorage,
         models: AgentModels,
         planner: RunPlanner,
     ): Module = module {
-        single(modeQualifier) { mode }
+        single(modeQualifier) { HostMode.LOCAL }
         single(portQualifier) { port }
         // Версия протокола у хоста одна — текущая сборка: параметром её никто не
         // подменяет, а несовместимость версий проверяется на уровне сессии (§ 8.4).
@@ -111,11 +116,18 @@ object HostApp {
                 catalog = { ProviderCatalog.entries },
             )
         }
+        single {
+            ModelSecretHandler(
+                store = storage.secrets,
+                config = storage.config::load,
+            )
+        }
         single<ClientMessageHandler> {
             ClientMessageRouter(
                 stageZero = get<StageZeroHandler>(),
                 agent = get<AgentRunHandler>(),
                 modelConfig = get<AgentConfigHandler>(),
+                modelSecrets = get<ModelSecretHandler>(),
             )
         }
         single {
@@ -146,15 +158,18 @@ object HostApp {
      *   поведение приложения. Параметр существует для тестов, подставляющих
      *   скриптованную модель (О-11).
      * @param planner планировщик; по умолчанию спрашивает выбранную модель.
+     * @param secrets защищённое хранилище ключей; null — выбор по платформе хоста.
+     *   Параметр существует для тестов: настоящее хранилище (libsecret, DPAPI) есть не
+     *   на всякой машине и не в CI, а путь «ключ из приложения» проверяться обязан всюду.
      */
     fun open(
-        mode: HostMode = HostMode.LOCAL,
         port: Int = freeLoopbackPort(),
         databasePath: Path? = null,
         models: AgentModels? = null,
         planner: RunPlanner = LlmRunPlanner(),
+        secrets: SecretStore? = null,
     ): EmbeddedHost {
-        val storage = HostStorage.of(databasePath)
+        val storage = HostStorage.of(databasePath, secrets)
         // Реестр и HTTP-клиент собираются только тогда, когда модели не подставлены:
         // подставленному источнику транспорта не нужно, а поднятый «на всякий случай»
         // реестр читал бы файл, которого в его ветке исполнения никто не спрашивает.
@@ -162,13 +177,17 @@ object HostApp {
         val provider: AgentModels
         if (models == null) {
             httpClient = providerHttpClient()
-            provider = ProviderRegistry(config = storage.config::load, clients = ProviderClients(httpClient))
+            provider = ProviderRegistry(
+                config = storage.config::load,
+                clients = ProviderClients(httpClient),
+                secrets = storage.secrets,
+            )
         } else {
             httpClient = null
             provider = models
         }
         val graph = KoinApplication.init()
-            .modules(module(mode = mode, port = port, storage = storage, models = provider, planner = planner))
+            .modules(module(port = port, storage = storage, models = provider, planner = planner))
         val store = graph.koin.get<HostStore>()
         InterruptedRuns(StoreRunRepository(store.runs), StoreTaskRepository(store.tasks)).markInterrupted()
 

@@ -15,19 +15,24 @@ import org.slf4j.LoggerFactory
  * модели, то есть в темпе действий пользователя, а не шагов агента.
  *
  * @param config источник конфигурации; в хосте — файл рядом с базой, в тестах — значение.
- * @param env окружение хоста с ключами. Ключ берётся **только** отсюда: в файле
- *   конфигурации лежит имя переменной, а не её значение (NFR-8, § 9).
+ * @param env окружение хоста с ключами; второй источник после защищённого хранилища.
  * @param clients фабрика адаптеров по протоколу провайдера; обязательна, потому что
  *   адаптеров без транспорта не бывает, а умолчание «протокол не поддержан» прятало бы
  *   забытую подстановку.
+ * @param secrets защищённое хранилище ключей (T-1.58); обязателен по той же причине, что
+ *   и фабрика: умолчание «хранилища нет» в main-коде молча выключило бы первый источник
+ *   приоритета, и ключ, сохранённый из приложения, перестал бы работать.
  */
 class ProviderRegistry(
     private val config: () -> AgentConfig,
     private val env: (String) -> String? = System::getenv,
     private val clients: ProviderClientFactory,
+    secrets: SecretStore,
 ) : AgentModels {
 
     private val logger = LoggerFactory.getLogger(ProviderRegistry::class.java)
+
+    private val keys = ModelSecrets(store = secrets, env = env)
 
     /** Модель по умолчанию: алиас конфигурации, клиент — по её провайдеру и ключу. */
     override fun current(): Result<ConfiguredModel> =
@@ -83,17 +88,19 @@ class ProviderRegistry(
     }
 
     /**
-     * Ключ из переменной окружения по имени из профиля.
+     * Ключ провайдера по приоритету источников (T-1.58).
      *
-     * Пустое имя означает «ключ не нужен» — это законное состояние локального
-     * провайдера (Ollama, LM Studio, vLLM). А вот отсутствие **непустой** переменной —
-     * явная ошибка с её именем: иначе пользователь видел бы «не авторизован» вместо
-     * «задайте DEEPSEEK_API_KEY».
+     * Пустое имя переменной означает «ключ не нужен» — это законное состояние локального
+     * провайдера (Ollama, LM Studio, vLLM). А вот отсутствие ключа у провайдера, который
+     * его требует, — явная ошибка: сначала защищённое хранилище платформы, затем переменная
+     * окружения, и только когда пусто в обоих — отказ с двумя именами (имя переменной и
+     * идентификатор провайдера, под которым ключ можно задать из приложения). Иначе
+     * пользователь видел бы «не авторизован» вместо «задайте DEEPSEEK_API_KEY».
      */
     private fun apiKey(provider: ProviderProfile): String? {
         val name = provider.apiKeyEnv?.takeIf { it.isNotBlank() } ?: return null
-        return env(name)?.takeIf { it.isNotBlank() }
-            ?: throw ModelUnavailableException(ModelCheckFailure.MissingKey(name))
+        return keys.resolve(provider)
+            ?: throw ModelUnavailableException(ModelCheckFailure.MissingKey(name, provider.id))
     }
 
     /** Чтение не удалось — отказ, а не падение хоста: об этом и пишет журнал. */

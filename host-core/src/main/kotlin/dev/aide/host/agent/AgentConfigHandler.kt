@@ -5,11 +5,11 @@ import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.host.config.AgentConfigStore
 import dev.aide.host.server.ClientMessageHandler
-import dev.aide.host.server.requestIdOrNull
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.RequestId
+import dev.aide.protocol.requestIdOrNull
 
 /**
  * Настройки моделей: конфигурация, каталог заготовок, проверка доступа (T-1.56).
@@ -42,7 +42,7 @@ class AgentConfigHandler(
         // «Чужое» сообщение сюда попадает только из-за ошибки маршрутизации; отвечаем
         // его же идентификатором, иначе клиент ждал бы ответа до таймаута.
         else -> HostMessage.Failure(
-            requestId = message.requestIdOrNull() ?: RequestId("config"),
+            requestId = message.requestIdOrNull ?: RequestId("config"),
             error = ProtocolError.Internal("AgentConfigHandler получил сообщение другого вида"),
         )
     }

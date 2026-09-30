@@ -14,6 +14,7 @@ import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
+import dev.aide.protocol.requestIdOrNull
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 
@@ -102,6 +103,14 @@ class StageZeroHandler(
             requestId = message.requestId,
             error = ProtocolError.Internal("проверку модели обрабатывает AgentConfigHandler"),
         )
+
+        // Ключи провайдеров маршрутизируются в ModelSecretHandler; сюда они не доходят,
+        // но `when` по запечатанному типу обязан их назвать.
+        is ClientMessage.SetModelSecret, is ClientMessage.DeleteModelSecret, is ClientMessage.ModelSecrets ->
+            HostMessage.Failure(
+                requestId = message.requestIdOrNull ?: RequestId("secrets"),
+                error = ProtocolError.Internal("ключи провайдеров обрабатывает ModelSecretHandler"),
+            )
 
         is ClientMessage.Hello -> HostMessage.Failure(
             requestId = RequestId("unexpected"),

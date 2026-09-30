@@ -8,6 +8,7 @@ import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelProfile
 import dev.aide.domain.ProviderProfile
 import dev.aide.domain.ProviderType
+import dev.aide.domain.SecretStoreUnavailableReason
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import kotlin.test.Test
@@ -57,7 +58,8 @@ class ProviderRegistryTest {
     private fun registry(
         source: () -> AgentConfig = { config() },
         env: (String) -> String? = { name -> if (name == "TEST_KEY") "секрет-в-окружении" else null },
-    ): ProviderRegistry = ProviderRegistry(config = source, env = env, clients = clients)
+        secrets: SecretStore = FakeSecretStore(),
+    ): ProviderRegistry = ProviderRegistry(config = source, env = env, clients = clients, secrets = secrets)
 
     @Test
     fun `выбранная по умолчанию модель отдаётся провайдером`() {
@@ -73,7 +75,12 @@ class ProviderRegistryTest {
         // он не держит, поэтому сохранённое значение читается тем же путём (решение 2).
         val saved = config(defaultModel = "local/llama")
 
-        val afterRestart = ProviderRegistry(config = { saved }, env = { "секрет" }, clients = clients)
+        val afterRestart = ProviderRegistry(
+            config = { saved },
+            env = { "секрет" },
+            clients = clients,
+            secrets = FakeSecretStore(),
+        )
 
         assertEquals("local/llama", afterRestart.current().getOrThrow().alias)
     }
@@ -83,7 +90,7 @@ class ProviderRegistryTest {
         val failure = registry(env = { null }).current().exceptionOrNull()
 
         val unavailable = assertIs<ModelUnavailableException>(failure)
-        assertEquals(ModelCheckFailure.MissingKey("TEST_KEY"), unavailable.failure)
+        assertEquals(ModelCheckFailure.MissingKey("TEST_KEY", "local"), unavailable.failure)
     }
 
     @Test
@@ -93,9 +100,49 @@ class ProviderRegistryTest {
         val failure = registry(env = { "   " }).current().exceptionOrNull()
 
         assertEquals(
-            ModelCheckFailure.MissingKey("TEST_KEY"),
+            ModelCheckFailure.MissingKey("TEST_KEY", "local"),
             assertIs<ModelUnavailableException>(failure).failure,
         )
+    }
+
+    @Test
+    fun `отказ без ключа называет и переменную, и провайдера`() {
+        // Ключ можно задать двумя способами, и пользователю нужны оба имени: имя
+        // переменной окружения и идентификатор провайдера для защищённого хранилища (T-1.58).
+        val failure = registry(env = { null }).current().exceptionOrNull()
+
+        val missing = assertIs<ModelUnavailableException>(failure).failure
+        assertEquals("TEST_KEY", assertIs<ModelCheckFailure.MissingKey>(missing).variable)
+        assertEquals("local", assertIs<ModelCheckFailure.MissingKey>(missing).provider)
+    }
+
+    @Test
+    fun `ключ из защищённого хранилища идёт перед переменной окружения`() {
+        // Приоритет источников — решение задачи: сохранённый из приложения ключ обязан
+        // побеждать переменную окружения процесса хоста.
+        val store = FakeSecretStore(mapOf("local" to "секрет-в-хранилище"))
+
+        registry(secrets = store).current().getOrThrow()
+
+        assertEquals("секрет-в-хранилище", clients.created.single().third)
+    }
+
+    @Test
+    fun `без ключа в хранилище берётся переменная окружения`() {
+        registry(secrets = FakeSecretStore()).current().getOrThrow()
+
+        assertEquals("секрет-в-окружении", clients.created.single().third)
+    }
+
+    @Test
+    fun `недоступное хранилище не мешает прогону с ключом из окружения`() {
+        // Хранилище есть не на всякой машине; переменные окружения остаются рабочим путём,
+        // и недоступность хранилища не должна превращаться в «ключ не задан».
+        val unavailable = FakeSecretStore.unavailable(SecretStoreUnavailableReason.NOT_LINUX_OR_WINDOWS)
+
+        registry(secrets = unavailable).current().getOrThrow()
+
+        assertEquals("секрет-в-окружении", clients.created.single().third)
     }
 
     @Test
@@ -224,7 +271,7 @@ class ProviderRegistryTest {
     fun `проверка модели без переменной окружения даёт отказ с её именем`() {
         val failure = kotlinx.coroutines.runBlocking { registry(env = { null }).check("local/llama") }
 
-        assertEquals(ModelCheckFailure.MissingKey("TEST_KEY"), failure)
+        assertEquals(ModelCheckFailure.MissingKey("TEST_KEY", "local"), failure)
         assertEquals(0, clients.client.checkCount, "проверять нечего: ключа нет")
     }
 
@@ -234,6 +281,7 @@ class ProviderRegistryTest {
             config = { config() },
             env = { "секрет" },
             clients = { provider, _, _ -> Result.failure(UnsupportedProviderProtocolException(provider)) },
+            secrets = FakeSecretStore(),
         )
 
         val failure = failing.current().exceptionOrNull()

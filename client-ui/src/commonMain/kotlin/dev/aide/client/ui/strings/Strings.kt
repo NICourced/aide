@@ -64,6 +64,7 @@ import dev.aide.client.ui.resources.settings_model_rejection_duplicate_alias
 import dev.aide.client.ui.resources.settings_model_rejection_max_output
 import dev.aide.client.ui.resources.settings_model_rejection_unknown_provider
 import dev.aide.client.ui.resources.settings_model_check_missing_key
+import dev.aide.client.ui.resources.settings_model_check_missing_key_or_store
 import dev.aide.client.ui.resources.settings_model_check_ok
 import dev.aide.client.ui.resources.settings_model_check_rate_limited
 import dev.aide.client.ui.resources.settings_model_check_unauthorized
@@ -87,6 +88,18 @@ import dev.aide.client.ui.resources.settings_model_field_tool_use
 import dev.aide.client.ui.resources.settings_model_field_type
 import dev.aide.client.ui.resources.settings_model_key_note
 import dev.aide.client.ui.resources.settings_model_loading
+import dev.aide.client.ui.resources.settings_model_secret_absent
+import dev.aide.client.ui.resources.settings_model_secret_delete
+import dev.aide.client.ui.resources.settings_model_secret_from_env
+import dev.aide.client.ui.resources.settings_model_secret_in_store
+import dev.aide.client.ui.resources.settings_model_secret_label
+import dev.aide.client.ui.resources.settings_model_secret_reason_keyring
+import dev.aide.client.ui.resources.settings_model_secret_reason_not_supported
+import dev.aide.client.ui.resources.settings_model_secret_reason_tool_missing
+import dev.aide.client.ui.resources.settings_model_secret_rejection_empty
+import dev.aide.client.ui.resources.settings_model_secret_rejection_unknown_provider
+import dev.aide.client.ui.resources.settings_model_secret_save
+import dev.aide.client.ui.resources.settings_model_secret_unavailable
 import dev.aide.client.ui.resources.settings_model_make_default
 import dev.aide.client.ui.resources.settings_model_models
 import dev.aide.client.ui.resources.settings_model_models_empty
@@ -247,6 +260,20 @@ object Strings {
     val settingsModelCheckNotConfigured: StringResource = Res.string.settings_model_check_not_configured
     val settingsModelCheckUnreadable: StringResource = Res.string.settings_model_check_unreadable
     val settingsModelCheckFailed: StringResource = Res.string.settings_model_check_failed
+    val settingsModelCheckMissingKeyOrStore: StringResource = Res.string.settings_model_check_missing_key_or_store
+    val settingsModelSecretInStore: StringResource = Res.string.settings_model_secret_in_store
+    val settingsModelSecretFromEnv: StringResource = Res.string.settings_model_secret_from_env
+    val settingsModelSecretAbsent: StringResource = Res.string.settings_model_secret_absent
+    val settingsModelSecretUnavailable: StringResource = Res.string.settings_model_secret_unavailable
+    val settingsModelSecretReasonNotSupported: StringResource = Res.string.settings_model_secret_reason_not_supported
+    val settingsModelSecretReasonKeyring: StringResource = Res.string.settings_model_secret_reason_keyring
+    val settingsModelSecretReasonToolMissing: StringResource = Res.string.settings_model_secret_reason_tool_missing
+    val settingsModelSecretLabel: StringResource = Res.string.settings_model_secret_label
+    val settingsModelSecretSave: StringResource = Res.string.settings_model_secret_save
+    val settingsModelSecretDelete: StringResource = Res.string.settings_model_secret_delete
+    val settingsModelSecretRejectionEmpty: StringResource = Res.string.settings_model_secret_rejection_empty
+    val settingsModelSecretRejectionUnknownProvider: StringResource =
+        Res.string.settings_model_secret_rejection_unknown_provider
     val settingsModelErrorUnreachable: StringResource = Res.string.settings_model_error_unreachable
     val settingsModelRejectionBaseUrl: StringResource = Res.string.settings_model_rejection_base_url
     val settingsModelRejectionDuplicateAlias: StringResource = Res.string.settings_model_rejection_duplicate_alias

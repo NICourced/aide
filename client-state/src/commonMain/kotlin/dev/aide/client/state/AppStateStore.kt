@@ -204,6 +204,10 @@ private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
 
     is ProtocolError.InvalidAgentConfig -> ScreenState.Failed(ScreenState.ErrorKind.CONFIG_REJECTED)
 
+    // Отказ ключа (T-1.58) ведёт туда же: он тоже не сбой, а отказ по существу без текста
+    // от хоста, и правится в том же разделе «Модель». Точную причину показывает сам раздел.
+    is ProtocolError.InvalidModelSecret -> ScreenState.Failed(ScreenState.ErrorKind.CONFIG_REJECTED)
+
     is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(what))
 
     is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(message), detail)

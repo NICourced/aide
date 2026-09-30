@@ -8,6 +8,7 @@ import dev.aide.protocol.HostMessage
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolVersion
+import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.TaskId
 import dev.aide.protocol.SessionId
 import dev.aide.protocol.WorkspaceId
@@ -117,6 +118,11 @@ internal class FakeHostConnection : HostConnection {
             ),
         )
 
+        else -> agentOrModelResponse(message)
+    }
+
+    /** Ответы агента, настроек и ключей: вторая половина таблицы, чтобы `when` не разрастался. */
+    private fun agentOrModelResponse(message: ClientMessage): HostMessage = when (message) {
         is ClientMessage.PostTask -> HostMessage.TaskPosted(message.requestId, TaskId("t-task"))
 
         is ClientMessage.AgentStatus -> HostMessage.AgentSnapshot(message.requestId, emptyList(), emptyList())
@@ -132,6 +138,22 @@ internal class FakeHostConnection : HostConnection {
         is ClientMessage.SaveAgentConfig -> HostMessage.AgentConfigSaved(message.requestId, message.config)
 
         is ClientMessage.CheckModel -> HostMessage.ModelCheckResult(message.requestId, ok = true)
+
+        is ClientMessage.SetModelSecret -> HostMessage.ModelSecretChanged(
+            requestId = message.requestId,
+            providerId = message.providerId,
+            status = ModelSecretStatus.InStore,
+        )
+
+        is ClientMessage.DeleteModelSecret -> HostMessage.ModelSecretChanged(
+            requestId = message.requestId,
+            providerId = message.providerId,
+            status = ModelSecretStatus.Absent,
+        )
+
+        is ClientMessage.ModelSecrets -> HostMessage.ModelSecretsSnapshot(message.requestId, emptyMap())
+
+        else -> error("неожиданный запрос: ${message::class.simpleName}")
     }
 
     private companion object {
