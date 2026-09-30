@@ -1,8 +1,10 @@
 package dev.aide.agent.provider.openai
 
 import dev.aide.agent.llm.LlmErrorKind
+import dev.aide.agent.llm.LlmMessage
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.llm.LlmRole
 import dev.aide.agent.llm.LlmToolCall
 import dev.aide.agent.llm.LlmToolDefinition
 import dev.aide.agent.provider.ProviderClient
@@ -105,15 +107,16 @@ class OpenAiCompatibleClient(
     /**
      * Тело запроса: модель, предел вывода, диалог с системной частью впереди и инструменты.
      *
-     * Поле `tools` появляется только при непустом списке: провайдеры читают его как
-     * «вот что можно вызывать», и отправлять пустой список незачем.
+     * Диалог едет репликами своего протокола (T-1.7): роль, текст, `tool_calls`
+     * у ответа модели и `tool_call_id` у результата инструмента. Поле `tools`
+     * появляется только при непустом списке: провайдеры читают его как «вот что
+     * можно вызывать», и отправлять пустой список незачем.
      */
     private fun requestBody(request: LlmRequest): String = buildJsonObject {
         put("model", model.model)
         put("max_tokens", model.maxOutputTokens)
         putJsonArray("messages") {
-            add(message("system", request.system))
-            request.messages.forEach { add(message("user", it)) }
+            request.messages.forEach { add(message(it)) }
         }
         if (request.tools.isNotEmpty()) {
             putJsonArray("tools") {
@@ -122,9 +125,29 @@ class OpenAiCompatibleClient(
         }
     }.toString()
 
-    private fun message(role: String, content: String): JsonObject = buildJsonObject {
-        put("role", role)
-        put("content", content)
+    /** Реплика диалога в формате chat completions: роль, текст и вызовы инструментов. */
+    private fun message(message: LlmMessage): JsonObject = buildJsonObject {
+        put("role", message.role.roleName())
+        // Содержимое отправляется всегда, даже пустым: у ответа одним вызовом
+        // инструмента оно пустое, а `content: null` — форма, которую не все
+        // совместимые серверы принимают одинаково.
+        put("content", message.content)
+        message.toolCallId?.let { put("tool_call_id", it) }
+        if (message.toolCalls.isNotEmpty()) {
+            putJsonArray("tool_calls") {
+                message.toolCalls.forEach { add(toolCall(it)) }
+            }
+        }
+    }
+
+    /** Вызов инструмента в ответе модели: имя и аргументы, как их примет провайдер. */
+    private fun toolCall(call: LlmToolCall): JsonObject = buildJsonObject {
+        put("id", call.id)
+        put("type", "function")
+        putJsonObject("function") {
+            put("name", call.name)
+            put("arguments", call.arguments)
+        }
     }
 
     /** Определение инструмента в формате chat completions: тип `function` и её схема. */
@@ -192,6 +215,20 @@ class OpenAiCompatibleClient(
 /** Первый вариант ответа: у chat completions модель отвечает в `choices[0]`. */
 private fun JsonElement.firstChoice(): JsonObject? =
     ((this as? JsonObject)?.get("choices") as? JsonArray)?.firstOrNull() as? JsonObject
+
+/**
+ * Имя роли этого протокола.
+ *
+ * Записано явно, хотя совпадает с именами перечисления: имя роли — часть формата
+ * провайдера, и связывать его с именем константы значило бы менять провод
+ * переименованием в коде.
+ */
+private fun LlmRole.roleName(): String = when (this) {
+    LlmRole.SYSTEM -> "system"
+    LlmRole.USER -> "user"
+    LlmRole.ASSISTANT -> "assistant"
+    LlmRole.TOOL -> "tool"
+}
 
 /** Сообщение модели внутри варианта ответа. */
 private fun JsonObject.messageOf(): JsonObject? = this["message"] as? JsonObject

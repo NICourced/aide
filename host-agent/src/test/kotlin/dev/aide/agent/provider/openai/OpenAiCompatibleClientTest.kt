@@ -1,6 +1,7 @@
 package dev.aide.agent.provider.openai
 
 import dev.aide.agent.llm.LlmErrorKind
+import dev.aide.agent.llm.LlmMessage
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.llm.LlmToolCall
@@ -96,7 +97,9 @@ class OpenAiCompatibleClientTest {
         ),
     )
 
-    private val ask = LlmRequest(system = "Ты — агент", messages = listOf("Почини сборку"))
+    private val ask = LlmRequest(
+        messages = listOf(LlmMessage.system("Ты — агент"), LlmMessage.user("Почини сборку")),
+    )
 
     @Test
     fun `запрос несёт модель, предел вывода и роли сообщений`() = runBlocking {
@@ -137,6 +140,42 @@ class OpenAiCompatibleClientTest {
         client.complete(ask)
 
         assertNull(engine.requestHistory.single().headers[HttpHeaders.Authorization])
+    }
+
+    @Test
+    fun `ответ ассистента с вызовом и результат инструмента уезжают своими ролями`() = runBlocking {
+        // T-1.7: после вызова инструмента разговор продолжается, а не начинается заново.
+        // Роли у этих двух реплик разные, и одна роль на двоих сломала бы провайдеру
+        // разбор диалога: он не нашёл бы, к какому вызову относится результат.
+        val (client, engine) = request()
+        val continuation = ask.copy(messages = ask.messages + continuationMessages())
+
+        client.complete(continuation)
+
+        val body = engine.requestHistory.single().body.toByteArray().decodeToString()
+        assertTrue(body.contains(""""role":"assistant""""), "роль ассистента обязана уехать: $body")
+        assertTrue(body.contains(""""tool_calls""""), "вызовы едут в ответе ассистента: $body")
+        assertTrue(body.contains(""""type":"function""""), "вызов описан функцией этого протокола: $body")
+        assertTrue(body.contains(""""role":"tool""""), "результат инструмента едет ролью tool: $body")
+        assertTrue(body.contains(""""tool_call_id":"call_1""""), "результат обязан ссылаться на вызов: $body")
+        assertTrue(body.contains("fun main() = Unit"), "текст результата обязан уехать: $body")
+    }
+
+    private fun continuationMessages(): List<LlmMessage> = listOf(
+        LlmMessage.assistant(
+            text = "",
+            toolCalls = listOf(LlmToolCall(id = "call_1", name = "read_file", arguments = ARGUMENTS)),
+        ),
+        LlmMessage.tool(callId = "call_1", text = FILE_TEXT),
+    )
+
+    private companion object {
+
+        /** Аргументы вызова так, как их прислал провайдер: строкой JSON. */
+        const val ARGUMENTS: String = """{"path":"a.kt"}"""
+
+        /** Содержимое, которое инструмент вернул модели. */
+        const val FILE_TEXT: String = "fun main() = Unit"
     }
 
     @Test

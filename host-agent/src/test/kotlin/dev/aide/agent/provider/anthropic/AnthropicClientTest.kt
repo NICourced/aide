@@ -1,6 +1,7 @@
 package dev.aide.agent.provider.anthropic
 
 import dev.aide.agent.llm.LlmErrorKind
+import dev.aide.agent.llm.LlmMessage
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.llm.LlmToolCall
@@ -105,13 +106,18 @@ class AnthropicClientTest {
         ),
     )
 
-    private val ask = LlmRequest(system = "Ты — агент", messages = listOf("Почини сборку"))
+    private val ask = LlmRequest(
+        messages = listOf(LlmMessage.system("Ты — агент"), LlmMessage.user("Почини сборку")),
+    )
 
-    /** Тексты реплик отправленного запроса: проверка формы `messages`, а не её отсутствия. */
-    private suspend fun sentMessages(engine: MockEngine): List<String> {
+    /** Текстовые блоки реплик отправленного запроса: проверка формы `messages`, а не её отсутствия. */
+    private suspend fun sentMessages(engine: MockEngine): List<List<String>> {
         val body = engine.requestHistory.single().body.toByteArray().decodeToString()
         val messages = (Json.parseToJsonElement(body) as JsonObject)["messages"] as JsonArray
-        return messages.map { ((it as JsonObject)["content"] as JsonPrimitive).content }
+        return messages.map { message ->
+            val blocks = (message as JsonObject)["content"] as JsonArray
+            blocks.mapNotNull { block -> ((block as? JsonObject)?.get("text") as? JsonPrimitive)?.content }
+        }
     }
 
     @Test
@@ -135,14 +141,18 @@ class AnthropicClientTest {
     fun `подряд идущие реплики уезжают одним сообщением`() = runBlocking {
         // Реплик подряд у нас много (постановка, план, шаг), а Messages API — про
         // чередование ролей; склейка соседних реплик одной роли верна при обоих чтениях.
+        // Границы реплик при этом сохраняются: каждая остаётся отдельным текстовым блоком,
+        // иначе модель прочитала бы три задания одной слипшейся строкой.
         val (client, engine) = request()
-        val three = ask.copy(messages = listOf("Постановка", "План", "Шаг"))
+        val three = ask.copy(
+            messages = listOf(LlmMessage.user("Постановка"), LlmMessage.user("План"), LlmMessage.user("Шаг")),
+        )
 
         client.complete(three)
 
         val messages = sentMessages(engine)
         assertEquals(1, messages.size, "три реплики одной роли обязаны уехать одним сообщением")
-        assertEquals("Постановка\nПлан\nШаг", messages.single())
+        assertEquals(listOf("Постановка", "План", "Шаг"), messages.single())
     }
 
     @Test
@@ -193,6 +203,74 @@ class AnthropicClientTest {
         assertTrue(body.contains(""""messages""""), "тело запроса обязано быть непустым: $body")
         assertTrue(""""tools"""" !in body, "поля tools в запросе быть не должно: $body")
     }
+
+    @Test
+    fun `вызов инструмента и его результат уезжают блоками протокола`() = runBlocking {
+        // T-1.7: разговор продолжается после вызова инструмента. У этого протокола
+        // вызов — блок `tool_use` в реплике ассистента, результат — блок `tool_result`
+        // в реплике пользователя, и склеить их в один блок значило бы потерять связь
+        // результата с вызовом.
+        val (client, engine) = request()
+        val continuation = ask.copy(
+            messages = ask.messages + listOf(
+                LlmMessage.assistant(text = "сейчас посмотрю", toolCalls = listOf(toolCall)),
+                LlmMessage.tool(callId = TOOL_CALL_ID, text = FILE_TEXT),
+            ),
+        )
+
+        client.complete(continuation)
+
+        val body = engine.requestHistory.single().body.toByteArray().decodeToString()
+        assertTrue(body.contains(""""type":"tool_use""""), "вызов едет блоком tool_use: $body")
+        assertTrue(body.contains(""""name":"read_file""""), "имя инструмента потеряно: $body")
+        assertTrue(body.contains(""""input":{"path":"a.kt""""), "аргументы едут объектом, а не строкой: $body")
+        assertTrue(body.contains(""""type":"tool_result""""), "результат едет блоком tool_result: $body")
+        assertTrue(body.contains(""""tool_use_id":"$TOOL_CALL_ID""""), "результат обязан ссылаться на вызов: $body")
+        assertTrue(body.contains(FILE_TEXT), "текст результата обязан уехать: $body")
+    }
+
+    @Test
+    fun `результат инструмента уезжает репликой пользователя`() = runBlocking {
+        val (client, engine) = request()
+        val continuation = ask.copy(
+            messages = ask.messages + listOf(
+                LlmMessage.assistant(text = "", toolCalls = listOf(toolCall)),
+                LlmMessage.tool(callId = TOOL_CALL_ID, text = FILE_TEXT),
+            ),
+        )
+
+        client.complete(continuation)
+
+        assertEquals(listOf("user", "assistant", "user"), sentRoles(engine))
+    }
+
+    @Test
+    fun `системная часть репликой не уезжает — у неё своё поле`() = runBlocking {
+        val (client, engine) = request()
+
+        client.complete(ask)
+
+        assertEquals(listOf("user"), sentRoles(engine), "системная реплика в диалог не попадает")
+    }
+
+    /** Имена ролей реплик отправленного запроса. */
+    private suspend fun sentRoles(engine: MockEngine): List<String> {
+        val body = engine.requestHistory.single().body.toByteArray().decodeToString()
+        val messages = (Json.parseToJsonElement(body) as JsonObject)["messages"] as JsonArray
+        return messages.map { ((it as JsonObject)["role"] as JsonPrimitive).content }
+    }
+
+    private companion object {
+
+        /** Идентификатор вызова: по нему результат находит свой вызов. */
+        const val TOOL_CALL_ID: String = "toolu_1"
+
+        /** Содержимое, которое инструмент вернул модели. */
+        const val FILE_TEXT: String = "fun main() = Unit"
+    }
+
+    /** Вызов, который просит модель: тот же инструмент чтения, что и в реестре хоста. */
+    private val toolCall = LlmToolCall(id = TOOL_CALL_ID, name = "read_file", arguments = """{"path":"a.kt"}""")
 
     @Test
     fun `блок tool_use превращается в вызов инструмента с именем и аргументами`() = runBlocking {

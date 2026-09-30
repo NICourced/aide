@@ -1,6 +1,7 @@
 package dev.aide.host
 
 import dev.aide.agent.llm.LlmErrorKind
+import dev.aide.agent.llm.LlmMessage
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.provider.openai.OpenAiCompatibleClient
@@ -49,7 +50,9 @@ class ProviderHttpTest {
         toolUse = false,
     )
 
-    private val request = LlmRequest(system = "Ты — агент", messages = listOf("Почини сборку"))
+    private val request = LlmRequest(
+        messages = listOf(LlmMessage.system("Ты — агент"), LlmMessage.user("Почини сборку")),
+    )
 
     @Test
     fun `умолчание таймаутов щедрое и согласовано между собой`() {

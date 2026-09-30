@@ -2,6 +2,7 @@ package dev.aide.host.agent
 
 import dev.aide.agent.AgentRunEngine
 import dev.aide.agent.RunPlanner
+import dev.aide.agent.ports.RunPorts
 import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
@@ -88,11 +89,10 @@ class RunWorkerTest {
     }
 
     private fun engine(runs: RunRepository, tasks: TaskRepository): AgentRunEngine = AgentRunEngine(
-        runs = runs,
-        tasks = tasks,
+        ports = RunPorts(runs, tasks, NoopSink),
         models = ModelProvider { Result.success(ConfiguredModel("test/scripted", TextModel())) },
         planner = RunPlanner { _, _ -> listOf(PlanStep(index = 0, summary = "шаг", status = StepStatus.PENDING)) },
-        events = NoopSink,
+        tools = testStepTools(),
         clock = { Instant.fromEpochMilliseconds(1) },
     )
 

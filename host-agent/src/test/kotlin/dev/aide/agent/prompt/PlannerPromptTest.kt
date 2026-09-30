@@ -1,5 +1,6 @@
 package dev.aide.agent.prompt
 
+import dev.aide.agent.llm.LlmRole
 import dev.aide.agent.testTask
 import dev.aide.domain.StepStatus
 import dev.aide.domain.TaskStatus
@@ -42,7 +43,13 @@ class PlannerPromptTest {
         val task = testTask("t-1", TaskStatus.QUEUED).copy(prompt = "Почини сборку")
         val request = PlannerPrompt.request(task)
 
-        assertTrue(request.system.isNotBlank(), "системная часть задаёт роль агента и формат ответа")
-        assertTrue(request.messages.any { it.contains("Почини сборку") })
+        // Системная часть — первая реплика диалога (T-1.7): у chat completions она едет
+        // в общем списке, у Anthropic — отдельным полем, и место в списке задаёт её хост.
+        assertEquals(LlmRole.SYSTEM, request.messages.first().role)
+        assertTrue(request.messages.first().content.isNotBlank(), "системная часть задаёт роль агента и формат ответа")
+        assertTrue(
+            request.messages.any { it.role == LlmRole.USER && it.content.contains("Почини сборку") },
+            "постановка задачи обязана уехать моделью: ${request.messages}",
+        )
     }
 }

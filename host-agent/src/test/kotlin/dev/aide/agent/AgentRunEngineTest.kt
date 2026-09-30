@@ -3,6 +3,7 @@ package dev.aide.agent
 import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmErrorKind
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.ports.RunPorts
 import dev.aide.agent.prompt.PlanFormatException
 import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.agent.provider.ModelProvider
@@ -40,13 +41,19 @@ class AgentRunEngineTest {
     private val tasks = FakeTaskRepository()
     private val sink = RecordingEventSink(runs, tasks)
 
+    /**
+     * Инструменты шага: проверки этого класса их не зовут — состояния прогона
+     * проверяются без файлов, — но движок собирается с настоящими инструментами,
+     * а не с заглушкой: заглушка проверяла бы заглушку.
+     */
+    private val tools = stepTools()
+
     private fun engine(plan: List<PlanStep> = plan("шаг"), llm: LlmClient = textModel()): AgentRunEngine =
         AgentRunEngine(
-            runs = runs,
-            tasks = tasks,
+            ports = RunPorts(runs, tasks, sink),
             models = fixedModel(llm),
             planner = RunPlanner { _, _ -> plan },
-            events = sink,
+            tools = tools,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
 
@@ -180,11 +187,10 @@ class AgentRunEngineTest {
     @Test
     fun `отказ планирования помечает задачу failed с причиной`() = runBlocking {
         val engine = AgentRunEngine(
-            runs = runs,
-            tasks = tasks,
+            ports = RunPorts(runs, tasks, sink),
             models = fixedModel(textModel()),
             planner = RunPlanner { _, _ -> throw PlanFormatException("не план") },
-            events = sink,
+            tools = tools,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -200,11 +206,10 @@ class AgentRunEngineTest {
     @Test
     fun `сбой рассылки терминального события не превращает завершённый прогон в отказ`() = runBlocking {
         val engine = AgentRunEngine(
-            runs = runs,
-            tasks = tasks,
+            ports = RunPorts(runs, tasks, ThrowingOnFinishSink(runs, tasks)),
             models = fixedModel(textModel()),
             planner = RunPlanner { _, _ -> plan("раз") },
-            events = ThrowingOnFinishSink(runs, tasks),
+            tools = tools,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -232,11 +237,10 @@ class AgentRunEngineTest {
         // Пустая конфигурация — состояние чистой установки (решение 9): прогон падает
         // тем же кодом, что и раньше, и это видно на задаче, потому что прогона ещё нет.
         val engine = AgentRunEngine(
-            runs = runs,
-            tasks = tasks,
+            ports = RunPorts(runs, tasks, sink),
             models = failingModel(ModelCheckFailure.NotConfigured),
             planner = RunPlanner { _, _ -> plan("раз") },
-            events = sink,
+            tools = tools,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -251,11 +255,10 @@ class AgentRunEngineTest {
     @Test
     fun `отсутствие переменной окружения с ключом даёт свой код отказа`() = runBlocking {
         val engine = AgentRunEngine(
-            runs = runs,
-            tasks = tasks,
+            ports = RunPorts(runs, tasks, sink),
             models = failingModel(ModelCheckFailure.MissingKey("DEEPSEEK_API_KEY")),
             planner = RunPlanner { _, _ -> plan("раз") },
-            events = sink,
+            tools = tools,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -275,11 +278,10 @@ class AgentRunEngineTest {
         val replacement = ScriptedLlmClient(listOf(text("третий")))
         var chosen = ConfiguredModel("model/a", started)
         val engine = AgentRunEngine(
-            runs = runs,
-            tasks = tasks,
+            ports = RunPorts(runs, tasks, sink),
             models = ModelProvider { Result.success(chosen) },
             planner = RunPlanner { _, _ -> plan("раз", "два") },
-            events = sink,
+            tools = tools,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)

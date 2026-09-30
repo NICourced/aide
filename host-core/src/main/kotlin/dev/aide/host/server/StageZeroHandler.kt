@@ -4,8 +4,11 @@ import dev.aide.host.git.GitAccessException
 import dev.aide.host.git.GitRepository
 import dev.aide.host.git.JGitRepository
 import dev.aide.host.workspace.FileTreeBuilder
+import dev.aide.host.workspace.OpenWorkspaces
+import dev.aide.host.workspace.OpenedWorkspace
 import dev.aide.host.workspace.Workspace
 import dev.aide.host.workspace.WorkspaceAccessException
+import dev.aide.host.workspace.WorkspaceBoundaryAdapter
 import dev.aide.host.workspace.WorkspaceFileSystem
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostMessage
@@ -16,33 +19,26 @@ import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
 import dev.aide.protocol.requestIdOrNull
 import java.nio.file.Path
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Обработчик сообщений этапа 0: открытие репозитория, дерево, содержимое файла, состояние.
  *
- * Держит открытые воркспейсы и их ресурсы. Изменяющих операций нет: агент, коммиты
- * и снапшоты появляются в этапе 1, поэтому этот класс — единственное место, где
- * хост читает диск по запросу клиента.
+ * Открытые воркспейсы держит [OpenWorkspaces], а не этот класс: с T-1.7 диск читают
+ * ещё и инструменты агента, которым воркспейс нужен без запроса клиента. Владельцев
+ * двух не бывает — иначе агент и клиент работали бы каждый в своём представлении
+ * о том, что открыто.
  *
  * @param openGit как открыть git-репозиторий воркспейса; подменяется в тестах.
  * @param mode режим, который хост объявляет клиенту; на поведение обработчика не влияет.
  * @param startedAtMillis момент запуска — от него считается время работы хоста.
+ * @param workspaces открытые воркспейсы хоста; тесты могут передать свой набор.
  */
 class StageZeroHandler(
     private val openGit: (Path) -> GitRepository = { path -> JGitRepository.open(path) },
     private val mode: HostMode = HostMode.LOCAL,
     private val startedAtMillis: Long = System.currentTimeMillis(),
+    private val workspaces: OpenWorkspaces = OpenWorkspaces(),
 ) : ClientMessageHandler, AutoCloseable {
-
-    private class OpenWorkspace(
-        val workspace: Workspace,
-        val fileSystem: WorkspaceFileSystem,
-        val treeBuilder: FileTreeBuilder,
-        val git: GitRepository,
-    )
-
-    private val opened = ConcurrentHashMap<WorkspaceId, OpenWorkspace>()
 
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
         is ClientMessage.OpenWorkspace -> openWorkspace(message)
@@ -126,11 +122,16 @@ class StageZeroHandler(
     private fun openWorkspace(message: ClientMessage.OpenWorkspace): HostMessage = try {
         val workspace = Workspace.open(Path.of(message.path))
         val fileSystem = WorkspaceFileSystem(workspace)
-        opened[workspace.id] = OpenWorkspace(
-            workspace = workspace,
-            fileSystem = fileSystem,
-            treeBuilder = FileTreeBuilder(fileSystem, workspace),
-            git = openGitFor(workspace),
+        workspaces.add(
+            OpenedWorkspace(
+                workspace = workspace,
+                fileSystem = fileSystem,
+                treeBuilder = FileTreeBuilder(fileSystem, workspace),
+                // Граница строится здесь же: инструменты агента получают её у воркспейса,
+                // а не собирают свой доступ к файлам (T-1.7).
+                boundary = WorkspaceBoundaryAdapter(fileSystem),
+                git = openGitFor(workspace),
+            ),
         )
         HostMessage.WorkspaceOpened(message.requestId, workspace.id)
     } catch (error: WorkspaceAccessException) {
@@ -153,9 +154,9 @@ class StageZeroHandler(
     private inline fun withWorkspace(
         workspaceId: WorkspaceId,
         requestId: RequestId,
-        block: (OpenWorkspace) -> HostMessage,
+        block: (OpenedWorkspace) -> HostMessage,
     ): HostMessage {
-        val open = opened[workspaceId]
+        val open = workspaces.find(workspaceId)
             ?: return HostMessage.Failure(requestId, ProtocolError.WorkspaceClosed(workspaceId))
         return try {
             block(open)
@@ -169,7 +170,6 @@ class StageZeroHandler(
     }
 
     override fun close() {
-        opened.values.forEach { runCatching { it.git.close() } }
-        opened.clear()
+        workspaces.close()
     }
 }

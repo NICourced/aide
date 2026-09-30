@@ -1,5 +1,6 @@
 package dev.aide.agent.prompt
 
+import dev.aide.agent.llm.LlmMessage
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.domain.PlanStep
 import dev.aide.domain.StepStatus
@@ -33,8 +34,7 @@ object PlannerPrompt {
 
     /** Строит запрос на планирование по поставленной задаче. */
     fun request(task: Task): LlmRequest = LlmRequest(
-        system = SYSTEM_PROMPT,
-        messages = listOf(task.prompt),
+        messages = listOf(LlmMessage.system(SYSTEM_PROMPT), LlmMessage.user(task.prompt)),
     )
 
     /**

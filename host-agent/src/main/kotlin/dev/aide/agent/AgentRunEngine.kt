@@ -2,16 +2,17 @@ package dev.aide.agent
 
 import dev.aide.agent.llm.LlmCallException
 import dev.aide.agent.llm.LlmClient
+import dev.aide.agent.llm.LlmMessage
+import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.llm.code
-import dev.aide.agent.ports.AgentEventSink
-import dev.aide.agent.ports.RunRepository
-import dev.aide.agent.ports.TaskRepository
+import dev.aide.agent.ports.RunPorts
 import dev.aide.agent.prompt.PlanFormatException
 import dev.aide.agent.prompt.StepPrompt
 import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.agent.provider.ModelProvider
 import dev.aide.agent.provider.ModelUnavailableException
+import dev.aide.agent.tools.StepTools
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.PlanStep
@@ -49,6 +50,21 @@ private const val TITLE_LIMIT = 80
 private const val STOP_MESSAGE = "Прогон остановлен пользователем"
 
 /**
+ * Сколько витков «модель просит инструмент → инструмент отвечает» допускается в шаге.
+ *
+ * Число с причиной: шаг — это несколько чтений и поисков, а модель, зациклившаяся на
+ * вызовах (ищет одно и то же, зовёт несуществующий файл), сама не остановится. Предел
+ * конечен, потому что за витками стоят токены пользователя и время прогона; двенадцати
+ * витков хватает на осмысленный шаг, а исчерпание — видимый отказ, а не тишина.
+ */
+internal const val MAX_STEP_TURNS: Int = 12
+
+/** Шаг исчерпал лимит вызовов инструментов: прогон падает кодом, а не крутится дальше. */
+private class StepToolLimitException(turns: Int) : Exception(
+    "шаг запросил инструменты $turns раз подряд: предел в $MAX_STEP_TURNS витков исчерпан",
+)
+
+/**
  * Код причины отказа: понятную строку строит UI из ресурсов (NFR-13).
  *
  * Неожиданные ошибки дают код [RunInterruptReason.UNEXPECTED], а не имя JVM-класса:
@@ -61,6 +77,7 @@ private fun reasonOf(error: Throwable): String = when (error) {
     // «нет переменной с ключом» и «протокол не поддержан» свои коды, и все они
     // понятны UI без разбора строк (NFR-13).
     is ModelUnavailableException -> error.failure.code
+    is StepToolLimitException -> RunInterruptReason.TOOL_LOOP_LIMIT
     is PlanFormatException -> RunInterruptReason.PLAN_UNREADABLE
     else -> RunInterruptReason.UNEXPECTED
 }
@@ -81,18 +98,17 @@ private fun reasonOf(error: Throwable): String = when (error) {
  * @param clock источник времени; подменяется в тестах.
  */
 class AgentRunEngine(
-    private val runs: RunRepository,
-    private val tasks: TaskRepository,
+    private val ports: RunPorts,
     private val models: ModelProvider,
     private val planner: RunPlanner,
-    private val events: AgentEventSink,
+    private val tools: StepTools,
     private val clock: () -> Instant = Clock.System::now,
 ) {
 
     private val logger = LoggerFactory.getLogger(AgentRunEngine::class.java)
 
-    private val queue = RunQueue(tasks)
-    private val writer = RunStateWriter(runs, tasks, events, clock, Mutex())
+    private val queue = RunQueue(ports.tasks)
+    private val writer = RunStateWriter(ports.runs, ports.tasks, ports.events, clock, Mutex())
     private val controls = ConcurrentHashMap<RunId, RunControl>()
     private val pendingModes = ConcurrentHashMap<TaskId, AutonomyMode>()
 
@@ -284,15 +300,44 @@ class AgentRunEngine(
         return writer.persist(paused.copy(state = RunState.RUNNING))
     }
 
-    /** Один шаг — один вызов модели; ошибка провайдера поднимается наружу как [LlmCallException]. */
+    /**
+     * Шаг — цикл «модель просит инструмент, инструмент отвечает» (T-1.7).
+     *
+     * Пока модель просит инструменты, диалог продолжается: её ответ с вызовами и
+     * результаты вызовов дописываются к репликам, и запрос уходит снова. Витки
+     * ограничены [MAX_STEP_TURNS]: зациклившаяся на вызовах модель иначе жгла бы
+     * токены и время пользователя без конца. Исчерпание предела — отказ прогона
+     * кодом `tool_loop_limit`, а не молчаливое завершение шага: шаг, брошенный
+     * на середине, выполненным считать нельзя.
+     *
+     * Стоимость и время каждого вызова накапливаются сразу, поэтому отказ на середине
+     * шага не прячет уже потраченное (FR-COST-2), а ошибка провайдера поднимается
+     * наружу как [LlmCallException].
+     */
     private suspend fun applyStep(
         task: Task,
         run: AgentRun,
         step: PlanStep,
         llm: LlmClient,
-    ): AgentRun = when (val response = llm.complete(StepPrompt.request(task, step, run.plan))) {
-        is LlmResponse.Text -> writer.recordStep(run, step, response)
-        is LlmResponse.Error -> throw LlmCallException(response)
+    ): AgentRun {
+        var current = run
+        var messages = StepPrompt.request(task, step, run.plan, tools.definitions).messages
+        var turns = 0
+        while (true) {
+            val response = when (val answer = llm.complete(LlmRequest(messages, tools.definitions))) {
+                is LlmResponse.Text -> answer
+                is LlmResponse.Error -> throw LlmCallException(answer)
+            }
+            current = writer.accumulate(current, response)
+            if (response.toolCalls.isEmpty()) return writer.recordStep(current, step)
+            turns += 1
+            if (turns > MAX_STEP_TURNS) throw StepToolLimitException(turns)
+            // Вызовы выполняются по порядку (map, а не параллельный запуск): инструменты
+            // ходят на диск, и цена ошибки, когда порядок результатов перестаёт совпадать
+            // с порядком вызовов в ответе модели, больше выигрыша от гонки трёх чтений.
+            val results = response.toolCalls.map { call -> LlmMessage.tool(call.id, tools.invoke(run.id, call).text) }
+            messages = messages + LlmMessage.assistant(response.text, response.toolCalls) + results
+        }
     }
 }
 

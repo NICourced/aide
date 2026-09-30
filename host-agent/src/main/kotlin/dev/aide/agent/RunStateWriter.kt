@@ -40,19 +40,31 @@ internal class RunStateWriter(
     }
 
     /**
-     * Отмечает шаг выполненным и накапливает стоимость и время.
+     * Накапливает стоимость и время одного вызова модели.
      *
-     * Смена состояния прогона при этом не происходит, поэтому событие не рассылается:
-     * событие — про состояние прогона, а не про каждый шаг (§ 8.4).
+     * Отдельно от [recordStep], потому что вызовов на шаг теперь больше одного (T-1.7):
+     * запись после каждого вызова не даёт потерять потраченное, если следующий вызов
+     * откажет. Событие не рассылается — состояние прогона от стоимости не меняется (§ 8.4).
      */
-    suspend fun recordStep(run: AgentRun, step: PlanStep, response: LlmResponse.Text): AgentRun {
-        val plan = run.plan.map { if (it.index == step.index) it.copy(status = StepStatus.DONE) else it }
-        val updated = run.copy(
-            plan = plan,
+    suspend fun accumulate(run: AgentRun, response: LlmResponse.Text): AgentRun = persist(
+        run.copy(
             cost = run.cost + response.cost,
             elapsedMillis = run.elapsedMillis + response.elapsedMillis,
-        )
-        return persist(updated, emit = false)
+        ),
+        emit = false,
+    )
+
+    /**
+     * Отмечает шаг выполненным.
+     *
+     * Смена состояния прогона при этом не происходит, поэтому событие не рассылается:
+     * событие — про состояние прогона, а не про каждый шаг (§ 8.4). Стоимость и время
+     * вызовов шага уже накоплены [accumulate]: вызовов внутри шага теперь много (T-1.7),
+     * и складывать их здесь значило бы либо терять промежуточные, либо считать дважды.
+     */
+    suspend fun recordStep(run: AgentRun, step: PlanStep): AgentRun {
+        val plan = run.plan.map { if (it.index == step.index) it.copy(status = StepStatus.DONE) else it }
+        return persist(run.copy(plan = plan), emit = false)
     }
 
     /** Записывает задачу и сообщает о её новом статусе — тот же порядок, что у прогона. */

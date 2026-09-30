@@ -8,7 +8,9 @@ import dev.aide.agent.provider.AgentModels
 import dev.aide.agent.provider.ProviderCatalog
 import dev.aide.agent.provider.ProviderClients
 import dev.aide.agent.provider.ProviderRegistry
+import dev.aide.agent.ports.RunPorts
 import dev.aide.agent.provider.SecretStore
+import dev.aide.agent.tools.StepTools
 import dev.aide.host.agent.AgentConfigHandler
 import dev.aide.host.agent.AgentRunHandler
 import dev.aide.host.agent.ClientMessageRouter
@@ -17,6 +19,7 @@ import dev.aide.host.agent.RunWorker
 import dev.aide.host.agent.ServerRunEventSink
 import dev.aide.host.agent.StoreRunRepository
 import dev.aide.host.agent.StoreTaskRepository
+import dev.aide.host.agent.StoreToolCallRecorder
 import dev.aide.host.config.AgentConfigStore
 import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ClientSessions
@@ -25,6 +28,14 @@ import dev.aide.host.server.StageZeroHandler
 import dev.aide.host.server.freeLoopbackPort
 import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.store.HostStore
+import dev.aide.host.workspace.OpenWorkspaces
+import dev.aide.host.workspace.WorkspaceToolContext
+import dev.aide.tools.ToolInvoker
+import dev.aide.tools.ToolRegistry
+import dev.aide.tools.file.FindFilesTool
+import dev.aide.tools.file.ReadFileTool
+import dev.aide.tools.file.SearchTextTool
+import dev.aide.tools.permission.PermissionResolver
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.ProtocolVersion
 import io.ktor.client.HttpClient
@@ -92,14 +103,36 @@ object HostApp {
         single(versionQualifier) { ProtocolVersion.CURRENT }
         single { storage.databasePath?.let(DatabaseFactory::open) ?: DatabaseFactory.open() }
         single { ClientSessions() }
-        single { StageZeroHandler(mode = get(modeQualifier)) }
+        // Открытые воркспейсы — одна точка правды и для обработчика клиента, и для
+        // инструментов агента: воркспейс открывает клиент, а читает его агент (T-1.7).
+        single { OpenWorkspaces() }
+        single { StageZeroHandler(mode = get(modeQualifier), workspaces = get()) }
+        single {
+            // Реестр и точка вызова собираются из одного экземпляра реестра: определения
+            // инструментов у модели и их выполнение обязаны быть про один и тот же набор,
+            // иначе модель позвала бы инструмент, которого точка вызова не знает.
+            val registry = ToolRegistry(listOf(ReadFileTool, FindFilesTool, SearchTextTool))
+            StepTools.of(
+                registry = registry,
+                invoker = ToolInvoker(
+                    registry = registry,
+                    // Настройки прав — из хранилища хоста (§ 9): модуль инструментов их не знает.
+                    permissions = PermissionResolver(get<HostStore>().permissions::load),
+                    recorder = StoreToolCallRecorder(get<HostStore>().toolCalls),
+                ),
+                context = WorkspaceToolContext(get()),
+            )
+        }
         single {
             AgentRunEngine(
-                runs = StoreRunRepository(get<HostStore>().runs),
-                tasks = StoreTaskRepository(get<HostStore>().tasks),
+                ports = RunPorts(
+                    runs = StoreRunRepository(get<HostStore>().runs),
+                    tasks = StoreTaskRepository(get<HostStore>().tasks),
+                    events = ServerRunEventSink(get()),
+                ),
                 models = models,
                 planner = planner,
-                events = ServerRunEventSink(get()),
+                tools = get(),
             )
         }
         single {

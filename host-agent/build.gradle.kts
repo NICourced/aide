@@ -10,6 +10,10 @@ dependencies {
     // реестра провайдеров, поэтому потребитель — host-core — видит их без отдельной
     // строки зависимости.
     api(project(":domain"))
+    // api, а не implementation: StepTools — то, чем движок вызывает инструменты, —
+    // держит в публичных сигнатурах ToolContext и ToolResult из host-tools, поэтому
+    // потребитель движка (host-core) видит их без отдельной строки зависимости.
+    api(project(":host-tools"))
     // api, а не implementation: HttpClient стоит в публичной сигнатуре адаптера провайдера
     // (OpenAiCompatibleClient) и фабрики клиентов (ProviderClients), поэтому host-core
     // собирает граф, не добавляя Ktor к себе отдельной строкой. Движка HTTP-клиента здесь
