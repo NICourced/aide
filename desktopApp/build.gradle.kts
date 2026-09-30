@@ -44,10 +44,12 @@ compose.desktop {
                 TargetFormat.Msi,
                 TargetFormat.Exe,
             )
+            // Только латиница: jpackage на Windows падает на не-ASCII в описании и
+            // издателе — проверено на CI (после добавления русского описания сборка
+            // установщика перестала проходить, а ошибка ушла в файл, которого в логе нет).
             packageName = "AIStudio"
             packageVersion = "0.1.0"
-            description = "AI-first IDE: агент выполняет задачу, человек ревьюит изменения"
-            vendor = "AI Studio"
+            vendor = "AIStudio"
             // Модули JDK, которые jpackage не находит сам: он видит только то, что связано
             // в байткоде, а обращение к драйверу SQLite идёт через JDBC-справочник служб,
             // к TLS — через криптопровайдер, а к `sun.misc.Unsafe` — рефлексией. Без них

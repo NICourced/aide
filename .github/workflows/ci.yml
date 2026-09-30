@@ -124,28 +124,34 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Сборка десктопа под Windows
-        shell: bash
-        run: ./gradlew :desktopApp:createDistributable
+        shell: pwsh
+        run: |
+          # Ошибку jpackage Gradle печатает в файл, а не в лог, и без этой печати в CI видно
+          # только «External tool execution failed: exit code 1» — на диагностику уходит
+          # прогон целиком. Печатаем stderr jpackage, если сборка упала.
+          ./gradlew :desktopApp:createDistributable
+          if ($LASTEXITCODE -ne 0) {
+            Get-ChildItem desktopApp/build/compose/logs -Recurse -Filter "*-err.txt" -ErrorAction SilentlyContinue |
+              ForEach-Object { "=== $($_.FullName)"; Get-Content $_ }
+            exit $LASTEXITCODE
+          }
 
       - name: Тесты JVM-модулей под Windows
         shell: bash
         run: ./gradlew :client-ui:jvmTest :client-state:jvmTest
 
       - name: Упаковка десктопа в .msi и .exe
-        # jpackage собирает установщик только на своей платформе и для .msi/.exe требует WiX.
-        # На образах GitHub он обычно уже есть; если нет — ставим и добавляем его bin в PATH,
-        # иначе jpackage не найдёт candle/light и упадёт с невнятной ошибкой.
+        # jpackage собирает установщик только на своей платформе, а WiX для .msi/.exe
+        # скачивает сам плагин Compose (задачи downloadWix/unzipWix) — ставить его отдельно
+        # не нужно. Ошибку jpackage тоже печатаем: иначе в логе остаётся только код возврата.
         shell: pwsh
         run: |
-          $wixBin = Get-ChildItem "C:\Program Files (x86)" -Directory -Filter "WiX Toolset*" -ErrorAction SilentlyContinue |
-            ForEach-Object { Join-Path $_.FullName "bin" } | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $wixBin) {
-            choco install wixtoolset --no-progress -y
-            $wixBin = Get-ChildItem "C:\Program Files (x86)" -Directory -Filter "WiX Toolset*" -ErrorAction SilentlyContinue |
-              ForEach-Object { Join-Path $_.FullName "bin" } | Where-Object { Test-Path $_ } | Select-Object -First 1
-          }
-          if ($wixBin) { $env:PATH = "$wixBin;$env:PATH" }
           ./gradlew :desktopApp:packageMsi :desktopApp:packageExe
+          if ($LASTEXITCODE -ne 0) {
+            Get-ChildItem desktopApp/build/compose/logs -Recurse -Filter "*-err.txt" -ErrorAction SilentlyContinue |
+              ForEach-Object { "=== $($_.FullName)"; Get-Content $_ }
+            exit $LASTEXITCODE
+          }
 
       - name: Выгрузка установщиков Windows
         uses: actions/upload-artifact@v4
