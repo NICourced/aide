@@ -436,7 +436,7 @@ data class LlmResponse(
 - Интеграционный тест в `host-core` на настоящем сервере и настоящем клиенте: `PostTask` → событие `RunStateChanged` доходит и меняется в сессии; `RunsStatus` после переподключения отдаёт текущее состояние; там же — перезапуск хоста на той же базе: незавершённый прогон становится `INTERRUPTED`.
 - Сквозной `desktopApp:test` со скриптованной моделью: задача поставлена из интерфейса, состояние появляется в строке, прогон доходит до `FINISHED`.
 
-**Проверка.** `./gradlew :host-agent:test :host-core:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test`; `./gradlew detekt verifyModuleBoundaries build`; правило границ для `host-agent` — с запретом `protocol`, `git`, базовых хранилищ и `dev.aide.tools` (рантайм зависит от инструментов, а не наоборот); `:host-agent:test` в списке задач CI.
+**Проверка.** `./gradlew :host-agent:test :host-core:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test`; `./gradlew detekt verifyModuleBoundaries build`; правило границ для `host-agent` — с запретом `dev.aide.host`, `dev.aide.client`, `dev.aide.protocol`, `org.eclipse.jgit`, compose и SQLDelight (зависимость `dev.aide.tools` при этом **разрешена**: рантайм агента вызывает инструменты, а не наоборот); `:host-agent:test` в списке задач CI.
 
 **Что останется непроверенным.** Правка плана и подтверждение по режиму — T-1.2: в этой задаче прогон стартует сразу после плана, и окно `PLANNED` короткое, поэтому последовательность доказывается событиями, а не тем, что состояние «задержится» на экране. Ветка задачи и снапшоты — T-1.18/T-1.19: прогон пока ничего не меняет в репозитории. Стоимость только накапливается в прогоне; показывать её будет T-1.5.
 
