@@ -14,7 +14,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Что клиент знает о хосте прямо сейчас. */
 data class HostSession(
@@ -37,6 +40,10 @@ data class HostSession(
  * при переходе соединения в [ConnectionState.Connected] с признаком `reconnected`
  * клиент заново запрашивает состояние открытого воркспейса, дерево и открытый файл,
  * а не полагается на данные, полученные до обрыва.
+ *
+ * Запросы клиент шлёт из нескольких корутин сразу — обработчика событий, экрана,
+ * восстановления после обрыва, — поэтому общее состояние защищено: идентификаторы
+ * запросов выдаются под замком, а сессия обновляется атомарно.
  *
  * @param requestIdPrefix префикс идентификаторов запросов этой сессии клиента. Счётчик
  *   внутри одного запуска обеспечивает уникальность запросов, а префикс — уникальность
@@ -61,6 +68,30 @@ class HostClient(
     private var sequence = 0
 
     /**
+     * Замок счётчика [sequence]. Запросы уходят из нескольких корутин одновременно, и без
+     * замка `++sequence` теряет инкременты: два запроса получают один [RequestId], ответ на
+     * первый достаётся второму, а первый вызывающий ждёт до таймаута. Хост при этом считает
+     * второй запрос повтором и отдаёт чужой ответ — на запрос дерева приходит состояние хоста.
+     */
+    private val sequenceLock = Mutex()
+
+    /**
+     * Замок согласования первого обновления после открытия воркспейса.
+     *
+     * Хост отправляет ответ на `OpenWorkspace` и рассылает [HostEvent.WorkspaceChanged]
+     * подряд, а клиент разбирает их в разных корутинах — порядка между ними нет. Если событие
+     * обработается раньше продолжения [openWorkspace], открытого воркспейса клиент ещё не
+     * знает, и событие потерялось бы вместе с обновлением: дерево и состояние хоста остались
+     * бы незапрошенными до следующего реконнекта. Поэтому событие, пришедшее без открытого
+     * воркспейса, запоминается в [pendingWorkspaceChange] и исполняется тем из двоих, кто
+     * окажется вторым.
+     */
+    private val workspaceChangeLock = Mutex()
+
+    /** Воркспейс из [HostEvent.WorkspaceChanged], пришедшего до того, как клиент его узнал. */
+    private var pendingWorkspaceChange: WorkspaceId? = null
+
+    /**
      * Подписывается на состояние соединения и события хоста.
      *
      * Событие [HostEvent.WorkspaceChanged] заставляет перезапросить состояние открытого
@@ -81,7 +112,16 @@ class HostClient(
                 val event = (message as? HostMessage.Event)?.event ?: return@collect
                 when (event) {
                     is HostEvent.WorkspaceChanged -> {
-                        if (event.workspaceId == _session.value.workspaceId) refreshWorkspace()
+                        val aboutOpenWorkspace = workspaceChangeLock.withLock {
+                            val open = _session.value.workspaceId
+                            if (open == null) {
+                                pendingWorkspaceChange = event.workspaceId
+                                false
+                            } else {
+                                open == event.workspaceId
+                            }
+                        }
+                        if (aboutOpenWorkspace) refreshWorkspace()
                     }
 
                     HostEvent.HostShuttingDown -> _hostShuttingDown.value = true
@@ -96,12 +136,23 @@ class HostClient(
         val response = connection.request(ClientMessage.OpenWorkspace(requestId, path))
         return when (response) {
             is HostMessage.WorkspaceOpened -> {
-                _session.value = _session.value.copy(workspaceId = response.workspaceId, lastError = null)
+                val announced = workspaceChangeLock.withLock {
+                    _session.update { it.copy(workspaceId = response.workspaceId, lastError = null) }
+                    val pending = pendingWorkspaceChange
+                    pendingWorkspaceChange = null
+                    pending
+                }
+                // Событие об этом же открытии могло прийти раньше ответа: тогда обновление,
+                // обещанное обработчиком события, обязан выполнить именно открывающий — и ровно
+                // один раз, иначе обновление либо потеряется, либо случится дважды. В фон, а не
+                // здесь: вызывающий сразу после открытия сам запрашивает дерево и состояние
+                // (`openRepository` в UI), и ожидание внутри открытия удлинило бы его вчетверо.
+                if (announced == response.workspaceId) scope.launch { refreshWorkspace() }
                 response.workspaceId
             }
 
             is HostMessage.Failure -> {
-                _session.value = _session.value.copy(lastError = response.error)
+                _session.update { it.copy(lastError = response.error) }
                 null
             }
 
@@ -117,7 +168,7 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос дерева")))
         }
-    }.onSuccess { tree -> _session.value = _session.value.copy(tree = tree) }
+    }.onSuccess { tree -> _session.update { it.copy(tree = tree) } }
 
     /** Запрашивает содержимое файла; результат сохраняется в [session] как открытый файл. */
     suspend fun fileContent(path: String): Result<FileContentPayload> = call { workspaceId ->
@@ -127,11 +178,11 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос файла")))
         }
-    }.onSuccess { content -> _session.value = _session.value.copy(openFile = content) }
+    }.onSuccess { content -> _session.update { it.copy(openFile = content) } }
 
     /** Закрывает выбранный файл: после этого реконнект его уже не перезапрашивает. */
     fun closeFile() {
-        _session.value = _session.value.copy(openFile = null)
+        _session.update { it.copy(openFile = null) }
     }
 
     /** Запрашивает состояние хоста: ветку, корень, режим; результат сохраняется в [session]. */
@@ -142,13 +193,13 @@ class HostClient(
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос состояния")))
         }
-    }.onSuccess { state -> _session.value = _session.value.copy(hostState = state, lastError = null) }
+    }.onSuccess { state -> _session.update { it.copy(hostState = state, lastError = null) } }
 
     private suspend fun <T> call(block: suspend (WorkspaceId) -> Result<T>): Result<T> {
         val workspaceId = _session.value.workspaceId
             ?: return Result.failure(HostCallException(ProtocolError.Internal("воркспейс не открыт")))
         return block(workspaceId).onFailure { error ->
-            if (error is HostCallException) _session.value = _session.value.copy(lastError = error.error)
+            if (error is HostCallException) _session.update { it.copy(lastError = error.error) }
         }
     }
 
@@ -167,7 +218,9 @@ class HostClient(
         _session.value.openFile?.path?.let { path -> fileContent(path) }
     }
 
-    private fun nextRequestId(): RequestId = RequestId("$requestIdPrefix-${++sequence}")
+    private suspend fun nextRequestId(): RequestId = sequenceLock.withLock {
+        RequestId("$requestIdPrefix-${++sequence}")
+    }
 
     companion object {
         /** Основание системы счисления для короткого префикса. */

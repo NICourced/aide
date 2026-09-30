@@ -4,10 +4,15 @@ import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.SessionId
 import dev.aide.protocol.WorkspaceId
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -15,9 +20,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
 
 /**
- * Идентификаторы запросов уникальны между запусками клиента: кэш ответов живёт на хосте
- * весь его срок, поэтому новый клиентский процесс не должен повторять прежний `req-1`
- * и получать чужой ответ.
+ * Идентификаторы запросов уникальны между запусками клиента и внутри одного запуска:
+ * кэш ответов живёт на хосте весь его срок, поэтому новый клиентский процесс не должен
+ * повторять прежний `req-1` и получать чужой ответ, а два запроса одного клиента не должны
+ * делить идентификатор — хост счёл бы второй из них повтором.
  */
 class HostClientRequestIdTest {
 
@@ -88,6 +94,44 @@ class HostClientRequestIdTest {
         assertNotEquals(firstPrefix, secondPrefix, "Случайные префиксы двух клиентов не должны совпадать")
     }
 
+    /**
+     * Проверка идёт на настоящих потоках: в приложении запросы уходят из нескольких корутин
+     * сразу — обработчика событий, экрана, восстановления после обрыва, — и `Dispatchers.Default`
+     * разводит их по ядрам. Счётчик под общим замком обязан выдержать и это.
+     */
+    @Test
+    fun `одновременные запросы одного клиента получают разные идентификаторы`() {
+        val connection = FakeHostConnection()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val client = HostClient(connection, scope, requestIdPrefix = "test")
+            client.start()
+            runBlocking { client.openWorkspace(REPO_PATH) }
+
+            val workers = (1..THREADS).map {
+                thread {
+                    runBlocking { repeat(REQUESTS_PER_THREAD) { client.hostState() } }
+                }
+            }
+            workers.forEach { it.join() }
+
+            val ids = connection.takeRequests()
+                .filterIsInstance<ClientMessage.HostState>()
+                .map { it.requestId }
+
+            assertEquals(THREADS * REQUESTS_PER_THREAD, ids.size, "до хоста дошли не все запросы")
+            assertEquals(ids.size, ids.toSet().size, "идентификаторы запросов обязаны быть уникальны")
+        } finally {
+            scope.cancel()
+        }
+    }
+
     private fun requestIdOf(connection: RecordingConnection): String =
         (connection.sent.single() as ClientMessage.OpenWorkspace).requestId.value
+
+    private companion object {
+        const val REPO_PATH = "/projects/aide"
+        const val THREADS = 8
+        const val REQUESTS_PER_THREAD = 5_000
+    }
 }

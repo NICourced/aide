@@ -30,6 +30,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 
@@ -62,7 +64,15 @@ class KtorHostConnection(
     override val events: SharedFlow<HostMessage> = _events.asSharedFlow()
 
     private val outgoing = Channel<ByteArray>(capacity = Channel.UNLIMITED)
+
+    /**
+     * Ожидающие ответа запросы. Записывают их все корутины, отправляющие запросы, а удаляет
+     * цикл соединения, приняв ответ, — поэтому доступ идёт под [pendingLock]: у обычной карты
+     * одновременные запись и удаление теряют записи, и запрос, чей ответ уже пришёл, дожидается
+     * таймаута, а его ответ при этом выдаётся за событие хоста.
+     */
     private val pending = mutableMapOf<RequestId, CompletableDeferred<HostMessage>>()
+    private val pendingLock = Mutex()
 
     private var loop: Job? = null
     private var everConnected = false
@@ -91,9 +101,12 @@ class KtorHostConnection(
         // Если соединение уже установлено, отправляем сразу; иначе кладём в очередь —
         // цикл соединения вышлет накопленное после подключения.
         val deferred = CompletableDeferred<HostMessage>()
-        pending[requestId] = deferred
+        pendingLock.withLock { pending[requestId] = deferred }
         outgoing.trySend(ProtocolCodec.encode(message))
-        return withTimeoutOrNull(timeoutMillis) { deferred.await() }.also { pending.remove(requestId) }
+        val response = withTimeoutOrNull(timeoutMillis) { deferred.await() }
+        // Ждём без замка: ответ приходит в цикл соединения, и он же убирает запись из очереди.
+        pendingLock.withLock { pending.remove(requestId) }
+        return response
     }
 
     /**
@@ -188,8 +201,10 @@ class KtorHostConnection(
                     }
 
                     else -> {
+                        // Ответ забираем из очереди под замком, а будим ожидающего уже без него:
+                        // разбуженная корутина сама обращается к очереди.
                         val requestId = message.requestIdOrNull()
-                        val waiter = requestId?.let { pending.remove(it) }
+                        val waiter = pendingLock.withLock { requestId?.let { pending.remove(it) } }
                         if (waiter != null) waiter.complete(message) else _events.tryEmit(message)
                     }
                 }
