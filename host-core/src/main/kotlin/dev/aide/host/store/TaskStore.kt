@@ -45,6 +45,17 @@ class TaskStore internal constructor(private val database: HostDatabase) {
     fun unfinished(): List<Task> =
         database.taskQueries.unfinished().executeAsList().map(RowMapper::task)
 
+    /**
+     * Незакрытые задачи: не в терминальном состоянии, включая ожидающие ревью (T-1.19).
+     *
+     * Отличается от [unfinished] намеренно: в очередь берутся только задачи без прогона,
+     * а здесь важны и те, что ждут ревью, — их снапшоты ещё нужны пользователю для отката.
+     * «Не завершено» задано отрицанием завершённых статусов, поэтому новый незавершённый
+     * статус не выпадет из защиты от вытеснения. Схему это не меняет.
+     */
+    fun unclosed(): List<Task> =
+        database.taskQueries.unclosed().executeAsList().map(RowMapper::task)
+
     /** Все задачи в порядке постановки — снимок состояния агента (T-1.1). */
     fun all(): List<Task> = database.taskQueries.all().executeAsList().map(RowMapper::task)
 

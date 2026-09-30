@@ -70,6 +70,7 @@ object DomainFixtures {
         mode = AutonomyMode.ASK_BEFORE_CHANGES,
         plan = listOf(PlanStep(index = 0, summary = "Разобрать Login.kt", status = StepStatus.DONE)),
         toolCallIds = listOf(ToolCallId("tc-1")),
+        snapshots = listOf(SnapshotRef("refs/ai/snap/1758535200000-before-agent-step")),
         startedAt = t0,
         finishedAt = t1,
         elapsedMillis = 60_000,

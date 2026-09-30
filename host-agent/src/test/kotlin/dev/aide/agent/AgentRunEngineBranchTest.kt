@@ -1,5 +1,6 @@
 package dev.aide.agent
 
+import dev.aide.agent.ports.RepositoryPorts
 import dev.aide.agent.ports.RunPorts
 import dev.aide.agent.ports.TaskBranch
 import dev.aide.agent.ports.TaskBranches
@@ -40,10 +41,13 @@ class AgentRunEngineBranchTest {
             plan
         },
         tools = tools,
-        branches = TaskBranches { branch ->
-            order += BRANCH
-            branches.ensure(branch)
-        },
+        repositories = RepositoryPorts(
+            branches = TaskBranches { branch ->
+                order += BRANCH
+                branches.ensure(branch)
+            },
+            snapshots = noSnapshots,
+        ),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
 

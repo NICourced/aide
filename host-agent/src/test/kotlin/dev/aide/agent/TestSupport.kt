@@ -5,9 +5,11 @@ import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RunRepository
+import dev.aide.agent.ports.Snapshots
 import dev.aide.agent.ports.TaskBranch
 import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.ports.TaskRepository
+import dev.aide.agent.ports.TaskSnapshot
 import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.agent.provider.ModelProvider
 import dev.aide.agent.provider.ModelUnavailableException
@@ -144,6 +146,9 @@ class FakeTaskBranches(private var outcome: TaskBranch = TaskBranch.Existing) : 
 
 /** Порт ветки, отвечающий «ветка уже была»: тестам без T-1.18 важно лишь, что прогон не отказал. */
 val branchAlreadyExists: TaskBranches = TaskBranches { TaskBranch.Existing }
+
+/** Порт снапшотов, отвечающий «коммитов нет»: тестам без T-1.19 важно лишь, что прогон идёт без снапшота. */
+val noSnapshots: Snapshots = Snapshots { TaskSnapshot.NoHead }
 
 /** Прогон с заданным состоянием; незавершённые — без `finishedAt`. */
 fun testRun(id: String, state: RunState, finishedAt: Instant? = null): AgentRun = AgentRun(

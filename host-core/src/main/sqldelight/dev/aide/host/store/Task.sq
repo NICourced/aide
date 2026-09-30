@@ -31,6 +31,17 @@ SELECT * FROM task
 WHERE status NOT IN ('REVIEW', 'ACCEPTED', 'REJECTED', 'FAILED')
 ORDER BY created_at;
 
+/**
+ * Незакрытые задачи: не в терминальном состоянии — включая ожидающие ревью (T-1.19).
+ *
+ * Отличается от `unfinished`: в очередь берутся задачи без прогона, а снапшоты нужны
+ * и задачам на ревью, поэтому отрицание перечисляет только завершённые статусы.
+ */
+unclosed:
+SELECT * FROM task
+WHERE status NOT IN ('ACCEPTED', 'REJECTED', 'FAILED')
+ORDER BY created_at;
+
 /** Все задачи в порядке постановки — снимок состояния агента (T-1.1). */
 all:
 SELECT * FROM task ORDER BY created_at;

@@ -12,6 +12,7 @@ import dev.aide.domain.Permission
 import dev.aide.domain.ReviewDecision
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
@@ -58,6 +59,7 @@ object StoreFixtures {
         state = RunState.FINISHED,
         mode = AutonomyMode.ASK_BEFORE_CHANGES,
         toolCallIds = listOf(ToolCallId("tc-1")),
+        snapshots = listOf(SnapshotRef("refs/ai/snap/1758535200000-before-agent-step")),
         startedAt = t0,
         finishedAt = t1,
         elapsedMillis = 60_000,

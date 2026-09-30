@@ -5,6 +5,7 @@ import dev.aide.agent.ports.TaskBranch
 import dev.aide.host.git.ChangedFile
 import dev.aide.host.git.CommitInfo
 import dev.aide.host.git.GitRepository
+import dev.aide.host.git.SnapshotOutcome
 import dev.aide.host.git.TaskBranchOutcome
 import dev.aide.host.git.TaskBranchRefusal
 import dev.aide.host.server.ClientMessageHandler
@@ -172,6 +173,12 @@ class TaskBranchGuardTest {
             asked = branch
             return outcome
         }
+
+        override fun createSnapshot(ref: String): SnapshotOutcome = SnapshotOutcome.NoHead
+
+        override fun snapshotRefs(): List<String> = emptyList()
+
+        override fun deleteSnapshots(refs: List<String>) = Unit
 
         override fun close() = Unit
 

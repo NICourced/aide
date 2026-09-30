@@ -8,7 +8,9 @@ import dev.aide.agent.provider.AgentModels
 import dev.aide.agent.provider.ProviderCatalog
 import dev.aide.agent.provider.ProviderClients
 import dev.aide.agent.provider.ProviderRegistry
+import dev.aide.agent.ports.RepositoryPorts
 import dev.aide.agent.ports.RunPorts
+import dev.aide.agent.ports.Snapshots
 import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.provider.SecretStore
 import dev.aide.agent.tools.StepTools
@@ -22,6 +24,7 @@ import dev.aide.host.agent.StoreRunRepository
 import dev.aide.host.agent.StoreTaskRepository
 import dev.aide.host.agent.StoreToolCallRecorder
 import dev.aide.host.agent.TaskBranchGuard
+import dev.aide.host.agent.TaskSnapshotGuard
 import dev.aide.host.config.AgentConfigStore
 import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ClientSessions
@@ -112,6 +115,10 @@ object HostApp {
         // Ветка задачи: реализация порта объявлена по типу интерфейса, иначе Koin
         // разрешал бы её по точному имени класса и не нашёл бы движку (T-1.18).
         single<TaskBranches> { TaskBranchGuard(workspaces = get(), sessions = get()) }
+        // Снапшоты: реализация порта объявлена по типу интерфейса по той же причине —
+        // Koin разрешает по точному ключу типа (T-1.19). Защита «в использовании» берётся
+        // из хранилища: какие снапшоты нужны незакрытым задачам, знает только хост.
+        single<Snapshots> { TaskSnapshotGuard(workspaces = get(), store = get()) }
         single {
             // Реестр и точка вызова собираются из одного экземпляра реестра: определения
             // инструментов у модели и их выполнение обязаны быть про один и тот же набор,
@@ -138,7 +145,7 @@ object HostApp {
                 models = models,
                 planner = planner,
                 tools = get(),
-                branches = get(),
+                repositories = RepositoryPorts(branches = get(), snapshots = get()),
             )
         }
         single {

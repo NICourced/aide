@@ -6,6 +6,7 @@ import dev.aide.domain.DecisionScope
 import dev.aide.domain.DecisionValue
 import dev.aide.domain.PacketId
 import dev.aide.domain.Permission
+import dev.aide.domain.RunId
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
 import dev.aide.domain.ToolCallId
@@ -79,6 +80,32 @@ class HostStoreTest {
     fun `прогон переживает запись и чтение`() {
         store.runs.save(StoreFixtures.run)
         assertEquals(StoreFixtures.run, store.runs.load(StoreFixtures.run.id))
+    }
+
+    @Test
+    fun `снапшоты прогона переживают перезапуск хоста`() {
+        val dbFile = java.nio.file.Files.createTempFile("aide-snapshots-", ".db").toFile()
+        val url = "jdbc:sqlite:${dbFile.absolutePath}"
+        val runId = RunId("r-snapshots")
+        try {
+            JdbcSqliteDriver(url).let { driver ->
+                HostDatabase.Schema.create(driver)
+                HostStore(HostDatabase(driver)).runs.save(StoreFixtures.run.copy(id = runId))
+                driver.close()
+            }
+
+            // Перезапуск: новый драйвер и новая обёртка над тем же файлом. Ссылки снапшотов
+            // лежат в payload прогона, поэтому «какие снапшоты в использовании» не теряется
+            // при падении хоста — иначе вытеснение снесло бы нужное (T-1.19).
+            val driver = JdbcSqliteDriver(url)
+            try {
+                assertEquals(StoreFixtures.run.snapshots, HostStore(HostDatabase(driver)).runs.load(runId)?.snapshots)
+            } finally {
+                driver.close()
+            }
+        } finally {
+            dbFile.delete()
+        }
     }
 
     @Test

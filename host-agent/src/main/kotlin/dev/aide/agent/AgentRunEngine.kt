@@ -6,8 +6,8 @@ import dev.aide.agent.llm.LlmMessage
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.llm.code
+import dev.aide.agent.ports.RepositoryPorts
 import dev.aide.agent.ports.RunPorts
-import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.prompt.PlanFormatException
 import dev.aide.agent.prompt.StepPrompt
 import dev.aide.agent.provider.ConfiguredModel
@@ -96,9 +96,11 @@ private fun reasonOf(error: Throwable): String = when (error) {
  * работает выбранным клиентом. Поэтому смена модели в настройках не меняет правила
  * идущего прогона (FR-AGENT-5), а отказ выбора — обычное состояние с кодом причины.
  *
- * Ветку задачи ставит [TaskBranches] — тоже в начале прогона и до планирования (T-1.18):
- * планирование читает репозиторий, и читать его надо уже в той ветке, где агент будет
- * работать, иначе план окажется про другое состояние дерева.
+ * Ветку задачи и снапшот движок получает из [RepositoryPorts]. Ветка ставится в начале
+ * прогона и до планирования (T-1.18): планирование читает репозиторий, и читать его надо
+ * уже в той ветке, где агент будет работать. Снапшот ставится там же (T-1.19) — это точка
+ * отсчёта для отката; пустой репозиторий снапшота не даёт, и это не мешает прогону:
+ * без коммитов читать и планировать можно.
  *
  * @param clock источник времени; подменяется в тестах.
  */
@@ -107,7 +109,7 @@ class AgentRunEngine(
     private val models: ModelProvider,
     private val planner: RunPlanner,
     private val tools: StepTools,
-    private val branches: TaskBranches,
+    private val repositories: RepositoryPorts,
     private val clock: () -> Instant = Clock.System::now,
 ) {
 
@@ -115,7 +117,8 @@ class AgentRunEngine(
 
     private val queue = RunQueue(ports.tasks)
     private val writer = RunStateWriter(ports.runs, ports.tasks, ports.events, clock, Mutex())
-    private val placement = TaskBranchPlacement(branches, writer)
+    private val placement = TaskBranchPlacement(repositories.branches, writer)
+    private val runSnapshots = RunSnapshots(repositories.snapshots, writer)
     private val controls = ConcurrentHashMap<RunId, RunControl>()
     private val pendingModes = ConcurrentHashMap<TaskId, AutonomyMode>()
 
@@ -232,6 +235,10 @@ class AgentRunEngine(
      * Отдельная корутина, а не тело воркера: стоп отменяет именно её, и следующий
      * прогон в очереди от отмены не страдает. `join` не пробрасывает отмену наружу,
      * поэтому остановленный прогон не завершает цикл воркера.
+     *
+     * Снапшот ставится здесь, до первого шага (T-1.19): поставить его после первой правки
+     * агента значило бы откатывать к уже испорченному состоянию. Отказ снапшота завершает
+     * прогон отказом — обещание «перед изменением есть снапшот» не должно становиться пустым.
      */
     private suspend fun executeRun(
         task: Task,
@@ -251,8 +258,9 @@ class AgentRunEngine(
         val control = RunControl()
         controls[run.id] = control
         try {
+            val start = runSnapshots.beforeRun(writer.persist(run)) ?: return
             coroutineScope {
-                val job = launch { execute(task, writer.persist(run), control, model.client) }
+                val job = launch { execute(task, start, control, model.client) }
                 control.attach(job)
                 job.join()
             }

@@ -61,11 +61,53 @@ interface GitRepository : AutoCloseable {
      */
     fun ensureTaskBranch(branch: String): TaskBranchOutcome
 
+    /**
+     * Ставит снапшот: ссылку [ref] на текущий HEAD (T-1.19).
+     *
+     * Рабочее дерево, HEAD и история при этом не трогаются: снапшот — ссылка на уже
+     * существующий коммит, а не коммит и не копия дерева. У репозитория без коммитов
+     * снапшота нет ([SnapshotOutcome.NoHead]), и это не ошибка.
+     */
+    fun createSnapshot(ref: String): SnapshotOutcome
+
+    /** Ссылки снапшотов в порядке создания, от старых к новым (T-1.19). */
+    fun snapshotRefs(): List<String>
+
+    /** Удаляет ссылки снапшотов; их коммиты остаются в истории — ссылка и история не одно и то же. */
+    fun deleteSnapshots(refs: List<String>)
+
     companion object {
         /** Сколько коммитов отдаётся по умолчанию: столько помещается в список без подгрузки. */
         const val DEFAULT_LOG_LIMIT: Int = 50
     }
 }
+
+/**
+ * Как репозиторий поставил снапшот (T-1.19).
+ *
+ * Два ожидаемых состояния, а не исключение: «коммитов нет» — обычное состояние
+ * репозитория, в котором снапшот не на что поставить. Сбой записи ссылки — не состояние,
+ * а сбой доступа, и приходит как [GitAccessException] — тем же путём, что и неудачное чтение.
+ */
+sealed interface SnapshotOutcome {
+
+    /** Ссылка поставлена на текущий HEAD. */
+    data object Created : SnapshotOutcome
+
+    /** Коммитов нет: ссылаться не на что, и это не ошибка прогона. */
+    data object NoHead : SnapshotOutcome
+}
+
+/** Префикс ссылок снапшотов: пространство имён вне `refs/heads`, поэтому их нет в списке веток (T-1.19). */
+const val SNAPSHOT_REF_PREFIX: String = "refs/ai/snap/"
+
+/**
+ * Имя ссылки снапшота: метка времени числом и метка повода (T-1.19).
+ *
+ * Метка времени — миллисекунды, а не ISO-8601: двоеточия в именах ссылок git запрещены,
+ * а числовая метка ещё и сортируется как есть, то есть старые снапшоты идут первыми.
+ */
+fun snapshotRefName(epochMillis: Long, label: String): String = "$SNAPSHOT_REF_PREFIX$epochMillis-$label"
 
 /** Ошибка доступа к репозиторию, несущая типизированную причину. */
 class GitAccessException(val error: ProtocolError) : Exception(error.toString())

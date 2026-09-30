@@ -118,6 +118,19 @@ class DomainRoundTripTest {
     }
 
     @Test
+    fun `AgentRun помнит свои снапшоты`() {
+        // По этому списку хост отличает снапшоты незакрытой задачи от вытесняемых,
+        // поэтому он обязан доехать до базы и обратно, а не потеряться в сериализации.
+        val decoded = roundTrip(DomainFixtures.run)
+
+        assertEquals(
+            listOf(SnapshotRef("refs/ai/snap/1758535200000-before-agent-step")),
+            decoded.snapshots,
+        )
+        assertTrue(roundTrip(DomainFixtures.emptyRun).snapshots.isEmpty(), "без снапшотов список пустой")
+    }
+
+    @Test
     fun `AgentRun без записанной модели переживает round-trip`() {
         // Поле аддитивное: прогоны, начатые до настройки моделей, читаются с пустым алиасом.
         assertEquals("", DomainFixtures.emptyRun.modelAlias)

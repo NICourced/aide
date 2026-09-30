@@ -4,6 +4,7 @@ import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.llm.LlmRole
 import dev.aide.agent.llm.LlmToolCall
+import dev.aide.agent.ports.RepositoryPorts
 import dev.aide.agent.ports.RunPorts
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
@@ -53,7 +54,7 @@ class AgentRunEngineToolsTest {
         models = fixedModel(llm),
         planner = RunPlanner { _, _ -> plan },
         tools = stepToolsIn(workspace, journal),
-        branches = branchAlreadyExists,
+        repositories = RepositoryPorts(branchAlreadyExists, noSnapshots),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
 

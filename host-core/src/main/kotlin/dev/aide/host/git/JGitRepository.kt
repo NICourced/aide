@@ -9,6 +9,7 @@ import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.RenameDetector
 import org.eclipse.jgit.lib.Constants
+import org.eclipse.jgit.lib.RefUpdate
 import org.eclipse.jgit.lib.Repository
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import org.slf4j.LoggerFactory
@@ -16,9 +17,10 @@ import org.slf4j.LoggerFactory
 /**
  * Реализация чтения состояния git через JGit.
  *
- * Изменяющая операция этого слоя — постановка задачи в её ветку (T-1.18) — вынесена
- * в [TaskBranchOperation]: у чтения состояния и у изменения репозитория разные поводы
- * меняться, а коммиты шагов и снапшоты принесут свои операции (T-1.11, T-1.19).
+ * Изменяющие операции вынесены в отдельные классы: постановка задачи в её ветку (T-1.18)
+ * — в [TaskBranchOperation], снапшоты (T-1.19) — в [SnapshotOperation]. У чтения состояния
+ * и у изменения репозитория разные поводы меняться, а коммиты шагов принесут свою операцию
+ * (T-1.11).
  */
 class JGitRepository private constructor(
     private val repository: Repository,
@@ -28,6 +30,8 @@ class JGitRepository private constructor(
     private val logger = LoggerFactory.getLogger(JGitRepository::class.java)
 
     private val taskBranches = TaskBranchOperation(repository, git)
+
+    private val snapshots = SnapshotOperation(repository)
 
     override fun currentBranch(): String = repository.branch ?: DETACHED_HEAD
 
@@ -76,6 +80,12 @@ class JGitRepository private constructor(
     }
 
     override fun ensureTaskBranch(branch: String): TaskBranchOutcome = taskBranches.ensure(branch)
+
+    override fun createSnapshot(ref: String): SnapshotOutcome = snapshots.create(ref)
+
+    override fun snapshotRefs(): List<String> = snapshots.refs()
+
+    override fun deleteSnapshots(refs: List<String>) = snapshots.delete(refs)
 
     /**
      * Переименования, уже зафиксированные в индексе.
@@ -129,7 +139,7 @@ class JGitRepository private constructor(
 }
 
 /**
- * Постановка задачи в её ветку (T-1.18) — единственная изменяющая операция git в этом слое.
+ * Постановка задачи в её ветку (T-1.18).
  *
  * Отдельный класс от [JGitRepository]: чтение состояния и изменение репозитория — разные
  * поводы меняться, и операция держит собственные предпроверки (нет коммитов, HEAD
@@ -202,6 +212,68 @@ private class TaskBranchOperation(private val repository: Repository, private va
 
     /** Есть ли куда записать ссылку: создание ветки пишет в каталог `.git`. */
     private fun isWritable(): Boolean = repository.directory?.let { Files.isWritable(it.toPath()) } == true
+}
+
+/**
+ * Снапшоты в скрытом пространстве имён (T-1.19).
+ *
+ * Отдельный класс от [TaskBranchOperation]: постановка ветки переключает рабочее дерево
+ * и HEAD, а снапшот — только ссылку на уже существующий коммит. Предпроверки поэтому
+ * тоже разные: ветке мешает отсоединённый HEAD, снапшоту — единственное «ссылаться не на что».
+ */
+private class SnapshotOperation(private val repository: Repository) {
+
+    /** Ставит ссылку [ref] на текущий HEAD, не создавая коммит и не трогая рабочее дерево. */
+    fun create(ref: String): SnapshotOutcome {
+        val head = runCatching { repository.resolve(Constants.HEAD) }.getOrNull()
+            ?: return SnapshotOutcome.NoHead
+        // Перезапись ссылки с тем же именем допустима: имя и есть метка времени, поэтому
+        // два снапшота в одну миллисекунду с одним поводом — это один и тот же снапшот.
+        val update = repository.updateRef(ref).apply {
+            setNewObjectId(head)
+            isForceUpdate = true
+        }
+        write(update, ref)
+        return SnapshotOutcome.Created
+    }
+
+    /** Ссылки снапшотов, от старых к новым: метка времени в имени сортируется как число. */
+    fun refs(): List<String> = runCatching {
+        repository.refDatabase.getRefsByPrefix(SNAPSHOT_REF_PREFIX)
+            .map { it.name }
+            .sortedBy(::timestampOf)
+    }.getOrElse { error ->
+        throw GitAccessException(ProtocolError.Internal("не удалось прочитать снапшоты", error.message))
+    }
+
+    /** Удаляет ссылки; коммиты остаются в истории — снапшот это ссылка, а не ветка. */
+    fun delete(refs: List<String>) {
+        refs.forEach { ref ->
+            val update = repository.updateRef(ref).apply { isForceUpdate = true }
+            runCatching { update.delete() }.getOrElse { error ->
+                throw GitAccessException(ProtocolError.Internal("не удалось удалить снапшот $ref", error.message))
+            }
+        }
+    }
+
+    /** Выполняет запись ссылки, превращая сбой в типизированную ошибку доступа. */
+    private fun write(update: RefUpdate, ref: String) {
+        val result = runCatching { update.update() }.getOrElse { error ->
+            throw GitAccessException(ProtocolError.Internal("не удалось поставить снапшот $ref", error.message))
+        }
+        if (result !in WRITTEN) {
+            throw GitAccessException(ProtocolError.Internal("не удалось поставить снапшот $ref", result.name))
+        }
+    }
+
+    /** Метка времени из имени ссылки: число до первого дефиса, как его собирает [snapshotRefName]. */
+    private fun timestampOf(ref: String): Long =
+        ref.removePrefix(SNAPSHOT_REF_PREFIX).substringBefore('-').toLongOrNull() ?: 0L
+
+    private companion object {
+        /** Исходы записи ссылки, означающие, что она записана; остальные — отказ. */
+        val WRITTEN = setOf(RefUpdate.Result.NEW, RefUpdate.Result.FORCED, RefUpdate.Result.NO_CHANGE)
+    }
 }
 
 private fun notAGitRepository(workTree: Path): Nothing =

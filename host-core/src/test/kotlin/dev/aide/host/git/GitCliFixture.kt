@@ -107,6 +107,28 @@ object GitCliFixture {
     fun headShortHash(root: Path): String =
         run(listOf(GIT, "rev-parse", "--short", "HEAD"), root).output.trim()
 
+    /** Полный хеш HEAD по версии git. */
+    fun headHash(root: Path): String =
+        run(listOf(GIT, "rev-parse", "HEAD"), root).output.trim()
+
+    /** Хеш, на который указывает ссылка, по версии git. */
+    fun hashOf(root: Path, ref: String): String =
+        run(listOf(GIT, "rev-parse", ref), root).output.trim()
+
+    /** Ссылки снапшотов по версии git — независимая проверка скрытого пространства имён (T-1.19). */
+    fun snapshotRefs(root: Path): List<String> = refNames(root, SNAPSHOT_REF_PREFIX)
+
+    /** Имена ссылок под префиксом, отсортированные по имени. */
+    fun refNames(root: Path, prefix: String): List<String> =
+        run(listOf(GIT, "for-each-ref", "--format=%(refname)", prefix), root).output
+            .lines()
+            .filter { it.isNotBlank() }
+            .sorted()
+
+    /** Обычный список веток `git branch` — то, в чём снапшота быть не должно (T-1.19). */
+    fun branchList(root: Path): String =
+        run(listOf(GIT, "branch", "--list"), root).output.trim()
+
     data class CliResult(val exitCode: Int, val output: String)
 
     fun run(command: List<String>, workingDir: Path?): CliResult {

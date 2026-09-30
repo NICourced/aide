@@ -17,6 +17,12 @@ private const val MILLIS_PER_SECOND = 1_000L
 /** Ветка задачи из соглашения § 8.3: `ai/<task-id>`. */
 private const val TASK_BRANCH = "ai/t-1"
 
+/** Метка времени снапшота из T-1.19: миллисекунды от эпохи. */
+private const val SNAPSHOT_MILLIS = 1_758_535_200_000L
+
+/** Повод снапшота в имени ссылки. */
+private const val LABEL = "before-agent-step"
+
 class JGitRepositoryTest {
 
     private val tempDirs = mutableListOf<Path>()
@@ -294,6 +300,82 @@ class JGitRepositoryTest {
 
             assertEquals(TaskBranchRefusal.GIT_FAILED, outcome.reason)
             assertEquals("master", repository.currentBranch(), "прогон остался в прежней ветке")
+        }
+    }
+
+    @Test
+    fun `снапшот указывает на HEAD и не появляется в списке веток`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        val headBefore = GitCliFixture.headHash(root)
+
+        JGitRepository.open(root).use { repository ->
+            val ref = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+            assertEquals(SnapshotOutcome.Created, repository.createSnapshot(ref))
+
+            // Снапшот — ссылка на уже существующий коммит: ни нового коммита, ни сдвига
+            // HEAD, ни правки рабочего дерева.
+            assertEquals(headBefore, GitCliFixture.hashOf(root, ref), "ссылка обязана указывать на HEAD")
+            assertEquals(headBefore, GitCliFixture.headHash(root), "HEAD не сдвинулся")
+            assertEquals(
+                listOf("второй коммит", "первый коммит"),
+                repository.commitLog(limit = LOG_LIMIT).map { it.message },
+                "снапшот не создаёт коммит",
+            )
+            assertEquals(listOf(" M src/Login.kt", "?? src/New.kt"), GitCliFixture.porcelainLines(root))
+
+            // Главное требование § 9: снапшот есть в скрытом пространстве имён, но его нет
+            // в обычном списке веток — ни у git, ни, значит, в перечислении веток интерфейса.
+            assertEquals(listOf(ref), GitCliFixture.snapshotRefs(root))
+            assertEquals(listOf("refs/heads/master"), GitCliFixture.refNames(root, "refs/heads/"))
+            assertEquals("* master", GitCliFixture.branchList(root), "снапшот не ветка")
+        }
+    }
+
+    @Test
+    fun `ссылки снапшотов перечисляются в порядке создания`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+
+        JGitRepository.open(root).use { repository ->
+            val older = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+            val newer = snapshotRefName(SNAPSHOT_MILLIS + MILLIS_PER_SECOND, "after-agent-step")
+            // Ставим в обратном порядке: порядок задаёт метка времени в имени, а не порядок вызовов.
+            repository.createSnapshot(newer)
+            repository.createSnapshot(older)
+
+            assertEquals(listOf(older, newer), repository.snapshotRefs())
+        }
+    }
+
+    @Test
+    fun `удаление снапшота убирает ссылку, но не историю`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+
+        JGitRepository.open(root).use { repository ->
+            val ref = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+            repository.createSnapshot(ref)
+            val headBefore = GitCliFixture.headHash(root)
+
+            repository.deleteSnapshots(listOf(ref))
+
+            assertTrue(GitCliFixture.snapshotRefs(root).isEmpty(), "ссылки нет ни в JGit, ни в git")
+            assertTrue(repository.snapshotRefs().isEmpty())
+            assertEquals(headBefore, GitCliFixture.headHash(root), "коммит остался в истории")
+            assertEquals(
+                listOf("второй коммит", "первый коммит"),
+                repository.commitLog(limit = LOG_LIMIT).map { it.message },
+            )
+        }
+    }
+
+    @Test
+    fun `репозиторий без коммитов снапшота не даёт, но не падает`() {
+        val root = GitCliFixture.createEmptyRepo(tempDir("aide-git-empty-"))
+
+        JGitRepository.open(root).use { repository ->
+            // «Ссылаться не на что» — состояние репозитория, а не сбой: прогон без коммитов
+            // должен читать и планировать, а не падать из-за отсутствия снапшота.
+            assertEquals(SnapshotOutcome.NoHead, repository.createSnapshot(snapshotRefName(SNAPSHOT_MILLIS, LABEL)))
+            assertTrue(repository.snapshotRefs().isEmpty())
         }
     }
 
