@@ -104,7 +104,7 @@ jobs:
       - name: Сборка десктопа
         run: ./gradlew :desktopApp:createDistributable
 
-      - name: Пакеты Linux: .deb и .AppImage
+      - name: Пакеты Linux — .deb и .AppImage
         # Пакеты собираются здесь же, в job сборки: это те же артефакты, что и у релиза,
         # и держать для них отдельный раннер незачем.
         run: |
