@@ -1,5 +1,6 @@
 package dev.aide.protocol
 
+import dev.aide.domain.AgentConfigRejection
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -50,6 +51,19 @@ sealed interface ProtocolError {
     data class NotImplemented(
         /** Что именно ещё не реализовано. */
         val what: String,
+    ) : ProtocolError
+
+    /**
+     * Сохраняемую конфигурацию моделей хост не принял (T-1.56).
+     *
+     * Отдельный вариант, а не `Internal`: это не сбой, а отказ по существу, и причину
+     * пользователь обязан увидеть словами — «повтор алиаса», «пустой адрес» (NFR-13).
+     */
+    @Serializable
+    @SerialName("invalidAgentConfig")
+    data class InvalidAgentConfig(
+        /** Что именно не так с конфигурацией. */
+        val rejection: AgentConfigRejection,
     ) : ProtocolError
 
     /** Внутренняя ошибка хоста. */

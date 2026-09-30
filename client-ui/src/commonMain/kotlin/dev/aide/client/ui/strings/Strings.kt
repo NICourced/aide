@@ -49,6 +49,53 @@ import dev.aide.client.ui.resources.settings_host_endpoint
 import dev.aide.client.ui.resources.settings_host_endpoint_apply
 import dev.aide.client.ui.resources.settings_host_endpoint_hint
 import dev.aide.client.ui.resources.settings_host_endpoint_restart
+import dev.aide.client.ui.resources.settings_model_add
+import dev.aide.client.ui.resources.settings_model_catalog
+import dev.aide.client.ui.resources.settings_model_check
+import dev.aide.client.ui.resources.provider_type_anthropic
+import dev.aide.client.ui.resources.provider_type_openai_compatible
+import dev.aide.client.ui.resources.settings_model_check_failed
+import dev.aide.client.ui.resources.settings_model_check_not_configured
+import dev.aide.client.ui.resources.settings_model_check_unreadable
+import dev.aide.client.ui.resources.settings_model_error_unreachable
+import dev.aide.client.ui.resources.settings_model_rejection_base_url
+import dev.aide.client.ui.resources.settings_model_rejection_context
+import dev.aide.client.ui.resources.settings_model_rejection_duplicate_alias
+import dev.aide.client.ui.resources.settings_model_rejection_max_output
+import dev.aide.client.ui.resources.settings_model_rejection_unknown_provider
+import dev.aide.client.ui.resources.settings_model_check_missing_key
+import dev.aide.client.ui.resources.settings_model_check_ok
+import dev.aide.client.ui.resources.settings_model_check_rate_limited
+import dev.aide.client.ui.resources.settings_model_check_unauthorized
+import dev.aide.client.ui.resources.settings_model_check_unknown_model
+import dev.aide.client.ui.resources.settings_model_check_unsupported
+import dev.aide.client.ui.resources.settings_model_custom
+import dev.aide.client.ui.resources.settings_model_default
+import dev.aide.client.ui.resources.settings_model_default_none
+import dev.aide.client.ui.resources.settings_model_field_alias
+import dev.aide.client.ui.resources.settings_model_field_base_url
+import dev.aide.client.ui.resources.settings_model_field_context
+import dev.aide.client.ui.resources.settings_model_field_display_name
+import dev.aide.client.ui.resources.settings_model_field_id
+import dev.aide.client.ui.resources.settings_model_field_key_env
+import dev.aide.client.ui.resources.settings_model_field_key_env_hint
+import dev.aide.client.ui.resources.settings_model_field_max_output
+import dev.aide.client.ui.resources.settings_model_field_model
+import dev.aide.client.ui.resources.settings_model_field_price_in
+import dev.aide.client.ui.resources.settings_model_field_price_out
+import dev.aide.client.ui.resources.settings_model_field_tool_use
+import dev.aide.client.ui.resources.settings_model_field_type
+import dev.aide.client.ui.resources.settings_model_key_note
+import dev.aide.client.ui.resources.settings_model_loading
+import dev.aide.client.ui.resources.settings_model_make_default
+import dev.aide.client.ui.resources.settings_model_models
+import dev.aide.client.ui.resources.settings_model_models_empty
+import dev.aide.client.ui.resources.settings_model_providers
+import dev.aide.client.ui.resources.settings_model_providers_empty
+import dev.aide.client.ui.resources.settings_model_save
+import dev.aide.client.ui.resources.settings_model_title
+import dev.aide.client.ui.resources.settings_model_yes
+import dev.aide.client.ui.resources.settings_model_no
 import dev.aide.client.ui.resources.settings_repository_apply
 import dev.aide.client.ui.resources.settings_repository_path
 import dev.aide.client.ui.resources.settings_repository_path_hint
@@ -64,6 +111,7 @@ import dev.aide.client.ui.resources.state_error_not_a_repo
 import dev.aide.client.ui.resources.state_error_path_missing
 import dev.aide.client.ui.resources.state_error_retry
 import dev.aide.client.ui.resources.state_error_title
+import dev.aide.client.ui.resources.state_error_config_rejected
 import dev.aide.client.ui.resources.state_error_workspace_closed
 import dev.aide.client.ui.resources.state_loading_skeleton
 import dev.aide.client.ui.resources.state_loading_title
@@ -72,6 +120,12 @@ import dev.aide.client.ui.resources.state_no_permission_title
 import dev.aide.client.ui.resources.state_no_repository
 import dev.aide.client.ui.resources.state_offline_body
 import dev.aide.client.ui.resources.state_offline_title
+import dev.aide.client.ui.resources.task_failure_missing_key
+import dev.aide.client.ui.resources.task_failure_rate_limited
+import dev.aide.client.ui.resources.task_failure_request_failed
+import dev.aide.client.ui.resources.task_failure_response_unreadable
+import dev.aide.client.ui.resources.task_failure_unauthorized
+import dev.aide.client.ui.resources.task_failure_unsupported
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -131,6 +185,7 @@ object Strings {
     val stateErrorPathMissing: StringResource = Res.string.state_error_path_missing
     val stateErrorNotARepo: StringResource = Res.string.state_error_not_a_repo
     val stateErrorWorkspaceClosed: StringResource = Res.string.state_error_workspace_closed
+    val stateErrorConfigRejected: StringResource = Res.string.state_error_config_rejected
     val stateOfflineTitle: StringResource = Res.string.state_offline_title
     val stateOfflineBody: StringResource = Res.string.state_offline_body
     val stateNoPermissionTitle: StringResource = Res.string.state_no_permission_title
@@ -152,6 +207,61 @@ object Strings {
     val settingsControlModeGestures: StringResource = Res.string.settings_control_mode_gestures
     val settingsControlModeButtons: StringResource = Res.string.settings_control_mode_buttons
     val settingsControlModeHybrid: StringResource = Res.string.settings_control_mode_hybrid
+
+    val settingsModelTitle: StringResource = Res.string.settings_model_title
+    val settingsModelLoading: StringResource = Res.string.settings_model_loading
+    val settingsModelKeyNote: StringResource = Res.string.settings_model_key_note
+    val settingsModelDefault: StringResource = Res.string.settings_model_default
+    val settingsModelDefaultNone: StringResource = Res.string.settings_model_default_none
+    val settingsModelProviders: StringResource = Res.string.settings_model_providers
+    val settingsModelProvidersEmpty: StringResource = Res.string.settings_model_providers_empty
+    val settingsModelModels: StringResource = Res.string.settings_model_models
+    val settingsModelModelsEmpty: StringResource = Res.string.settings_model_models_empty
+    val settingsModelCatalog: StringResource = Res.string.settings_model_catalog
+    val settingsModelAdd: StringResource = Res.string.settings_model_add
+    val settingsModelYes: StringResource = Res.string.settings_model_yes
+    val settingsModelNo: StringResource = Res.string.settings_model_no
+    val settingsModelMakeDefault: StringResource = Res.string.settings_model_make_default
+    val settingsModelCheck: StringResource = Res.string.settings_model_check
+    val settingsModelSave: StringResource = Res.string.settings_model_save
+    val settingsModelCustom: StringResource = Res.string.settings_model_custom
+    val settingsModelFieldId: StringResource = Res.string.settings_model_field_id
+    val settingsModelFieldBaseUrl: StringResource = Res.string.settings_model_field_base_url
+    val settingsModelFieldKeyEnv: StringResource = Res.string.settings_model_field_key_env
+    val settingsModelFieldKeyEnvHint: StringResource = Res.string.settings_model_field_key_env_hint
+    val settingsModelFieldType: StringResource = Res.string.settings_model_field_type
+    val settingsModelFieldAlias: StringResource = Res.string.settings_model_field_alias
+    val settingsModelFieldModel: StringResource = Res.string.settings_model_field_model
+    val settingsModelFieldDisplayName: StringResource = Res.string.settings_model_field_display_name
+    val settingsModelFieldContext: StringResource = Res.string.settings_model_field_context
+    val settingsModelFieldMaxOutput: StringResource = Res.string.settings_model_field_max_output
+    val settingsModelFieldToolUse: StringResource = Res.string.settings_model_field_tool_use
+    val settingsModelFieldPriceIn: StringResource = Res.string.settings_model_field_price_in
+    val settingsModelFieldPriceOut: StringResource = Res.string.settings_model_field_price_out
+    val settingsModelCheckOk: StringResource = Res.string.settings_model_check_ok
+    val settingsModelCheckMissingKey: StringResource = Res.string.settings_model_check_missing_key
+    val settingsModelCheckUnauthorized: StringResource = Res.string.settings_model_check_unauthorized
+    val settingsModelCheckRateLimited: StringResource = Res.string.settings_model_check_rate_limited
+    val settingsModelCheckUnsupported: StringResource = Res.string.settings_model_check_unsupported
+    val settingsModelCheckUnknownModel: StringResource = Res.string.settings_model_check_unknown_model
+    val settingsModelCheckNotConfigured: StringResource = Res.string.settings_model_check_not_configured
+    val settingsModelCheckUnreadable: StringResource = Res.string.settings_model_check_unreadable
+    val settingsModelCheckFailed: StringResource = Res.string.settings_model_check_failed
+    val settingsModelErrorUnreachable: StringResource = Res.string.settings_model_error_unreachable
+    val settingsModelRejectionBaseUrl: StringResource = Res.string.settings_model_rejection_base_url
+    val settingsModelRejectionDuplicateAlias: StringResource = Res.string.settings_model_rejection_duplicate_alias
+    val settingsModelRejectionUnknownProvider: StringResource = Res.string.settings_model_rejection_unknown_provider
+    val settingsModelRejectionContext: StringResource = Res.string.settings_model_rejection_context
+    val settingsModelRejectionMaxOutput: StringResource = Res.string.settings_model_rejection_max_output
+    val providerTypeOpenAiCompatible: StringResource = Res.string.provider_type_openai_compatible
+    val providerTypeAnthropic: StringResource = Res.string.provider_type_anthropic
+
+    val taskFailureMissingKey: StringResource = Res.string.task_failure_missing_key
+    val taskFailureUnsupported: StringResource = Res.string.task_failure_unsupported
+    val taskFailureUnauthorized: StringResource = Res.string.task_failure_unauthorized
+    val taskFailureRateLimited: StringResource = Res.string.task_failure_rate_limited
+    val taskFailureRequestFailed: StringResource = Res.string.task_failure_request_failed
+    val taskFailureResponseUnreadable: StringResource = Res.string.task_failure_response_unreadable
 
     val connectionConnecting: StringResource = Res.string.connection_connecting
     val connectionReconnecting: StringResource = Res.string.connection_reconnecting

@@ -7,17 +7,21 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.runComposeUiTest
 import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.provider.ConfiguredModel
+import dev.aide.agent.provider.AgentModels
 import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.KtorHostConnection
 import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.state.settings.createKeyValueStoreAt
 import dev.aide.client.ui.App
 import dev.aide.domain.Cost
+import dev.aide.domain.ModelCheckFailure
 import dev.aide.host.EmbeddedHost
 import java.nio.file.Files
 import java.nio.file.Path
@@ -119,7 +123,16 @@ class DesktopEndToEndTest {
 
     @Test
     fun `задача, поставленная из интерфейса, доходит до состояния завершён`() = runComposeUiTest {
-        val host = EmbeddedHost.open(databasePath = tempDatabase(), llmClient = ScriptedModel())
+        val host = EmbeddedHost.open(
+            databasePath = tempDatabase(),
+            models = object : AgentModels {
+                override fun current(): Result<ConfiguredModel> =
+                    Result.success(ConfiguredModel(SCRIPTED_ALIAS, ScriptedModel()))
+
+                // Проверка доступа скриптованной модели не поддержана: транспорта у неё нет.
+                override suspend fun check(alias: String): ModelCheckFailure? = ModelCheckFailure.Unsupported
+            },
+        )
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val connection = KtorHostConnection(endpoint = host.endpoint, scope = scope)
         val settings = SettingsStore(createKeyValueStoreAt(Files.createTempFile("aide-settings-agent", ".properties")))
@@ -142,6 +155,43 @@ class DesktopEndToEndTest {
             }
             onNodeWithText("Завершён").assertIsDisplayed()
             println("E2E: задача поставлена и прогон дошёл до завершения")
+        } finally {
+            runBlocking { connection.stop() }
+            host.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `раздел модель в настройках приходит с хоста и принимает заготовку`() = runComposeUiTest {
+        val host = EmbeddedHost.open(databasePath = tempDatabase())
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val connection = KtorHostConnection(endpoint = host.endpoint, scope = scope)
+        val settingsFile = Files.createTempFile("aide-settings-model", ".properties")
+        val settings = SettingsStore(createKeyValueStoreAt(settingsFile))
+
+        try {
+            connection.start()
+            setContent { App(connection = connection, settings = settings, scope = scope) }
+            waitUntil(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
+
+            onNodeWithText("Настройки").performClick()
+
+            // Каталог заготовок едет с хоста: без связи раздела с конфигурацией хоста
+            // этих кнопок не было бы вовсе.
+            waitUntil(timeoutMillis = 15_000) {
+                onAllNodesWithTag("catalog-add-openai").fetchSemanticsNodes().isNotEmpty()
+            }
+            onNodeWithTag("model-key-note").performScrollTo().assertExists()
+
+            onNodeWithTag("catalog-add-openai").performScrollTo().performClick()
+
+            // Добавленная заготовка появилась в таблице провайдеров и сохранена на хосте.
+            waitUntil(timeoutMillis = 15_000) {
+                onAllNodesWithTag("provider-base-url-openai").fetchSemanticsNodes().isNotEmpty()
+            }
+            onNodeWithTag("provider-base-url-openai").performScrollTo().assertIsDisplayed()
+            println("E2E: раздел «Модель» подключён к хосту и принимает заготовку")
         } finally {
             runBlocking { connection.stop() }
             host.close()
@@ -197,5 +247,10 @@ class DesktopEndToEndTest {
             }
             return LlmResponse.Text(text = text, cost = Cost(), elapsedMillis = 1)
         }
+    }
+
+    private companion object {
+        /** Алиас, под которым скриптованная модель попадает в прогон. */
+        const val SCRIPTED_ALIAS = "test/scripted"
     }
 }

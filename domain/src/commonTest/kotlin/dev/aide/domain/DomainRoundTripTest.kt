@@ -111,6 +111,63 @@ class DomainRoundTripTest {
     }
 
     @Test
+    fun `AgentRun помнит модель, на которой шёл прогон`() {
+        val decoded = roundTrip(DomainFixtures.run)
+
+        assertEquals("openai/gpt-4o", decoded.modelAlias, "алиас модели обязан переживать round-trip")
+    }
+
+    @Test
+    fun `AgentRun без записанной модели переживает round-trip`() {
+        // Поле аддитивное: прогоны, начатые до настройки моделей, читаются с пустым алиасом.
+        assertEquals("", DomainFixtures.emptyRun.modelAlias)
+        assertEquals("", roundTrip(DomainFixtures.emptyRun).modelAlias)
+    }
+
+    @Test
+    fun `AgentConfig переживает round-trip`() {
+        val decoded = roundTrip(DomainFixtures.agentConfig)
+
+        assertEquals(DomainFixtures.agentConfig, decoded)
+        assertEquals(2, decoded.providers.size)
+        assertEquals(2, decoded.models.size)
+        assertNull(decoded.providers.last().apiKeyEnv, "локальному провайдеру ключ не нужен")
+        assertNull(decoded.models.last().pricePerMillionOutMicros, "без ставки цена неизвестна, а не ноль")
+    }
+
+    @Test
+    fun `пустая конфигурация моделей переживает round-trip`() {
+        val decoded = roundTrip(AgentConfig())
+
+        assertEquals(AgentConfig(), decoded)
+        assertTrue(decoded.providers.isEmpty())
+        assertTrue(decoded.models.isEmpty())
+        assertNull(decoded.defaultModel)
+    }
+
+    @Test
+    fun `заготовка каталога переживает round-trip`() {
+        assertEquals(DomainFixtures.catalogEntry, roundTrip(DomainFixtures.catalogEntry))
+    }
+
+    @Test
+    fun `отказ проверки модели с именем переменной переживает round-trip`() {
+        // Имя переменной — единственное, что объясняет пользователю, что ему задать,
+        // поэтому оно обязано доехать до клиента, а не потеряться в коде ошибки.
+        val decoded = roundTrip<ModelCheckFailure>(ModelCheckFailure.MissingKey("DEEPSEEK_API_KEY"))
+
+        assertEquals(ModelCheckFailure.MissingKey("DEEPSEEK_API_KEY"), decoded)
+    }
+
+    @Test
+    fun `коды отказа проверки модели замкнуты и не зависят от текста`() {
+        assertEquals("missing_key", ModelCheckFailure.MissingKey("K").code)
+        assertEquals("unsupported", ModelCheckFailure.Unsupported.code)
+        assertEquals("NOT_CONFIGURED", ModelCheckFailure.NotConfigured.code)
+        assertEquals("NOT_CONFIGURED", ModelCheckFailure.UnknownModel("нет-такого").code)
+    }
+
+    @Test
     fun `производные счётчики строк считаются по файлам`() {
         assertEquals(2, DomainFixtures.packet.addedLines)
         assertEquals(2, DomainFixtures.packet.removedLines)

@@ -122,6 +122,16 @@ internal class FakeHostConnection : HostConnection {
         is ClientMessage.AgentStatus -> HostMessage.AgentSnapshot(message.requestId, emptyList(), emptyList())
 
         is ClientMessage.RunControl -> HostMessage.RunControlled(message.requestId, message.runId)
+
+        is ClientMessage.AgentConfigRequest -> HostMessage.AgentConfigSnapshot(
+            requestId = message.requestId,
+            config = dev.aide.domain.AgentConfig(),
+            catalog = emptyList(),
+        )
+
+        is ClientMessage.SaveAgentConfig -> HostMessage.AgentConfigSaved(message.requestId, message.config)
+
+        is ClientMessage.CheckModel -> HostMessage.ModelCheckResult(message.requestId, ok = true)
     }
 
     private companion object {

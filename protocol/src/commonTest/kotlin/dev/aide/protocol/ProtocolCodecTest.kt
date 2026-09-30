@@ -1,8 +1,14 @@
 package dev.aide.protocol
 
+import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
+import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.ModelProfile
+import dev.aide.domain.ProviderCatalogEntry
+import dev.aide.domain.ProviderProfile
+import dev.aide.domain.ProviderType
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
@@ -87,7 +93,7 @@ class ProtocolCodecTest {
 
     @Test
     fun `неизвестный тип сообщения не роняет разбор, а возвращается как Ignored`() {
-        val unknown = ProtocolCodec.envelope(
+        val unknown = envelope(
             type = "quantumTeleport",
             serializer = ClientMessage.Hello.serializer(),
             value = ClientMessage.Hello(ProtocolVersion.CURRENT),
@@ -101,7 +107,7 @@ class ProtocolCodecTest {
     @Test
     fun `три неизвестных типа подряд разбираются как три Ignored и работа продолжается`() {
         val unknowns = listOf("a", "b", "c").map { name ->
-            ProtocolCodec.envelope(
+            envelope(
                 type = name,
                 serializer = HostMessage.Hello.serializer(),
                 value = HostMessage.Hello(ProtocolVersion.CURRENT, SessionId("s")),
@@ -146,7 +152,7 @@ class ProtocolCodecTest {
 
     @Test
     fun `имя типа читается и у неизвестного сообщения`() {
-        val unknown = ProtocolCodec.envelope(
+        val unknown = envelope(
             type = "quantumTeleport",
             serializer = ClientMessage.Hello.serializer(),
             value = ClientMessage.Hello(ProtocolVersion.CURRENT),
@@ -211,6 +217,10 @@ class ProtocolCodecTest {
             ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.PAUSE),
             ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.RESUME),
             ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.STOP),
+            ClientMessage.AgentConfigRequest(requestId),
+            ClientMessage.SaveAgentConfig(requestId, agentConfig()),
+            ClientMessage.SaveAgentConfig(requestId, AgentConfig()),
+            ClientMessage.CheckModel(requestId, "deepseek/deepseek-chat"),
         )
         messages.forEach { message ->
             assertEquals(message, clientMessage(ProtocolCodec.encode(message)))
@@ -253,6 +263,17 @@ class ProtocolCodecTest {
             HostMessage.TaskPosted(requestId, TaskId("t-1")),
             HostMessage.AgentSnapshot(requestId, listOf(agentRun()), listOf(task())),
             HostMessage.RunControlled(requestId, RunId("r-1")),
+            HostMessage.AgentConfigSnapshot(requestId, agentConfig(), listOf(catalogEntry())),
+            HostMessage.AgentConfigSnapshot(requestId, AgentConfig(), emptyList()),
+            HostMessage.AgentConfigSaved(requestId, agentConfig()),
+            HostMessage.ModelCheckResult(requestId, ok = true, failure = null),
+            HostMessage.ModelCheckResult(requestId, ok = false, failure = ModelCheckFailure.MissingKey("K")),
+            HostMessage.ModelCheckResult(requestId, ok = false, failure = ModelCheckFailure.Unsupported),
+            HostMessage.ModelCheckResult(
+                requestId,
+                ok = false,
+                failure = ModelCheckFailure.RequestFailed("таймаут"),
+            ),
             HostMessage.Event(HostEvent.WorkspaceChanged(workspaceId)),
             HostMessage.Event(HostEvent.RunStateChanged(agentRun())),
             HostMessage.Event(HostEvent.TaskStateChanged(task())),
@@ -283,8 +304,44 @@ class ProtocolCodecTest {
         startedAt = Instant.fromEpochMilliseconds(1_758_535_200_000),
         elapsedMillis = 250,
         cost = Cost(amountMicros = 120, known = true),
+        modelAlias = "deepseek/deepseek-chat",
         interruptReason = "host_restart",
     )
+
+    /**
+     * Конфигурация моделей для round-trip: две таблицы, имя переменной окружения
+     * и ставки. Ключа здесь нет — его и не может быть в этом типе (NFR-8).
+     */
+    private fun agentConfig(): AgentConfig = AgentConfig(
+        defaultModel = "deepseek/deepseek-chat",
+        providers = listOf(
+            ProviderProfile(
+                id = "deepseek",
+                type = ProviderType.OPENAI_COMPATIBLE,
+                baseUrl = "https://api.deepseek.com/v1",
+                apiKeyEnv = "DEEPSEEK_API_KEY",
+            ),
+        ),
+        models = listOf(
+            ModelProfile(
+                alias = "deepseek/deepseek-chat",
+                provider = "deepseek",
+                model = "deepseek-chat",
+                displayName = "DeepSeek Chat",
+                contextWindow = 64_000,
+                maxOutputTokens = 8_192,
+                toolUse = true,
+                pricePerMillionInMicros = 270_000,
+                pricePerMillionOutMicros = 1_100_000,
+            ),
+        ),
+    )
+
+    /** Заготовка каталога для round-trip. */
+    private fun catalogEntry(): ProviderCatalogEntry {
+        val config = agentConfig()
+        return ProviderCatalogEntry(config.providers.first(), config.models)
+    }
 
     @Test
     fun `каждый вариант ProtocolError переживает round-trip`() {

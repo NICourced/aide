@@ -1,7 +1,10 @@
 package dev.aide.protocol
 
+import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
@@ -104,6 +107,46 @@ sealed interface ClientMessage {
         val runId: RunId,
         /** Что сделать с прогоном. */
         val command: RunCommand,
+    ) : ClientMessage
+
+    /**
+     * Запросить конфигурацию моделей и каталог заготовок (T-1.56).
+     *
+     * Имя с `Request` — не стилистика: класс `AgentConfig` живёт в домене, и вложенный
+     * класс с тем же именем внутри `ClientMessage` перекрыл бы его в собственной области
+     * видимости, а сохранение конфигурации передаёт именно доменный тип.
+     */
+    @Serializable
+    @SerialName("agentConfigRequest")
+    data class AgentConfigRequest(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+    ) : ClientMessage
+
+    /**
+     * Сохранить конфигурацию моделей (T-1.56).
+     *
+     * Уезжает целиком, а не изменениями: конфигурация — маленький документ, который
+     * пользователь правит руками, и «поле №3 в провайдере №2» по проводу читалось бы
+     * хуже, чем целиком. Ключа в ней нет и быть не может — только имена переменных.
+     */
+    @Serializable
+    @SerialName("saveAgentConfig")
+    data class SaveAgentConfig(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Новая конфигурация целиком. */
+        val config: AgentConfig,
+    ) : ClientMessage
+
+    /** Проверить доступ к модели: один запрос списка моделей провайдера (T-1.56). */
+    @Serializable
+    @SerialName("checkModel")
+    data class CheckModel(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Алиас модели, доступ к которой проверяется. */
+        val alias: String,
     ) : ClientMessage
 }
 
@@ -211,6 +254,46 @@ sealed interface HostMessage {
         val requestId: RequestId,
         /** Прогон, к которому отнесена команда. */
         val runId: RunId,
+    ) : HostMessage
+
+    /**
+     * Конфигурация моделей и каталог заготовок (T-1.56).
+     *
+     * Заготовки едут вместе с конфигурацией: пользователю нужен список того, что можно
+     * добавить, а каталог живёт на хосте (данные, а не код). Каталог — не конфигурация,
+     * и в файл настроек он не попадает.
+     */
+    @Serializable
+    @SerialName("agentConfigSnapshot")
+    data class AgentConfigSnapshot(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Текущая конфигурация моделей хоста. */
+        val config: AgentConfig,
+        /** Заготовки популярных сервисов. */
+        val catalog: List<ProviderCatalogEntry>,
+    ) : HostMessage
+
+    /** Конфигурация моделей сохранена; возвращается то, что записано. */
+    @Serializable
+    @SerialName("agentConfigSaved")
+    data class AgentConfigSaved(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Сохранённая конфигурация. */
+        val config: AgentConfig,
+    ) : HostMessage
+
+    /** Результат проверки доступа к модели; `ok` = true только при подтверждённом доступе. */
+    @Serializable
+    @SerialName("modelCheckResult")
+    data class ModelCheckResult(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Доступ подтверждён. */
+        val ok: Boolean,
+        /** Почему доступ не подтверждён; null при [ok] = true. */
+        val failure: ModelCheckFailure? = null,
     ) : HostMessage
 
     /** Событие без запроса. */

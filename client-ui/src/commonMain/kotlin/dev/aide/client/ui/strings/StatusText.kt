@@ -1,5 +1,6 @@
 package dev.aide.client.ui.strings
 
+import dev.aide.domain.ModelFailureCode
 import dev.aide.domain.RunState
 import dev.aide.domain.TaskStatus
 import org.jetbrains.compose.resources.StringResource
@@ -8,6 +9,7 @@ import org.jetbrains.compose.resources.StringResource
  * Тексты состояний прогона и статусов задачи — из ресурсов, а не из кода (NFR-13).
  *
  * Файл назван по общему предмету: здесь и строка прогона, и строка задачи.
+ * Тексты настроек моделей живут рядом, в `ModelText.kt`: у них свой предмет.
  */
 
 /**
@@ -49,14 +51,19 @@ fun taskStatusResource(status: TaskStatus): StringResource = when (status) {
  * пользователя без объяснения — он получит общий текст.
  */
 fun taskFailureResource(reason: String?): StringResource = when (reason) {
-    NOT_CONFIGURED -> Strings.taskFailureNotConfigured
+    ModelFailureCode.NOT_CONFIGURED -> Strings.taskFailureNotConfigured
+    ModelFailureCode.MISSING_KEY -> Strings.taskFailureMissingKey
+    ModelFailureCode.UNSUPPORTED -> Strings.taskFailureUnsupported
+    ModelFailureCode.UNAUTHORIZED -> Strings.taskFailureUnauthorized
+    ModelFailureCode.RATE_LIMITED -> Strings.taskFailureRateLimited
+    ModelFailureCode.REQUEST_FAILED -> Strings.taskFailureRequestFailed
+    ModelFailureCode.RESPONSE_UNREADABLE -> Strings.taskFailureResponseUnreadable
     PLAN_UNREADABLE -> Strings.taskFailurePlanUnreadable
     USER_STOP -> Strings.taskFailureUserStop
     HOST_RESTART -> Strings.taskFailureHostRestart
     else -> Strings.taskFailureGeneric
 }
 
-private const val NOT_CONFIGURED = "NOT_CONFIGURED"
 private const val PLAN_UNREADABLE = "plan_unreadable"
 private const val USER_STOP = "user_stop"
 private const val HOST_RESTART = "host_restart"

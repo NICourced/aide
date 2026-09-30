@@ -86,6 +86,23 @@ class StageZeroHandler(
             error = ProtocolError.Internal("управление прогоном обрабатывает AgentRunHandler"),
         )
 
+        // Настройки моделей маршрутизируются в AgentConfigHandler; сюда они не доходят,
+        // но `when` по запечатанному типу обязан их назвать.
+        is ClientMessage.AgentConfigRequest -> HostMessage.Failure(
+            requestId = message.requestId,
+            error = ProtocolError.Internal("конфигурацию моделей обрабатывает AgentConfigHandler"),
+        )
+
+        is ClientMessage.SaveAgentConfig -> HostMessage.Failure(
+            requestId = message.requestId,
+            error = ProtocolError.Internal("сохранение конфигурации обрабатывает AgentConfigHandler"),
+        )
+
+        is ClientMessage.CheckModel -> HostMessage.Failure(
+            requestId = message.requestId,
+            error = ProtocolError.Internal("проверку модели обрабатывает AgentConfigHandler"),
+        )
+
         is ClientMessage.Hello -> HostMessage.Failure(
             requestId = RequestId("unexpected"),
             error = ProtocolError.Internal("приветствие обрабатывает сессия, а не обработчик"),

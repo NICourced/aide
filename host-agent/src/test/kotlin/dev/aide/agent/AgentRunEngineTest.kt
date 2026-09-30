@@ -4,8 +4,12 @@ import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmErrorKind
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.prompt.PlanFormatException
+import dev.aide.agent.provider.ConfiguredModel
+import dev.aide.agent.provider.ModelProvider
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
+import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.ModelFailureCode
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
@@ -40,8 +44,8 @@ class AgentRunEngineTest {
         AgentRunEngine(
             runs = runs,
             tasks = tasks,
-            planner = RunPlanner { plan },
-            llm = llm,
+            models = fixedModel(llm),
+            planner = RunPlanner { _, _ -> plan },
             events = sink,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
@@ -137,16 +141,16 @@ class AgentRunEngineTest {
 
     @Test
     fun `ошибка модели даёт failed с причиной, и очередь после неё работает`() = runBlocking {
-        val llm = ScriptedLlmClient(listOf(LlmResponse.Error(LlmErrorKind.NOT_CONFIGURED), text()))
+        val llm = ScriptedLlmClient(listOf(LlmResponse.Error(LlmErrorKind.UNAUTHORIZED), text()))
         val engine = engine(plan("раз"), llm)
 
         engine.postTask("первая", AutonomyMode.ASK_BEFORE_CHANGES)
         assertTrue(engine.processNext())
         val failed = runs.all().single()
         assertEquals(RunState.FAILED, failed.state)
-        assertEquals(LlmErrorKind.NOT_CONFIGURED.name, failed.interruptReason)
+        assertEquals(ModelFailureCode.UNAUTHORIZED, failed.interruptReason)
         assertEquals(TaskStatus.FAILED, tasks.load(failed.taskId)?.status)
-        assertEquals(LlmErrorKind.NOT_CONFIGURED.name, tasks.load(failed.taskId)?.failureReason)
+        assertEquals(ModelFailureCode.UNAUTHORIZED, tasks.load(failed.taskId)?.failureReason)
 
         engine.postTask("вторая", AutonomyMode.ASK_BEFORE_CHANGES)
         assertTrue(engine.processNext(), "после ошибки очередь обязана продолжать работать")
@@ -178,8 +182,8 @@ class AgentRunEngineTest {
         val engine = AgentRunEngine(
             runs = runs,
             tasks = tasks,
-            planner = RunPlanner { throw PlanFormatException("не план") },
-            llm = textModel(),
+            models = fixedModel(textModel()),
+            planner = RunPlanner { _, _ -> throw PlanFormatException("не план") },
             events = sink,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
@@ -198,8 +202,8 @@ class AgentRunEngineTest {
         val engine = AgentRunEngine(
             runs = runs,
             tasks = tasks,
-            planner = RunPlanner { plan("раз") },
-            llm = textModel(),
+            models = fixedModel(textModel()),
+            planner = RunPlanner { _, _ -> plan("раз") },
             events = ThrowingOnFinishSink(runs, tasks),
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
@@ -211,6 +215,84 @@ class AgentRunEngineTest {
         val run = runs.all().single()
         assertEquals(RunState.FINISHED, run.state, "успешный прогон не подменяется отказом")
         assertEquals(TaskStatus.REVIEW, tasks.load(run.taskId)?.status, "задача остаётся на ревью")
+    }
+
+    @Test
+    fun `прогон записывает, на какой модели он шёл`() = runBlocking {
+        val engine = engine(plan("раз"), textModel())
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        assertTrue(engine.processNext())
+
+        assertEquals("test/scripted", runs.all().single().modelAlias, "алиас обязан попасть в прогон (T-1.56)")
+    }
+
+    @Test
+    fun `отказ выбрать модель помечает задачу кодом без создания прогона`() = runBlocking {
+        // Пустая конфигурация — состояние чистой установки (решение 9): прогон падает
+        // тем же кодом, что и раньше, и это видно на задаче, потому что прогона ещё нет.
+        val engine = AgentRunEngine(
+            runs = runs,
+            tasks = tasks,
+            models = failingModel(ModelCheckFailure.NotConfigured),
+            planner = RunPlanner { _, _ -> plan("раз") },
+            events = sink,
+            clock = { Instant.fromEpochMilliseconds(1_000) },
+        )
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        assertTrue(engine.processNext())
+        val task = tasks.all().single()
+        assertEquals(TaskStatus.FAILED, task.status)
+        assertEquals(ModelFailureCode.NOT_CONFIGURED, task.failureReason)
+        assertTrue(runs.all().isEmpty(), "до выбора модели прогон не создаётся")
+    }
+
+    @Test
+    fun `отсутствие переменной окружения с ключом даёт свой код отказа`() = runBlocking {
+        val engine = AgentRunEngine(
+            runs = runs,
+            tasks = tasks,
+            models = failingModel(ModelCheckFailure.MissingKey("DEEPSEEK_API_KEY")),
+            planner = RunPlanner { _, _ -> plan("раз") },
+            events = sink,
+            clock = { Instant.fromEpochMilliseconds(1_000) },
+        )
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        assertTrue(engine.processNext())
+
+        // Код отличается от «модель не настроена»: пользователь обязан понять, что дело
+        // в переменной окружения, а не в пустой конфигурации (решение 6).
+        assertEquals(ModelFailureCode.MISSING_KEY, tasks.all().single().failureReason)
+    }
+
+    @Test
+    fun `смена модели в настройках не меняет правила идущего прогона`() = runBlocking {
+        // FR-AGENT-5: модель берётся один раз на старте прогона. Иначе половина прогона
+        // шла бы одной моделью, а половина другой, и стоимость прогона было бы нечем объяснить.
+        val started = ScriptedLlmClient(listOf(text("первый"), text("второй")))
+        val replacement = ScriptedLlmClient(listOf(text("третий")))
+        var chosen = ConfiguredModel("model/a", started)
+        val engine = AgentRunEngine(
+            runs = runs,
+            tasks = tasks,
+            models = ModelProvider { Result.success(chosen) },
+            planner = RunPlanner { _, _ -> plan("раз", "два") },
+            events = sink,
+            clock = { Instant.fromEpochMilliseconds(1_000) },
+        )
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        val worker = launch { engine.processNext() }
+        started.awaitCall(0)
+        // Пользователь сменил модель в настройках прямо во время прогона.
+        chosen = ConfiguredModel("model/b", replacement)
+        worker.join()
+
+        assertEquals(2, started.callCount, "оба шага идут моделью, которой прогон начался")
+        assertEquals(0, replacement.callCount, "новая модель не подхватывается на середине прогона")
+        assertEquals("model/a", runs.all().single().modelAlias)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package dev.aide.agent.llm
 
 import dev.aide.domain.Cost
+import dev.aide.domain.ModelFailureCode
 
 /**
  * Запрос к модели.
@@ -45,10 +46,27 @@ sealed interface LlmResponse {
     ) : LlmResponse
 }
 
-/** Почему модель не ответила. */
+/**
+ * Почему модель не ответила: коды ответа провайдера.
+ *
+ * Здесь только то, что производит **транспорт**. «Модель не настроена» в это перечисление
+ * не входит: такой отказ рождается раньше вызова — при выборе модели в реестре
+ * ([dev.aide.domain.ModelCheckFailure.NotConfigured]), и значение без производителя было бы
+ * долгом. Код отказа движок записывает в причину прогона, строку для пользователя
+ * строит UI из ресурсов (NFR-13).
+ */
 enum class LlmErrorKind {
-    /** Провайдер не настроен: нет адреса, имени переменной с ключом или выбранной модели (T-1.56). */
-    NOT_CONFIGURED,
+    /** Ключ отвергнут провайдером (401, 403). */
+    UNAUTHORIZED,
+
+    /** Провайдер ответил, что лимит запросов исчерпан (429). */
+    RATE_LIMITED,
+
+    /** Сеть недоступна или сервер ответил ошибкой (5xx, разрыв соединения). */
+    REQUEST_FAILED,
+
+    /** Ответ провайдера не разобран: не JSON или в нём нет текста модели. */
+    RESPONSE_UNREADABLE,
 }
 
 /** Клиент модели для движка прогона: один вызов — один ответ (О-2). */
@@ -57,6 +75,21 @@ interface LlmClient {
     /** Выполняет запрос и возвращает ответ целиком. */
     suspend fun complete(request: LlmRequest): LlmResponse
 }
+
+/**
+ * Код причины отказа провайдера для строки состояния (NFR-13).
+ *
+ * Тот же словарь, что у отказа выбрать модель ([dev.aide.domain.ModelFailureCode]):
+ * клиент показывает одно и то же объяснение, откуда бы отказ ни пришёл — из реестра
+ * провайдеров или из ответа сети.
+ */
+val LlmErrorKind.code: String
+    get() = when (this) {
+        LlmErrorKind.UNAUTHORIZED -> ModelFailureCode.UNAUTHORIZED
+        LlmErrorKind.RATE_LIMITED -> ModelFailureCode.RATE_LIMITED
+        LlmErrorKind.REQUEST_FAILED -> ModelFailureCode.REQUEST_FAILED
+        LlmErrorKind.RESPONSE_UNREADABLE -> ModelFailureCode.RESPONSE_UNREADABLE
+    }
 
 /**
  * Ошибка вызова модели, поднятая внутри рантайма агента; наружу не пересекает границу модуля.

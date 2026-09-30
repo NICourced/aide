@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -17,13 +19,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import dev.aide.client.state.ModelCheckOutcome
+import dev.aide.client.state.ModelConfigError
 import dev.aide.client.state.settings.ControlMode
 import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.state.settings.ThemePreference
 import dev.aide.client.ui.strings.Strings
+import dev.aide.domain.AgentConfig
+import dev.aide.domain.ProviderCatalogEntry
 
 /**
- * Настройки: путь к репозиторию, адрес хоста, тема, режим управления.
+ * Настройки: путь к репозиторию, адрес хоста, тема, режим управления, модели.
  *
  * Режим управления здесь только сохраняется: различие в поведении кнопок и жестов
  * появляется в этапе 1 (T-1.43). Хранить его уже сейчас нужно, иначе перезапуск
@@ -32,18 +38,25 @@ import dev.aide.client.ui.strings.Strings
  * Адрес хоста — тоже только настройка: соединение создаётся один раз при старте
  * приложения, поэтому новый адрес действует после перезапуска (T-1.51). Экран
  * говорит об этом прямо, иначе введённый адрес выглядит неработающим.
+ *
+ * Настройки моделей живут на хосте, а не в [SettingsStore]: их видит и правит любой
+ * клиент, а база и файл настроек — сторона хоста (§ 9). Поэтому раздел «Модель»
+ * получает данные сессии и не хранит их у себя (T-1.56).
  */
 @Composable
 fun SettingsScreen(
     settings: SettingsStore,
+    modelConfig: ModelSettingsState,
     onOpenRepository: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var path by remember { mutableStateOf(settings.repositoryPath.orEmpty()) }
     var hostEndpoint by remember { mutableStateOf(settings.hostEndpoint.orEmpty()) }
 
+    // Настройки прокручиваются: разделов стало больше, и без прокрутки нижние —
+    // раздел «Модель» с двумя таблицами — оказались бы недостижимы на телефоне.
     Column(
-        modifier = modifier.fillMaxSize().padding(16.dp),
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(Strings.text(Strings.settingsTitle), style = MaterialTheme.typography.titleLarge)
@@ -99,8 +112,31 @@ fun SettingsScreen(
             selected = settings.controlMode,
             onSelect = { settings.controlMode = it },
         )
+
+        ModelSettingsScreen(state = modelConfig)
     }
 }
+
+/**
+ * Всё, что нужно разделу «Модель»: данные сессии и два действия (T-1.56).
+ *
+ * Собрано в один тип, а не в пять параметров [SettingsScreen]: экран настроек не должен
+ * знать, как устроен доступ к хосту, — он получает готовые данные и обработчики.
+ */
+data class ModelSettingsState(
+    /** Конфигурация моделей; null, пока её не загрузили. */
+    val config: AgentConfig?,
+    /** Заготовки популярных сервисов. */
+    val catalog: List<ProviderCatalogEntry>,
+    /** Последний результат проверки модели. */
+    val check: ModelCheckOutcome?,
+    /** Последний отказ настроек; null, если всё прошло (T-1.56). */
+    val error: ModelConfigError?,
+    /** Сохранить конфигурацию на хосте. */
+    val onSave: (AgentConfig) -> Unit,
+    /** Проверить доступ к модели. */
+    val onCheck: (String) -> Unit,
+)
 
 @Composable
 private fun <T> ChoiceRow(

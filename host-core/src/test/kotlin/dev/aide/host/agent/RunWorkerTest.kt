@@ -5,6 +5,8 @@ import dev.aide.agent.RunPlanner
 import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.provider.ConfiguredModel
+import dev.aide.agent.provider.ModelProvider
 import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RunRepository
 import dev.aide.agent.ports.TaskRepository
@@ -88,8 +90,8 @@ class RunWorkerTest {
     private fun engine(runs: RunRepository, tasks: TaskRepository): AgentRunEngine = AgentRunEngine(
         runs = runs,
         tasks = tasks,
-        planner = RunPlanner { listOf(PlanStep(index = 0, summary = "шаг", status = StepStatus.PENDING)) },
-        llm = TextModel(),
+        models = ModelProvider { Result.success(ConfiguredModel("test/scripted", TextModel())) },
+        planner = RunPlanner { _, _ -> listOf(PlanStep(index = 0, summary = "шаг", status = StepStatus.PENDING)) },
         events = NoopSink,
         clock = { Instant.fromEpochMilliseconds(1) },
     )

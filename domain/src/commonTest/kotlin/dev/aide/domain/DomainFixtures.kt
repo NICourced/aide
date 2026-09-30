@@ -74,6 +74,7 @@ object DomainFixtures {
         finishedAt = t1,
         elapsedMillis = 60_000,
         cost = Cost(amountMicros = 12_500, known = true),
+        modelAlias = "openai/gpt-4o",
         interruptReason = null,
     )
 
@@ -111,6 +112,52 @@ object DomainFixtures {
         trigger = SnapshotTrigger.BEFORE_AGENT_STEP,
         taskId = TaskId("t-1"),
         createdAt = t0,
+    )
+
+    /** Конфигурация моделей: два провайдера и две модели, одна из них — по умолчанию (T-1.56). */
+    val agentConfig = AgentConfig(
+        defaultModel = "deepseek/deepseek-chat",
+        providers = listOf(
+            ProviderProfile(
+                id = "deepseek",
+                type = ProviderType.OPENAI_COMPATIBLE,
+                baseUrl = "https://api.deepseek.com/v1",
+                apiKeyEnv = "DEEPSEEK_API_KEY",
+            ),
+            ProviderProfile(
+                id = "local",
+                type = ProviderType.OPENAI_COMPATIBLE,
+                baseUrl = "http://127.0.0.1:11434/v1",
+                apiKeyEnv = null,
+            ),
+        ),
+        models = listOf(
+            ModelProfile(
+                alias = "deepseek/deepseek-chat",
+                provider = "deepseek",
+                model = "deepseek-chat",
+                displayName = "DeepSeek Chat",
+                contextWindow = 64_000,
+                maxOutputTokens = 8_192,
+                toolUse = true,
+                pricePerMillionInMicros = 270_000,
+                pricePerMillionOutMicros = 1_100_000,
+            ),
+            ModelProfile(
+                alias = "local/llama",
+                provider = "local",
+                model = "llama3.1",
+                contextWindow = 8_192,
+                maxOutputTokens = 2_048,
+                toolUse = false,
+            ),
+        ),
+    )
+
+    /** Заготовка каталога: провайдер со своими моделями. */
+    val catalogEntry = ProviderCatalogEntry(
+        provider = agentConfig.providers.first(),
+        models = listOf(agentConfig.models.first()),
     )
 
     /** Образцы «пусто и null»: проверяют, что кодек не теряет пустые списки и незаполненные поля. */

@@ -1,0 +1,297 @@
+[
+  {
+    "provider": {
+      "id": "openai",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "openai/gpt-4o",
+        "provider": "openai",
+        "model": "gpt-4o",
+        "displayName": "GPT-4o",
+        "contextWindow": 128000,
+        "maxOutputTokens": 16384,
+        "toolUse": true,
+        "pricePerMillionInMicros": 2500000,
+        "pricePerMillionOutMicros": 10000000
+      },
+      {
+        "alias": "openai/gpt-4o-mini",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "displayName": "GPT-4o mini",
+        "contextWindow": 128000,
+        "maxOutputTokens": 16384,
+        "toolUse": true,
+        "pricePerMillionInMicros": 150000,
+        "pricePerMillionOutMicros": 600000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "anthropic",
+      "type": "ANTHROPIC",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "anthropic/claude-3-5-sonnet",
+        "provider": "anthropic",
+        "model": "claude-3-5-sonnet-latest",
+        "displayName": "Claude 3.5 Sonnet",
+        "contextWindow": 200000,
+        "maxOutputTokens": 8192,
+        "toolUse": true,
+        "pricePerMillionInMicros": 3000000,
+        "pricePerMillionOutMicros": 15000000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "moonshot",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "apiKeyEnv": "MOONSHOT_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "moonshot/kimi-k2",
+        "provider": "moonshot",
+        "model": "kimi-k2-0711-preview",
+        "displayName": "Kimi K2",
+        "contextWindow": 131072,
+        "maxOutputTokens": 16384,
+        "toolUse": true,
+        "pricePerMillionInMicros": 600000,
+        "pricePerMillionOutMicros": 2500000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "deepseek",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "deepseek/deepseek-chat",
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "displayName": "DeepSeek Chat",
+        "contextWindow": 64000,
+        "maxOutputTokens": 8192,
+        "toolUse": true,
+        "pricePerMillionInMicros": 270000,
+        "pricePerMillionOutMicros": 1100000
+      },
+      {
+        "alias": "deepseek/deepseek-reasoner",
+        "provider": "deepseek",
+        "model": "deepseek-reasoner",
+        "displayName": "DeepSeek Reasoner",
+        "contextWindow": 64000,
+        "maxOutputTokens": 8192,
+        "toolUse": false,
+        "pricePerMillionInMicros": 550000,
+        "pricePerMillionOutMicros": 2190000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "qwen",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "apiKeyEnv": "DASHSCOPE_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "qwen/qwen-max",
+        "provider": "qwen",
+        "model": "qwen-max",
+        "displayName": "Qwen Max",
+        "contextWindow": 32000,
+        "maxOutputTokens": 8192,
+        "toolUse": true,
+        "pricePerMillionInMicros": 1600000,
+        "pricePerMillionOutMicros": 6400000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "openrouter",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "openrouter/deepseek-chat",
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-chat",
+        "displayName": "DeepSeek Chat через OpenRouter",
+        "contextWindow": 64000,
+        "maxOutputTokens": 8192,
+        "toolUse": true,
+        "pricePerMillionInMicros": 270000,
+        "pricePerMillionOutMicros": 1100000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "groq",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "apiKeyEnv": "GROQ_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "groq/llama-3-3-70b",
+        "provider": "groq",
+        "model": "llama-3.3-70b-versatile",
+        "displayName": "Llama 3.3 70B (Groq)",
+        "contextWindow": 128000,
+        "maxOutputTokens": 32768,
+        "toolUse": true,
+        "pricePerMillionInMicros": 590000,
+        "pricePerMillionOutMicros": 790000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "mistral",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "apiKeyEnv": "MISTRAL_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "mistral/mistral-large",
+        "provider": "mistral",
+        "model": "mistral-large-latest",
+        "displayName": "Mistral Large",
+        "contextWindow": 131072,
+        "maxOutputTokens": 8192,
+        "toolUse": true,
+        "pricePerMillionInMicros": 2000000,
+        "pricePerMillionOutMicros": 6000000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "xai",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://api.x.ai/v1",
+      "apiKeyEnv": "XAI_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "xai/grok-2",
+        "provider": "xai",
+        "model": "grok-2-latest",
+        "displayName": "Grok 2",
+        "contextWindow": 131072,
+        "maxOutputTokens": 8192,
+        "toolUse": true,
+        "pricePerMillionInMicros": 2000000,
+        "pricePerMillionOutMicros": 10000000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "gemini",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "apiKeyEnv": "GEMINI_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "gemini/gemini-2-0-flash",
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "displayName": "Gemini 2.0 Flash",
+        "contextWindow": 1048576,
+        "maxOutputTokens": 8192,
+        "toolUse": true,
+        "pricePerMillionInMicros": 100000,
+        "pricePerMillionOutMicros": 400000
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "ollama",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKeyEnv": null
+    },
+    "models": [
+      {
+        "alias": "ollama/llama-3-1",
+        "provider": "ollama",
+        "model": "llama3.1",
+        "displayName": "Llama 3.1 (Ollama)",
+        "contextWindow": 131072,
+        "maxOutputTokens": 8192,
+        "toolUse": true,
+        "pricePerMillionInMicros": 0,
+        "pricePerMillionOutMicros": 0
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "lmstudio",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "apiKeyEnv": null
+    },
+    "models": [
+      {
+        "alias": "lmstudio/local-model",
+        "provider": "lmstudio",
+        "model": "local-model",
+        "displayName": "Локальная модель (LM Studio)",
+        "contextWindow": 32768,
+        "maxOutputTokens": 4096,
+        "toolUse": false,
+        "pricePerMillionInMicros": 0,
+        "pricePerMillionOutMicros": 0
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "vllm",
+      "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "apiKeyEnv": null
+    },
+    "models": [
+      {
+        "alias": "vllm/llama-3-1-8b",
+        "provider": "vllm",
+        "model": "meta-llama/Llama-3.1-8B-Instruct",
+        "displayName": "Llama 3.1 8B (vLLM)",
+        "contextWindow": 131072,
+        "maxOutputTokens": 8192,
+        "toolUse": false,
+        "pricePerMillionInMicros": 0,
+        "pricePerMillionOutMicros": 0
+      }
+    ]
+  }
+]

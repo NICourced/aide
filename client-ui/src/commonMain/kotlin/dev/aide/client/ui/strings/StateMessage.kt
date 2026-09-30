@@ -35,6 +35,9 @@ fun failureMessage(kind: ScreenState.ErrorKind, arguments: List<String>): StateM
     ScreenState.ErrorKind.INCOMPATIBLE ->
         StateMessage.Resource(incompatibleResource(arguments.firstOrNull()), arguments.drop(1).take(2))
 
+    ScreenState.ErrorKind.CONFIG_REJECTED ->
+        StateMessage.Resource(Strings.stateErrorConfigRejected, emptyList())
+
     ScreenState.ErrorKind.OTHER ->
         StateMessage.Literal(arguments.firstOrNull().orEmpty())
 }

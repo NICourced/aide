@@ -202,6 +202,8 @@ private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
 
     is ProtocolError.WorkspaceClosed -> ScreenState.Failed(ScreenState.ErrorKind.WORKSPACE_CLOSED)
 
+    is ProtocolError.InvalidAgentConfig -> ScreenState.Failed(ScreenState.ErrorKind.CONFIG_REJECTED)
+
     is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(what))
 
     is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(message), detail)

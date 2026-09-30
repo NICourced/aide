@@ -243,6 +243,9 @@ internal fun HostMessage.requestIdOrNull(): RequestId? = when (this) {
     is HostMessage.TaskPosted -> requestId
     is HostMessage.AgentSnapshot -> requestId
     is HostMessage.RunControlled -> requestId
+    is HostMessage.AgentConfigSnapshot -> requestId
+    is HostMessage.AgentConfigSaved -> requestId
+    is HostMessage.ModelCheckResult -> requestId
     else -> null
 }
 
@@ -255,5 +258,8 @@ internal fun ClientMessage.requestIdOrNull(): RequestId? = when (this) {
     is ClientMessage.PostTask -> requestId
     is ClientMessage.AgentStatus -> requestId
     is ClientMessage.RunControl -> requestId
+    is ClientMessage.AgentConfigRequest -> requestId
+    is ClientMessage.SaveAgentConfig -> requestId
+    is ClientMessage.CheckModel -> requestId
     is ClientMessage.Hello -> null
 }

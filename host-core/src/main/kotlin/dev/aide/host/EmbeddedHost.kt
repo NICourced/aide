@@ -2,14 +2,14 @@ package dev.aide.host
 
 import dev.aide.agent.LlmRunPlanner
 import dev.aide.agent.RunPlanner
-import dev.aide.agent.llm.LlmClient
-import dev.aide.agent.llm.NotConfiguredLlmClient
+import dev.aide.agent.provider.AgentModels
+import java.nio.file.Path
 import dev.aide.host.server.ProtocolServer
 import dev.aide.host.server.StageZeroHandler
 import dev.aide.host.server.freeLoopbackPort
 import dev.aide.host.store.HostStore
 import dev.aide.protocol.HostMode
-import java.nio.file.Path
+import io.ktor.client.HttpClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
@@ -32,6 +32,8 @@ class EmbeddedHost internal constructor(
     private val store: HostStore,
     private val handler: StageZeroHandler,
     private val graph: KoinApplication,
+    /** HTTP-клиент провайдеров; null, если модель подставлена тестом и транспорта нет. */
+    private val httpClient: HttpClient?,
 ) : AutoCloseable {
 
     /** Порт, на котором слушает хост. */
@@ -57,6 +59,7 @@ class EmbeddedHost internal constructor(
         server.stop()
         handler.close()
         store.close()
+        httpClient?.close()
         graph.close()
     }
 
@@ -71,19 +74,20 @@ class EmbeddedHost internal constructor(
          * @param port конкретный порт; по умолчанию берётся свободный, чтобы два запуска
          *   приложения на одной машине не конфликтовали.
          * @param databasePath путь к базе хоста; null — база приложения по умолчанию.
-         *   Тесты и перезапуск на той же базе задают путь явно.
-         * @param llmClient модель для движка прогона; по умолчанию «провайдер не настроен».
-         * @param planner планировщик; по умолчанию спрашивает модель.
+         *   Файл настроек моделей лежит рядом с ней. Тесты и перезапуск на той же базе
+         *   задают путь явно.
+         * @param models модели хоста; null — реестр по файлу настроек.
+         * @param planner планировщик; по умолчанию спрашивает выбранную модель.
          */
         fun open(
             port: Int = freeLoopbackPort(),
             databasePath: Path? = null,
-            llmClient: LlmClient = NotConfiguredLlmClient(),
-            planner: RunPlanner = LlmRunPlanner(llmClient),
+            models: AgentModels? = null,
+            planner: RunPlanner = LlmRunPlanner(),
         ): EmbeddedHost = HostApp.open(
             port = port,
             databasePath = databasePath,
-            llmClient = llmClient,
+            models = models,
             planner = planner,
         )
     }

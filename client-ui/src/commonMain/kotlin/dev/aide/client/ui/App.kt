@@ -27,6 +27,7 @@ import dev.aide.client.state.HostConnection
 import dev.aide.client.state.HostSession
 import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.ui.screens.AgentScreen
+import dev.aide.client.ui.screens.ModelSettingsState
 import dev.aide.client.ui.screens.RepoScreen
 import dev.aide.client.ui.screens.SettingsScreen
 import dev.aide.client.ui.strings.Strings
@@ -110,8 +111,11 @@ fun App(
                         scope = coroutineScope,
                     )
 
-                    Destination.SETTINGS -> SettingsScreen(
+                    Destination.SETTINGS -> SettingsDestination(
                         settings = settings,
+                        session = session,
+                        client = client,
+                        scope = coroutineScope,
                         onOpenRepository = { path ->
                             // Открытие пути уводит на экран репозитория: иначе нажатие
                             // «Открыть» выглядит не сделавшим ничего — дерево показывается
@@ -169,6 +173,40 @@ private fun AgentDestination(session: HostSession, client: HostClient, scope: Co
                 client.postTask(prompt, DEFAULT_AUTONOMY_MODE).onFailure { requestFailed = true }
             }
         },
+    )
+}
+
+/**
+ * Экран настроек со своими данными о моделях (T-1.56).
+ *
+ * Конфигурация запрашивается при входе в настройки, а не при старте приложения: она
+ * нужна только здесь, и лишний запрос на запуске был бы работой впустую. Успешный
+ * ответ доходит до экрана через подписку на сессию клиента, поэтому здесь остаются
+ * только действия.
+ */
+@Composable
+private fun SettingsDestination(
+    settings: SettingsStore,
+    session: HostSession,
+    client: HostClient,
+    scope: CoroutineScope,
+    onOpenRepository: (String) -> Unit,
+) {
+    LaunchedEffect(Unit) { client.models.load() }
+
+    SettingsScreen(
+        settings = settings,
+        modelConfig = ModelSettingsState(
+            config = session.agentConfig,
+            catalog = session.providerCatalog,
+            check = session.modelCheck,
+            // Отказ ведёт клиент: он знает и про связь, и про непринятую конфигурацию,
+            // а экран только показывает его — в том числе после рекомпозиции.
+            error = session.modelError,
+            onSave = { config -> scope.launch { client.models.save(config) } },
+            onCheck = { alias -> scope.launch { client.models.check(alias) } },
+        ),
+        onOpenRepository = onOpenRepository,
     )
 }
 

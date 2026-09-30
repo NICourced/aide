@@ -3,11 +3,15 @@ package dev.aide.agent
 import dev.aide.agent.llm.LlmCallException
 import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.llm.code
 import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RunRepository
 import dev.aide.agent.ports.TaskRepository
 import dev.aide.agent.prompt.PlanFormatException
 import dev.aide.agent.prompt.StepPrompt
+import dev.aide.agent.provider.ConfiguredModel
+import dev.aide.agent.provider.ModelProvider
+import dev.aide.agent.provider.ModelUnavailableException
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.PlanStep
@@ -17,6 +21,7 @@ import dev.aide.domain.RunState
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.code
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
@@ -51,7 +56,11 @@ private const val STOP_MESSAGE = "Прогон остановлен пользо
  * UI умеет показать, а имя класса и сообщение уходят только в журнал.
  */
 private fun reasonOf(error: Throwable): String = when (error) {
-    is LlmCallException -> error.error.kind.name
+    is LlmCallException -> error.error.kind.code
+    // Отказ выбрать модель (T-1.56) — это код, а не текст: у «модель не настроена»,
+    // «нет переменной с ключом» и «протокол не поддержан» свои коды, и все они
+    // понятны UI без разбора строк (NFR-13).
+    is ModelUnavailableException -> error.failure.code
     is PlanFormatException -> RunInterruptReason.PLAN_UNREADABLE
     else -> RunInterruptReason.UNEXPECTED
 }
@@ -64,13 +73,18 @@ private fun reasonOf(error: Throwable): String = when (error) {
  * отвечает сразу, дальше состояние идёт событиями (решение 1). Один прогон за раз, все
  * переходы под замком, событие — после записи (О-8).
  *
+ * Модель приходит [ModelProvider], а не готовым клиентом (T-1.56): движок берёт её
+ * **один раз на старте прогона**, записывает алиас в `AgentRun.modelAlias` и дальше
+ * работает выбранным клиентом. Поэтому смена модели в настройках не меняет правила
+ * идущего прогона (FR-AGENT-5), а отказ выбора — обычное состояние с кодом причины.
+ *
  * @param clock источник времени; подменяется в тестах.
  */
 class AgentRunEngine(
     private val runs: RunRepository,
     private val tasks: TaskRepository,
+    private val models: ModelProvider,
     private val planner: RunPlanner,
-    private val llm: LlmClient,
     private val events: AgentEventSink,
     private val clock: () -> Instant = Clock.System::now,
 ) {
@@ -118,16 +132,45 @@ class AgentRunEngine(
      *   местом, где прогоны запускаются.
      */
     suspend fun processNext(): Boolean {
-        val task = queue.next() ?: return false
+        val task = queue.next()
+        if (task != null) executeOrFail(task)
+        return task != null
+    }
+
+    /**
+     * Ведёт одну задачу: статус, выбор модели, план, прогон.
+     *
+     * Модель выбирается до планирования: прогон создаётся, когда план готов (решение 2),
+     * и алиас модели обязан попасть в уже созданный прогон. Отказ на любом из шагов
+     * виден на задаче, потому что прогона в этот момент ещё не существует.
+     */
+    private suspend fun executeOrFail(task: Task) {
         val running = task.copy(status = TaskStatus.RUNNING)
         writer.persistTask(running)
         // Режим снимается до планирования: при отказе планирования запись не должна
         // оставаться в памяти до конца жизни хоста.
         val mode = pendingModes.remove(task.id) ?: DEFAULT_MODE
-        val plan = planOrFail(running)
-        if (plan != null) executeRun(running, plan, mode)
-        return true
+        val model = modelOrFail(task)
+        if (model != null) {
+            val plan = planOrFail(running, model)
+            if (plan != null) executeRun(running, plan, mode, model)
+        }
     }
+
+    /**
+     * Берёт модель для прогона; при отказе помечает задачу кодом причины, а не молчит.
+     *
+     * Отказ — нормальное состояние: на чистой установке провайдер не настроен, у настроенного
+     * может не быть переменной окружения с ключом. Задача падает тем же кодом, что и раньше
+     * (`NOT_CONFIGURED`), и пользователь видит причину в строке задачи.
+     */
+    private suspend fun modelOrFail(task: Task): ConfiguredModel? =
+        models.current().getOrElse { error ->
+            val reason = reasonOf(error)
+            logger.warn("Задача ${task.id.value} не начала прогон ($reason): ${error.message}", error)
+            writer.failTask(task.id, reason)
+            null
+        }
 
     /** Пауза, продолжение или стоп; неизвестный прогон — ошибка, а не молчание. */
     fun control(runId: RunId, command: RunCommand) {
@@ -143,8 +186,8 @@ class AgentRunEngine(
      * задачи — её проверяет `ensureActive`.
      */
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun planOrFail(task: Task): List<PlanStep>? = try {
-        planner.plan(task)
+    private suspend fun planOrFail(task: Task, model: ConfiguredModel): List<PlanStep>? = try {
+        planner.plan(task, model.client)
     } catch (error: Exception) {
         currentCoroutineContext().ensureActive()
         val reason = reasonOf(error)
@@ -160,7 +203,12 @@ class AgentRunEngine(
      * прогон в очереди от отмены не страдает. `join` не пробрасывает отмену наружу,
      * поэтому остановленный прогон не завершает цикл воркера.
      */
-    private suspend fun executeRun(task: Task, plan: List<PlanStep>, mode: AutonomyMode) {
+    private suspend fun executeRun(
+        task: Task,
+        plan: List<PlanStep>,
+        mode: AutonomyMode,
+        model: ConfiguredModel,
+    ) {
         val run = AgentRun(
             id = RunId(UUID.randomUUID().toString()),
             taskId = task.id,
@@ -168,12 +216,13 @@ class AgentRunEngine(
             mode = mode,
             plan = plan,
             startedAt = clock(),
+            modelAlias = model.alias,
         )
         val control = RunControl()
         controls[run.id] = control
         try {
             coroutineScope {
-                val job = launch { execute(task, writer.persist(run), control) }
+                val job = launch { execute(task, writer.persist(run), control, model.client) }
                 control.attach(job)
                 job.join()
             }
@@ -190,12 +239,12 @@ class AgentRunEngine(
      * RUNNING в базе и помечается прерванным при следующем старте (решение 8).
      */
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun execute(task: Task, start: AgentRun, control: RunControl) {
+    private suspend fun execute(task: Task, start: AgentRun, control: RunControl, llm: LlmClient) {
         var current = writer.persist(start.copy(state = RunState.RUNNING))
         try {
             for (step in start.plan) {
                 current = checkpoint(current, control)
-                current = applyStep(task, current, step)
+                current = applyStep(task, current, step, llm)
                 current = checkpoint(current, control)
             }
         } catch (cancel: CancellationException) {
@@ -236,11 +285,15 @@ class AgentRunEngine(
     }
 
     /** Один шаг — один вызов модели; ошибка провайдера поднимается наружу как [LlmCallException]. */
-    private suspend fun applyStep(task: Task, run: AgentRun, step: PlanStep): AgentRun =
-        when (val response = llm.complete(StepPrompt.request(task, step, run.plan))) {
-            is LlmResponse.Text -> writer.recordStep(run, step, response)
-            is LlmResponse.Error -> throw LlmCallException(response)
-        }
+    private suspend fun applyStep(
+        task: Task,
+        run: AgentRun,
+        step: PlanStep,
+        llm: LlmClient,
+    ): AgentRun = when (val response = llm.complete(StepPrompt.request(task, step, run.plan))) {
+        is LlmResponse.Text -> writer.recordStep(run, step, response)
+        is LlmResponse.Error -> throw LlmCallException(response)
+    }
 }
 
 /** Название задачи по её постановке: первая непустая строка, не длиннее [TITLE_LIMIT]. */

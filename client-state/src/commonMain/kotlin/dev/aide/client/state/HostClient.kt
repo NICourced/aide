@@ -1,7 +1,9 @@
 package dev.aide.client.state
 
+import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
@@ -39,6 +41,14 @@ data class HostSession(
     val runs: List<AgentRun> = emptyList(),
     /** Задачи хоста в порядке постановки; статус приходит событиями и запросом (T-1.1). */
     val tasks: List<Task> = emptyList(),
+    /** Конфигурация моделей хоста; null, пока её не запросили (T-1.56). */
+    val agentConfig: AgentConfig? = null,
+    /** Каталог заготовок провайдеров (T-1.56). */
+    val providerCatalog: List<ProviderCatalogEntry> = emptyList(),
+    /** Последний результат проверки модели (T-1.56); null, если проверку не запускали. */
+    val modelCheck: ModelCheckOutcome? = null,
+    /** Последний отказ настроек моделей (T-1.56); null, если всё прошло. */
+    val modelError: ModelConfigError? = null,
     /** Последняя ошибка запроса; null, если ошибок нет. */
     val lastError: ProtocolError? = null,
 )
@@ -248,6 +258,15 @@ class HostClient(
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на управление прогоном")))
         }
     }
+
+    /**
+     * Настройки моделей хоста (T-1.56).
+     *
+     * Отдельный объект, а не методы этого класса: доступ к хосту — про репозиторий и
+     * прогоны, а настройка моделей — про конфигурацию, которую правят руками. Общий у них
+     * только транспорт, поэтому идентификаторы запросов и сессия передаются сюда.
+     */
+    val models: ModelConfigClient = ModelConfigClient(connection, requestIds::next, _session)
 
     /**
      * Дозапрашивает состояние хоста, дерево и открытый файл.

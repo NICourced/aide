@@ -173,16 +173,16 @@ host-agent/                                   ← новый модуль (О-1)
     ports/TaskRepository.kt    порт задач: очередь, статусы
     ports/AgentEventSink.kt    порт рассылки событий прогона клиентам
     llm/LlmClient.kt           интерфейс модели для движка: запрос, ответ, стоимость
-    llm/NotConfiguredLlmClient.kt    «провайдер не настроен» — ответ по умолчанию
     RunPlanner.kt              план по задаче (T-1.2 расширит)
     RunStateWriter.kt          переходы состояния и статусов задач: база, потом событие
-    provider/ProviderProfile.kt      провайдер и модель как данные (О-2)
     provider/ProviderCatalog.kt      заготовки популярных провайдеров и моделей
     provider/ProviderRegistry.kt     выбор провайдера и модели, проверка ключа
     provider/ModelProvider.kt        модель, выбранная для прогона (T-1.56)
+    provider/ProviderClient.kt       протокол провайдера: вызов и проверка доступа
     provider/openai/OpenAiCompatibleClient.kt   протокол chat completions (Ktor)
     provider/anthropic/AnthropicClient.kt       протокол Anthropic Messages (Ktor, T-1.57)
-    config/AgentConfig.kt      конфигурация хоста: провайдеры, модели, выбранная по умолчанию
+    config/AgentConfigCodec.kt       чтение и запись конфигурации (JSON)
+    config/AgentConfigValidator.kt   минимальная проверка перед сохранением
     prompt/PlannerPrompt.kt    постановка задачи → план
     prompt/StepPrompt.kt       шаг → вызов инструментов
   src/main/resources/dev/aide/agent/provider-catalog.json   заготовки (данные, не код)
@@ -469,7 +469,11 @@ sealed interface LlmResponse {
 
 **Готово когда:** в настройках есть раздел «Модель»: список провайдеров, добавление из заготовок популярных сервисов и добавление своего провайдера с произвольными `base_url`, протоколом и именем переменной окружения с ключом; ключ никогда не хранится в файле конфигурации хоста, а читается из переменной окружения по имени (её отсутствие — явная ошибка с именем переменной); у каждой модели есть контекст, предел вывода, поддержка вызова инструментов и ставки цены за миллион токенов; любое поле заготовки правится вручную; выбранная по умолчанию модель переживает перезапуск хоста; прогон записывает, на какой модели он шёл.
 
-**Файлы.** `host-agent`: `provider/ProviderProfile.kt`, `provider/ProviderCatalog.kt`, `provider/ProviderRegistry.kt`, `provider/ModelProvider.kt`, `provider/openai/OpenAiCompatibleClient.kt`, `config/AgentConfig.kt`, ресурс `provider-catalog.json`. `protocol`: чтение и запись конфигурации, проверка модели. `host-core`: обработчик этих сообщений, путь к файлу конфигурации (рядом с базой хоста). `client-state`/`client-ui`: раздел «Модель» в настройках. `domain`: аддитивное `AgentRun.modelAlias`.
+**Файлы.** `domain`: `ModelProfile.kt` — типы конфигурации (`ProviderProfile`, `ModelProfile`, `AgentConfig`, `ProviderCatalogEntry`, `ModelCheckFailure`, `AgentConfigRejection`) и аддитивное `AgentRun.modelAlias`. **Почему в домене, а не в `host-agent`, как было в первой редакции плана:** `protocol` — KMP-модуль (`commonMain`), а `host-agent` — JVM-модуль; сообщения протокола несут эти типы, и `commonMain` не может зависеть от JVM-модуля. Та же причина, по которой в T-1.1 в домен уехал `RunCommand`.
+`host-agent`: `provider/ProviderCatalog.kt`, `provider/ProviderRegistry.kt`, `provider/ModelProvider.kt`, `provider/ProviderClient.kt`, `provider/ProviderClients.kt`, `provider/openai/OpenAiCompatibleClient.kt`, `config/AgentConfigCodec.kt`, `config/AgentConfigValidator.kt`, ресурс `provider-catalog.json`.
+`protocol`: `AgentConfigRequest`, `SaveAgentConfig`, `CheckModel` и ответы (`AgentConfigSnapshot`, `AgentConfigSaved`, `ModelCheckResult`), плюс `ProtocolError.InvalidAgentConfig`.
+`host-core`: `config/AgentConfigStore.kt` (атомарная запись, уникальный временный файл, замок), `HostStorage.kt` (единственный экземпляр хранилища конфигурации), `ProviderTimeouts.kt` (явные таймауты HTTP — см. решение 10), `agent/AgentConfigHandler.kt`.
+`client-state`/`client-ui`: `ModelConfigClient.kt`, раздел «Модель» в настройках (`ModelSettingsScreen`), тексты в ресурсах.
 
 **Контракт конфигурации** (`dev.aide.agent.provider`, `dev.aide.agent.config`):
 
@@ -549,6 +553,15 @@ data class ConfiguredModel(val alias: String, val client: LlmClient)
 **Проверка.** `./gradlew :host-agent:test :host-core:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test`; `./gradlew detekt verifyModuleBoundaries build`; вручную — раздел «Модель» на десктопе: добавить заготовку, добавить своего провайдера, проверить ключ, поставить задачу и увидеть прогон.
 
 **Что останется непроверенным.** Настоящий провайдер (OpenAI, Kimi, OpenRouter) в CI не вызывается и вызываться не будет — только локальная заглушка; ручная проверка с настоящим ключом остаётся за владельцем. Защищённое хранилище секретов и открытый ключ в файле — этап 3 (`FR-TOOLS-5..7`), здесь только переменные окружения. Живого каталога и импорта из внешнего реестра нет: заготовки — снимок, который пользователь правит.
+
+**Долг и расхождения, найденные при исполнении и на двух ревью.**
+- **Таймауты HTTP заданы явно** (решение владельца по итогам ревью): подключение 30 с, сокет 60 с, запрос целиком 600 с. Иначе действовало умолчание движка CIO — 15 с, и честный ответ на 16 тысяч токенов молча обрывался, выглядя как «провайдер не ответил». Числа — в одном месте (`ProviderTimeouts`) с объяснением, почему общий таймаут щедрый: запрос не потоковый.
+- **Раздел «Модель» не умеет удалять** провайдера или модель — только добавлять и править. Критерий этого не требует, но ошибочно добавленное пользователь убрать не сможет: закрыть вместе с управлением секретами (этап 3, `FR-TOOLS-14..15`), где у инструментов будет тот же набор операций.
+- **Валидация конфигурации минимальна**: уникальность алиасов, непустой `baseUrl`, положительные размеры, существование провайдера у модели. Нет проверок формата адреса, диапазона цен, уникальности идентификаторов провайдеров, соответствия алиаса имени модели на сервере — добавить, когда появится импорт спецификаций (этап 3).
+- **Словарь кодов причин разъехался не полностью**: коды моделей теперь в домене (`ModelFailureCode`, `ModelCheckFailure`), а коды прогона (`plan_unreadable`, `user_stop`, `host_restart`) по-прежнему дублируются строками в `client-ui`. Вынести в `protocol` — вместе с экраном ошибок (T-1.28/T-1.50).
+- **`ProviderType.ANTHROPIC` объявлен и есть в каталоге, адаптера нет** — провайдер отвечает типизированным `Unsupported`, а не загадочной ошибкой. Адаптер — T-1.57.
+- **Стоимость модели накапливается в прогоне, но не показывается** — T-1.5; лимиты стоимости — этап 3.
+- **Живой провайдер не проверялся ни разу** (только локальная заглушка и `MockEngine`), а он и есть единственное доказательство, что формат chat completions выбран верно для реального сервиса. Ручная проверка с настоящим ключом — обязательна при первой возможности, и её результат стоит записать в план.
 
 ### Задача 4: `T-1.57` Адаптер Anthropic Messages — 1д
 

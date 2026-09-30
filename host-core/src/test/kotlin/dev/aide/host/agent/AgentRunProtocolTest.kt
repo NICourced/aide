@@ -4,12 +4,15 @@ import dev.aide.agent.RunPlanner
 import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.provider.ConfiguredModel
+import dev.aide.agent.provider.AgentModels
 import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.KtorHostConnection
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
+import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunState
@@ -62,7 +65,11 @@ class AgentRunProtocolTest {
 
     @Test
     fun `клиент ставит задачу, получает события и доходит до finished`() = runBlocking {
-        val host = EmbeddedHost.open(databasePath = tempDatabase(), llmClient = TextModel(), planner = fixedPlanner(2))
+        val host = EmbeddedHost.open(
+            databasePath = tempDatabase(),
+            models = scripted(TextModel()),
+            planner = fixedPlanner(2),
+        )
         try {
             val (connection, client) = newClient(host, "agent")
             client.start()
@@ -109,7 +116,7 @@ class AgentRunProtocolTest {
             val model = GateModel()
             val host = EmbeddedHost.open(
                 databasePath = tempDatabase(),
-                llmClient = model,
+                models = scripted(model),
                 planner = fixedPlanner(2),
             )
             try {
@@ -153,7 +160,11 @@ class AgentRunProtocolTest {
 
     @Test
     fun `подключившийся позже клиент узнаёт состояние агента запросом`() = runBlocking {
-        val host = EmbeddedHost.open(databasePath = tempDatabase(), llmClient = TextModel(), planner = fixedPlanner(1))
+        val host = EmbeddedHost.open(
+            databasePath = tempDatabase(),
+            models = scripted(TextModel()),
+            planner = fixedPlanner(1),
+        )
         try {
             val (firstConnection, first) = newClient(host, "early")
             first.start()
@@ -179,7 +190,11 @@ class AgentRunProtocolTest {
 
     @Test
     fun `повтор PostTask с тем же идентификатором не создаёт вторую задачу`() = runBlocking {
-        val host = EmbeddedHost.open(databasePath = tempDatabase(), llmClient = TextModel(), planner = fixedPlanner(1))
+        val host = EmbeddedHost.open(
+            databasePath = tempDatabase(),
+            models = scripted(TextModel()),
+            planner = fixedPlanner(1),
+        )
         try {
             val (connection, client) = newClient(host, "dedup")
             client.start()
@@ -204,7 +219,7 @@ class AgentRunProtocolTest {
         val database = tempDatabase()
         val firstHost = EmbeddedHost.open(
             databasePath = database,
-            llmClient = BlockingModel(),
+            models = scripted(BlockingModel()),
             planner = fixedPlanner(1),
         )
         val interruptedId = try {
@@ -221,7 +236,11 @@ class AgentRunProtocolTest {
         }
 
         // Тот же файл базы: прогон остался незавершённым, и новый хост обязан это заметить.
-        val secondHost = EmbeddedHost.open(databasePath = database, llmClient = TextModel(), planner = fixedPlanner(1))
+        val secondHost = EmbeddedHost.open(
+            databasePath = database,
+            models = scripted(TextModel()),
+            planner = fixedPlanner(1),
+        )
         try {
             val (connection, client) = newClient(secondHost, "after")
             client.start()
@@ -267,8 +286,23 @@ class AgentRunProtocolTest {
             client.session.value.tasks.first(predicate)
         }
 
-    private fun fixedPlanner(stepCount: Int): RunPlanner = RunPlanner {
+    private fun fixedPlanner(stepCount: Int): RunPlanner = RunPlanner { _, _ ->
         List(stepCount) { index -> PlanStep(index = index, summary = "шаг $index", status = StepStatus.PENDING) }
+    }
+
+    /**
+     * Источник модели со скриптованным клиентом (T-1.56).
+     *
+     * Настоящий провайдер подставляется в этот тест моделью, а не реестром: проверяются
+     * транспорт и состояния прогона, а не разбор ответа провайдера (О-11). Проверка
+     * доступа объявлена явно: у источника без транспорта проверять нечего, и говорить
+     * об этом обязан он сам, а не умолчание общего интерфейса.
+     */
+    private fun scripted(client: LlmClient): AgentModels = object : AgentModels {
+
+        override fun current(): Result<ConfiguredModel> = Result.success(ConfiguredModel("test/scripted", client))
+
+        override suspend fun check(alias: String): ModelCheckFailure? = ModelCheckFailure.Unsupported
     }
 
     private fun tempDatabase(): Path = Files.createTempFile("aide-agent", ".db")

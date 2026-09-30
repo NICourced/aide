@@ -13,10 +13,14 @@ import dev.aide.protocol.HostMessage
 class ClientMessageRouter(
     private val stageZero: ClientMessageHandler,
     private val agent: ClientMessageHandler,
+    private val modelConfig: ClientMessageHandler,
 ) : ClientMessageHandler {
 
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
         is ClientMessage.PostTask, is ClientMessage.AgentStatus, is ClientMessage.RunControl -> agent.handle(message)
+        is ClientMessage.AgentConfigRequest, is ClientMessage.SaveAgentConfig, is ClientMessage.CheckModel ->
+            modelConfig.handle(message)
+
         else -> stageZero.handle(message)
     }
 }

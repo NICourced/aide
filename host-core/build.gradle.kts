@@ -42,6 +42,10 @@ dependencies {
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.websockets)
+    // Адаптер провайдера работает на HttpClient из host-agent, а движок HTTP-клиента
+    // выбирает хост-процесс: CIO приносит именно host-core, чтобы рантайм агента не
+    // зависел от конкретного транспорта.
+    implementation(libs.ktor.client.cio)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.datetime)
     // Полный доменный объект хранится в колонке payload в CBOR: домен остаётся
@@ -58,6 +62,9 @@ dependencies {
     implementation(libs.jgit)
 
     testImplementation(libs.kotlin.test)
+    // MockEngine: сборка HTTP-клиента провайдеров и адаптер проверяются на записанных
+    // ответах, сети в автоматических тестах нет (О-11).
+    testImplementation(libs.ktor.client.mock)
     // Клиент нужен интеграционным тестам транспорта. Правило границ проверяет
     // только main-наборы, поэтому ребро host-core → client-state в тестах легально.
     testImplementation(project(":client-state"))
@@ -66,4 +73,11 @@ dependencies {
     testImplementation(libs.slf4j.simple)
 }
 
-tasks.test { useJUnitPlatform() }
+tasks.test {
+    useJUnitPlatform()
+    // Ключ модели тесты подкладывают переменной окружения процесса, а не файлом (T-1.56):
+    // в файле конфигурации ключа нет ни в каком виде, и прочитать его можно только отсюда.
+    // Значение задаётся здесь одно на модуль, а тест берёт его из окружения и доказывает,
+    // что оно действительно ушло провайдеру и не попало ни в файл настроек, ни в журнал.
+    environment("AIDE_TEST_MODEL_KEY", "aide-test-key-2f6a1c")
+}

@@ -4,14 +4,18 @@ import dev.aide.agent.AgentRunEngine
 import dev.aide.agent.InterruptedRuns
 import dev.aide.agent.LlmRunPlanner
 import dev.aide.agent.RunPlanner
-import dev.aide.agent.llm.LlmClient
-import dev.aide.agent.llm.NotConfiguredLlmClient
+import dev.aide.agent.provider.AgentModels
+import dev.aide.agent.provider.ProviderCatalog
+import dev.aide.agent.provider.ProviderClients
+import dev.aide.agent.provider.ProviderRegistry
+import dev.aide.host.agent.AgentConfigHandler
 import dev.aide.host.agent.AgentRunHandler
 import dev.aide.host.agent.ClientMessageRouter
 import dev.aide.host.agent.RunWorker
 import dev.aide.host.agent.ServerRunEventSink
 import dev.aide.host.agent.StoreRunRepository
 import dev.aide.host.agent.StoreTaskRepository
+import dev.aide.host.config.AgentConfigStore
 import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ClientSessions
 import dev.aide.host.server.ProtocolServer
@@ -21,6 +25,8 @@ import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.store.HostStore
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.ProtocolVersion
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
 import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,9 +41,10 @@ import org.koin.dsl.module
  * Composition root хоста: единственное место, где известно, из чего состоит хост.
  *
  * Модуль параметризован режимом и портом: эти значения отличают локальный хост от
- * удалённого, разделяемым состоянием они не являются. Путь к базе, модель и планировщик —
- * тоже параметры: тесты подставляют временную базу и скриптованного клиента, а на чистой
- * установке работает модель «провайдер не настроен».
+ * удалённого, разделяемым состоянием они не являются. Путь к базе и к файлу настройки
+ * моделей, планировщик и источник моделей — тоже параметры: тесты подставляют временные
+ * файлы и скриптованную модель, а на чистой установке работает реестр по файлу, который
+ * ещё пуст, — то есть «провайдер не настроен».
  *
  * Граф изолированный ([KoinApplication.init], а не глобальный контекст): хост поднимается
  * и в приложении, и в тестах — `EmbeddedHostTest` открывает его несколько раз за прогон,
@@ -61,12 +68,16 @@ object HostApp {
      * от интерфейса, а Koin сопоставляет определение по объявленному типу. Реестр
      * сессий ([ClientSessions]) — общий для сервера и рассылки событий прогона;
      * это и разрывает цикл «сервер → обработчик → движок → сервер».
+     *
+     * @param storage состояние хоста на диске: база и настройки моделей. Идёт сюда готовым,
+     *   потому что экземпляр хранилища настроек должен быть один на хост: он же держит
+     *   замок записи, и второй экземпляр на том же пути означал бы его отсутствие.
      */
     fun module(
         mode: HostMode,
         port: Int,
-        databasePath: Path?,
-        llmClient: LlmClient,
+        storage: HostStorage,
+        models: AgentModels,
         planner: RunPlanner,
     ): Module = module {
         single(modeQualifier) { mode }
@@ -74,15 +85,15 @@ object HostApp {
         // Версия протокола у хоста одна — текущая сборка: параметром её никто не
         // подменяет, а несовместимость версий проверяется на уровне сессии (§ 8.4).
         single(versionQualifier) { ProtocolVersion.CURRENT }
-        single { if (databasePath == null) DatabaseFactory.open() else DatabaseFactory.open(databasePath) }
+        single { storage.databasePath?.let(DatabaseFactory::open) ?: DatabaseFactory.open() }
         single { ClientSessions() }
         single { StageZeroHandler(mode = get(modeQualifier)) }
         single {
             AgentRunEngine(
                 runs = StoreRunRepository(get<HostStore>().runs),
                 tasks = StoreTaskRepository(get<HostStore>().tasks),
+                models = models,
                 planner = planner,
-                llm = llmClient,
                 events = ServerRunEventSink(get()),
             )
         }
@@ -93,8 +104,19 @@ object HostApp {
                 tasks = get<HostStore>().tasks,
             )
         }
+        single {
+            AgentConfigHandler(
+                store = storage.config,
+                checkModel = models::check,
+                catalog = { ProviderCatalog.entries },
+            )
+        }
         single<ClientMessageHandler> {
-            ClientMessageRouter(stageZero = get<StageZeroHandler>(), agent = get<AgentRunHandler>())
+            ClientMessageRouter(
+                stageZero = get<StageZeroHandler>(),
+                agent = get<AgentRunHandler>(),
+                modelConfig = get<AgentConfigHandler>(),
+            )
         }
         single {
             ProtocolServer(
@@ -115,25 +137,38 @@ object HostApp {
      * восстановлено, и очередь пуста (решение 8).
      *
      * Возвращает [EmbeddedHost] вместе с графом: `close()` освобождает порт, отменяет
-     * корутины, закрывает хранилище и сам граф.
+     * корутины, закрывает хранилище, HTTP-клиент провайдеров и сам граф.
+     *
+     * @param databasePath путь к базе хоста; null — база приложения по умолчанию.
+     *   Файл настроек моделей лежит рядом с базой: это часть состояния того же хоста,
+     *   и уносить её в отдельный каталог значило бы однажды разойтись с базой.
+     * @param models модели хоста; null — реестр по файлу настроек, то есть настоящее
+     *   поведение приложения. Параметр существует для тестов, подставляющих
+     *   скриптованную модель (О-11).
+     * @param planner планировщик; по умолчанию спрашивает выбранную модель.
      */
     fun open(
         mode: HostMode = HostMode.LOCAL,
         port: Int = freeLoopbackPort(),
         databasePath: Path? = null,
-        llmClient: LlmClient = NotConfiguredLlmClient(),
-        planner: RunPlanner = LlmRunPlanner(llmClient),
+        models: AgentModels? = null,
+        planner: RunPlanner = LlmRunPlanner(),
     ): EmbeddedHost {
+        val storage = HostStorage.of(databasePath)
+        // Реестр и HTTP-клиент собираются только тогда, когда модели не подставлены:
+        // подставленному источнику транспорта не нужно, а поднятый «на всякий случай»
+        // реестр читал бы файл, которого в его ветке исполнения никто не спрашивает.
+        val httpClient: HttpClient?
+        val provider: AgentModels
+        if (models == null) {
+            httpClient = providerHttpClient()
+            provider = ProviderRegistry(config = storage.config::load, clients = ProviderClients(httpClient))
+        } else {
+            httpClient = null
+            provider = models
+        }
         val graph = KoinApplication.init()
-            .modules(
-                module(
-                    mode = mode,
-                    port = port,
-                    databasePath = databasePath,
-                    llmClient = llmClient,
-                    planner = planner,
-                ),
-            )
+            .modules(module(mode = mode, port = port, storage = storage, models = provider, planner = planner))
         val store = graph.koin.get<HostStore>()
         InterruptedRuns(StoreRunRepository(store.runs), StoreTaskRepository(store.tasks)).markInterrupted()
 
@@ -149,6 +184,7 @@ object HostApp {
             store = store,
             handler = graph.koin.get(),
             graph = graph,
+            httpClient = httpClient,
         )
     }
 }

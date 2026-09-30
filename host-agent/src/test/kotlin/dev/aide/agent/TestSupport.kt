@@ -6,9 +6,13 @@ import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RunRepository
 import dev.aide.agent.ports.TaskRepository
+import dev.aide.agent.provider.ConfiguredModel
+import dev.aide.agent.provider.ModelProvider
+import dev.aide.agent.provider.ModelUnavailableException
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
+import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.Task
@@ -125,6 +129,18 @@ fun testRun(id: String, state: RunState, finishedAt: Instant? = null): AgentRun 
     startedAt = Instant.fromEpochMilliseconds(1),
     finishedAt = finishedAt,
 )
+
+/**
+ * Источник модели с фиксированным клиентом: так тесты движка подставляют скриптованную
+ * модель вместо реестра провайдеров (T-1.56, О-11). Алиас виден в `AgentRun.modelAlias`,
+ * и по нему проверяется, что модель записана на прогон.
+ */
+fun fixedModel(llm: LlmClient, alias: String = "test/scripted"): ModelProvider =
+    ModelProvider { Result.success(ConfiguredModel(alias, llm)) }
+
+/** Источник модели, отвечающий типизированным отказом: так проверяются коды причин. */
+fun failingModel(failure: ModelCheckFailure): ModelProvider =
+    ModelProvider { Result.failure(ModelUnavailableException(failure)) }
 
 /** Задача с заданным статусом. */
 fun testTask(id: String, status: TaskStatus): Task = Task(
