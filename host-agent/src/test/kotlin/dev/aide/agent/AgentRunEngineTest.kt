@@ -54,6 +54,7 @@ class AgentRunEngineTest {
             models = fixedModel(llm),
             planner = RunPlanner { _, _ -> plan },
             tools = tools,
+            branches = branchAlreadyExists,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
 
@@ -191,6 +192,7 @@ class AgentRunEngineTest {
             models = fixedModel(textModel()),
             planner = RunPlanner { _, _ -> throw PlanFormatException("не план") },
             tools = tools,
+            branches = branchAlreadyExists,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -210,6 +212,7 @@ class AgentRunEngineTest {
             models = fixedModel(textModel()),
             planner = RunPlanner { _, _ -> plan("раз") },
             tools = tools,
+            branches = branchAlreadyExists,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -241,6 +244,7 @@ class AgentRunEngineTest {
             models = failingModel(ModelCheckFailure.NotConfigured),
             planner = RunPlanner { _, _ -> plan("раз") },
             tools = tools,
+            branches = branchAlreadyExists,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -259,6 +263,7 @@ class AgentRunEngineTest {
             models = failingModel(ModelCheckFailure.MissingKey("DEEPSEEK_API_KEY")),
             planner = RunPlanner { _, _ -> plan("раз") },
             tools = tools,
+            branches = branchAlreadyExists,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -282,6 +287,7 @@ class AgentRunEngineTest {
             models = ModelProvider { Result.success(chosen) },
             planner = RunPlanner { _, _ -> plan("раз", "два") },
             tools = tools,
+            branches = branchAlreadyExists,
             clock = { Instant.fromEpochMilliseconds(1_000) },
         )
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)

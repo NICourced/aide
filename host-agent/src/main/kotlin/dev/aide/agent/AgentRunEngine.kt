@@ -7,6 +7,7 @@ import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.llm.code
 import dev.aide.agent.ports.RunPorts
+import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.prompt.PlanFormatException
 import dev.aide.agent.prompt.StepPrompt
 import dev.aide.agent.provider.ConfiguredModel
@@ -95,6 +96,10 @@ private fun reasonOf(error: Throwable): String = when (error) {
  * работает выбранным клиентом. Поэтому смена модели в настройках не меняет правила
  * идущего прогона (FR-AGENT-5), а отказ выбора — обычное состояние с кодом причины.
  *
+ * Ветку задачи ставит [TaskBranches] — тоже в начале прогона и до планирования (T-1.18):
+ * планирование читает репозиторий, и читать его надо уже в той ветке, где агент будет
+ * работать, иначе план окажется про другое состояние дерева.
+ *
  * @param clock источник времени; подменяется в тестах.
  */
 class AgentRunEngine(
@@ -102,6 +107,7 @@ class AgentRunEngine(
     private val models: ModelProvider,
     private val planner: RunPlanner,
     private val tools: StepTools,
+    private val branches: TaskBranches,
     private val clock: () -> Instant = Clock.System::now,
 ) {
 
@@ -109,6 +115,7 @@ class AgentRunEngine(
 
     private val queue = RunQueue(ports.tasks)
     private val writer = RunStateWriter(ports.runs, ports.tasks, ports.events, clock, Mutex())
+    private val placement = TaskBranchPlacement(branches, writer)
     private val controls = ConcurrentHashMap<RunId, RunControl>()
     private val pendingModes = ConcurrentHashMap<TaskId, AutonomyMode>()
 
@@ -154,11 +161,15 @@ class AgentRunEngine(
     }
 
     /**
-     * Ведёт одну задачу: статус, выбор модели, план, прогон.
+     * Ведёт одну задачу: статус, выбор модели, ветка задачи, план, прогон.
      *
      * Модель выбирается до планирования: прогон создаётся, когда план готов (решение 2),
      * и алиас модели обязан попасть в уже созданный прогон. Отказ на любом из шагов
      * виден на задаче, потому что прогона в этот момент ещё не существует.
+     *
+     * Порядок «модель, потом ветка» осознан: если прогон не может начаться из-за
+     * выбранной модели, репозиторий пользователя не переключается — незачем менять
+     * его состояние ради прогона, которого не будет.
      */
     private suspend fun executeOrFail(task: Task) {
         val running = task.copy(status = TaskStatus.RUNNING)
@@ -168,8 +179,11 @@ class AgentRunEngine(
         val mode = pendingModes.remove(task.id) ?: DEFAULT_MODE
         val model = modelOrFail(task)
         if (model != null) {
-            val plan = planOrFail(running, model)
-            if (plan != null) executeRun(running, plan, mode, model)
+            val placed = placement.place(running)
+            if (placed != null) {
+                val plan = planOrFail(placed, model)
+                if (plan != null) executeRun(placed, plan, mode, model)
+            }
         }
     }
 

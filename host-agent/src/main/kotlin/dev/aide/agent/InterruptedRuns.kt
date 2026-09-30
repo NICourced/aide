@@ -31,6 +31,27 @@ object RunInterruptReason {
      * модели, а не в сбое хоста.
      */
     const val TOOL_LOOP_LIMIT: String = "tool_loop_limit"
+
+    /**
+     * Репозиторий не открыт: задачу некуда поставить — переключать нечего (T-1.18).
+     *
+     * Отдельный код, а не `unexpected`: прогон без репозитория не сделал бы ничего
+     * полезного (инструменты читают только открытый воркспейс), и тишина вместо отказа
+     * показывала бы пользователю успех пустого прогона.
+     */
+    const val NO_WORKSPACE: String = "no_workspace"
+
+    /** У репозитория нет коммитов: ветку задачи не от чего ответвлять (T-1.18). */
+    const val REPOSITORY_EMPTY: String = "repository_empty"
+
+    /** HEAD отсоединён: непонятно, какая ветка базовая, и угадывать её нельзя (T-1.18). */
+    const val HEAD_DETACHED: String = "head_detached"
+
+    /** Репозиторий только для чтения: ссылку на ветку записать некуда (T-1.18). */
+    const val REPOSITORY_READ_ONLY: String = "repository_read_only"
+
+    /** Git не смог создать ветку или переключиться в неё: правки мешают или ссылка не пишется. */
+    const val BRANCH_FAILED: String = "branch_failed"
 }
 
 /**

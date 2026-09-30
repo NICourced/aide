@@ -5,6 +5,8 @@ import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RunRepository
+import dev.aide.agent.ports.TaskBranch
+import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.ports.TaskRepository
 import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.agent.provider.ModelProvider
@@ -119,6 +121,29 @@ class ThrowingOnFinishSink(
         delegate.taskStateChanged(task)
     }
 }
+
+/**
+ * Ветка задачи в тестах (T-1.18): по умолчанию «ветка уже была», а чем она обеспечена
+ * и спрашивали ли её вообще — решает тест.
+ */
+class FakeTaskBranches(private var outcome: TaskBranch = TaskBranch.Existing) : TaskBranches {
+
+    /** Ветки, о которых движок спрашивал; по списку проверяется и то, что спросил. */
+    val asked = mutableListOf<String>()
+
+    /** Меняет ответ порта: так проверяются отказы репозитория. */
+    fun answer(outcome: TaskBranch) {
+        this.outcome = outcome
+    }
+
+    override suspend fun ensure(branch: String): TaskBranch {
+        asked += branch
+        return outcome
+    }
+}
+
+/** Порт ветки, отвечающий «ветка уже была»: тестам без T-1.18 важно лишь, что прогон не отказал. */
+val branchAlreadyExists: TaskBranches = TaskBranches { TaskBranch.Existing }
 
 /** Прогон с заданным состоянием; незавершённые — без `finishedAt`. */
 fun testRun(id: String, state: RunState, finishedAt: Instant? = null): AgentRun = AgentRun(

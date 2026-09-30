@@ -20,6 +20,8 @@ import dev.aide.domain.StepStatus
 import dev.aide.domain.Task
 import dev.aide.domain.TaskStatus
 import dev.aide.host.EmbeddedHost
+import dev.aide.host.git.GitCliFixture
+import dev.aide.host.workspace.TempRepoFixture
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.RequestId
@@ -49,18 +51,26 @@ import kotlinx.coroutines.withTimeoutOrNull
  * пауза/продолжение/стоп проходят путь клиент → хост → событие, а после перезапуска
  * хоста незавершённый прогон становится прерванным.
  *
+ * T-1.18 тем же путём: прогон идёт в ветке задачи `ai/<task-id>`, клиент узнаёт об этом
+ * из состояния хоста после переключения, а перезапуск хоста ветку не пересоздаёт.
+ *
  * Сеть и реальный провайдер не нужны: модель подставляется скриптованной (О-11).
+ * Репозиторий нужен настоящий: ветка задачи создаётся в нём.
  */
 class AgentRunProtocolTest {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val connections = mutableListOf<KtorHostConnection>()
 
+    /** Репозиторий с коммитом: прогон начинается в ветке задачи (T-1.18). */
+    private val repo = TempRepoFixture().also { GitCliFixture.createRepo(it.root) }
+
     @AfterTest
     fun tearDown() {
         runBlocking { connections.forEach { runCatching { it.stop() } } }
         connections.clear()
         scope.cancel()
+        repo.close()
     }
 
     @Test
@@ -74,6 +84,7 @@ class AgentRunProtocolTest {
             val (connection, client) = newClient(host, "agent")
             client.start()
             awaitConnected(connection)
+            openRepository(client)
 
             val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
 
@@ -123,6 +134,7 @@ class AgentRunProtocolTest {
                 val (connection, client) = newClient(host, "control")
                 client.start()
                 awaitConnected(connection)
+                openRepository(client)
                 client.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
 
                 val running = awaitRun(client) { it.state == RunState.RUNNING }
@@ -169,6 +181,7 @@ class AgentRunProtocolTest {
             val (firstConnection, first) = newClient(host, "early")
             first.start()
             awaitConnected(firstConnection)
+            openRepository(first)
             first.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
             assertNotNull(awaitRun(first) { it.state == RunState.FINISHED })
 
@@ -199,6 +212,7 @@ class AgentRunProtocolTest {
             val (connection, client) = newClient(host, "dedup")
             client.start()
             awaitConnected(connection)
+            openRepository(client)
 
             val requestId = RequestId("post-dup")
             val post = ClientMessage.PostTask(requestId, "Почини", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -226,6 +240,7 @@ class AgentRunProtocolTest {
             val (connection, client) = newClient(firstHost, "before")
             client.start()
             awaitConnected(connection)
+            openRepository(client)
             client.postTask("долгая задача", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
 
             val running = awaitRun(client) { it.state == RunState.RUNNING }
@@ -256,6 +271,88 @@ class AgentRunProtocolTest {
         }
     }
 
+    @Test
+    fun `прогон идёт в ветке задачи, и клиент видит её в состоянии хоста`() = runBlocking {
+        val host = EmbeddedHost.open(
+            databasePath = tempDatabase(),
+            models = scripted(TextModel()),
+            planner = fixedPlanner(1),
+        )
+        try {
+            val (connection, client) = newClient(host, "branch")
+            client.start()
+            awaitConnected(connection)
+            openRepository(client)
+
+            // Открытие репозитория состояние обновило: дальше клиент не спрашивает хост сам,
+            // и ветку задачи он обязан увидеть потому, что хост разослал событие о смене
+            // воркспейса после переключения (T-1.18).
+            assertEquals("master", awaitBranch(client, "master"), "состояние открытого репозитория доходит до клиента")
+            val headBefore = headOfRepo()
+
+            val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+            assertNotNull(awaitRun(client) { it.state == RunState.FINISHED }, "прогон обязан завершиться")
+            val taskBranch = "ai/${taskId.value}"
+
+            assertEquals(taskBranch, awaitBranch(client, taskBranch), "шапка обязана показать ветку задачи")
+            assertEquals(taskBranch, GitCliFixture.currentBranch(repo.root), "репозиторий остался в ветке задачи")
+            assertEquals(headBefore, headOfRepo(), "ветка создана от HEAD: сам HEAD не сдвинулся")
+            assertEquals(
+                "master",
+                assertNotNull(awaitTask(client) { it.id == taskId }).baseBranch,
+                "базовая ветка уезжает клиенту вместе с задачей",
+            )
+        } finally {
+            host.close()
+        }
+    }
+
+    @Test
+    fun `после перезапуска хоста ветка задачи на месте и заново не создаётся`() = runBlocking {
+        val database = tempDatabase()
+        val firstHost = EmbeddedHost.open(
+            databasePath = database,
+            models = scripted(TextModel()),
+            planner = fixedPlanner(1),
+        )
+        val started = try {
+            val (connection, client) = newClient(firstHost, "before-restart")
+            client.start()
+            awaitConnected(connection)
+            openRepository(client)
+            val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+            assertNotNull(awaitRun(client) { it.state == RunState.FINISHED })
+            assertEquals("ai/${taskId.value}", awaitBranch(client, "ai/${taskId.value}"))
+            taskId to refOf("ai/${taskId.value}")
+        } finally {
+            firstHost.close()
+        }
+        val (taskId, refBeforeRestart) = started
+
+        // Тот же файл базы: ветка и запись о задаче лежат в репозитории и в базе, а не
+        // в памяти хоста, поэтому перезапуск не создаёт ветку заново (T-1.18).
+        val secondHost = EmbeddedHost.open(
+            databasePath = database,
+            models = scripted(TextModel()),
+            planner = fixedPlanner(1),
+        )
+        try {
+            val (connection, client) = newClient(secondHost, "after-restart")
+            client.start()
+            awaitConnected(connection)
+            openRepository(client)
+            client.agentStatus().getOrThrow()
+
+            val restored = client.session.value.tasks.single { it.id == taskId }
+            assertEquals("ai/${taskId.value}", restored.branch)
+            assertEquals("master", restored.baseBranch, "записанная база переживает перезапуск хоста")
+            assertEquals("ai/${taskId.value}", awaitBranch(client, "ai/${taskId.value}"))
+            assertEquals(refBeforeRestart, refOf("ai/${taskId.value}"), "ref ветки не пересоздан")
+        } finally {
+            secondHost.close()
+        }
+    }
+
     private fun newClient(host: EmbeddedHost, prefix: String): Pair<KtorHostConnection, HostClient> {
         val connection = KtorHostConnection(
             endpoint = host.endpoint,
@@ -273,6 +370,32 @@ class AgentRunProtocolTest {
         }
         assertNotNull(state, "клиент не подключился: ${connection.state.value}")
     }
+
+    /**
+     * Открывает репозиторий воркспейса.
+     *
+     * Нужен каждому прогону: ветка задачи создаётся в открытом воркспейсе (T-1.18),
+     * а без открытого репозитория задача падает кодом `no_workspace` — переключать нечего.
+     */
+    private suspend fun openRepository(client: HostClient) {
+        assertNotNull(client.openWorkspace(repo.root.toString()), "репозиторий обязан открыться")
+    }
+
+    /** Ветка из состояния хоста, каким его видит клиент; null — состояния ещё нет. */
+    private fun branchInHeader(client: HostClient): String? = client.session.value.hostState?.branch
+
+    /** Ждёт, пока клиент увидит эту ветку: состояние он перезапрашивает сам, по событию. */
+    private suspend fun awaitBranch(client: HostClient, branch: String): String? = withTimeoutOrNull(10_000) {
+        while (branchInHeader(client) != branch) delay(20)
+        branch
+    }
+
+    /** Хеш ссылки ветки по версии git: ref — то, что повторный запуск переписывать не должен. */
+    private fun refOf(branch: String): String =
+        GitCliFixture.run(listOf("git", "rev-parse", "refs/heads/$branch"), repo.root).output.trim()
+
+    /** Короткий хеш HEAD по версии git: ветка создаётся от него, а не сдвигает его. */
+    private fun headOfRepo(): String = GitCliFixture.headShortHash(repo.root)
 
     private suspend fun awaitRun(client: HostClient, predicate: (AgentRun) -> Boolean): AgentRun? =
         withTimeoutOrNull(10_000) {

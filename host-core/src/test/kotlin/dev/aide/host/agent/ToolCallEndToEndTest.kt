@@ -52,7 +52,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * а не «записался бы, если бы его позвали».
  *
  * Сеть и провайдер не нужны: модель подставляется скриптованной (О-11). Git нужен
- * только потому, что открытие воркспейса открывает и репозиторий (T-0.12).
+ * затем, что открытие воркспейса открывает и репозиторий (T-0.12), а прогон ставится
+ * в ветку задачи от его коммита (T-1.18).
  */
 class ToolCallEndToEndTest {
 
@@ -127,7 +128,9 @@ class ToolCallEndToEndTest {
     }
 
     private fun repoWithFile(name: String, content: String): Path {
-        val repo = GitCliFixture.createEmptyRepo(Files.createTempDirectory("aide-tools-repo"))
+        // Репозиторий с коммитом: ветка задачи создаётся от HEAD (T-1.18), а в репозитории
+        // без коммитов ответвлять не от чего — прогон отказался бы до первого чтения.
+        val repo = GitCliFixture.createRepo(Files.createTempDirectory("aide-tools-repo"))
         repo.resolve(name).writeText(content)
         return repo
     }

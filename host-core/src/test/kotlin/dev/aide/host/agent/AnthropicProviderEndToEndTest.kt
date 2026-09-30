@@ -12,7 +12,9 @@ import dev.aide.domain.ProviderProfile
 import dev.aide.domain.RunState
 import dev.aide.host.EmbeddedHost
 import dev.aide.host.config.AgentConfigStore
+import dev.aide.host.git.GitCliFixture
 import dev.aide.host.server.freeLoopbackPort
+import dev.aide.host.workspace.TempRepoFixture
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.http.ContentType
@@ -62,12 +64,16 @@ class AnthropicProviderEndToEndTest {
     private val connections = mutableListOf<KtorHostConnection>()
     private val stub = AnthropicStub()
 
+    /** Репозиторий с коммитом: прогон начинается в ветке задачи (T-1.18). */
+    private val repo = TempRepoFixture().also { GitCliFixture.createRepo(it.root) }
+
     @AfterTest
     fun tearDown() {
         runBlocking { connections.forEach { runCatching { it.stop() } } }
         connections.clear()
         stub.stop()
         scope.cancel()
+        repo.close()
     }
 
     @Test
@@ -197,7 +203,11 @@ class AnthropicProviderEndToEndTest {
 
     private suspend fun connect(host: EmbeddedHost): HostClient {
         val connection = openConnection(host)
-        return HostClient(connection, scope, requestIdPrefix = "anthropic-e2e").also { it.start() }
+        val client = HostClient(connection, scope, requestIdPrefix = "anthropic-e2e").also { it.start() }
+        // Репозиторий открывается до задачи: прогон начинается в ветке задачи (T-1.18),
+        // а ставить её некуда, пока воркспейс не открыт.
+        assertNotNull(client.openWorkspace(repo.root.toString()), "воркспейс обязан открыться")
+        return client
     }
 
     private suspend fun awaitRun(client: HostClient, predicate: (AgentRun) -> Boolean) =

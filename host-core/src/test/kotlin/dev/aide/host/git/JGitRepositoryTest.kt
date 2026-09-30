@@ -14,6 +14,9 @@ import kotlin.test.assertTrue
 private const val LOG_LIMIT = 10
 private const val MILLIS_PER_SECOND = 1_000L
 
+/** Ветка задачи из соглашения § 8.3: `ai/<task-id>`. */
+private const val TASK_BRANCH = "ai/t-1"
+
 class JGitRepositoryTest {
 
     private val tempDirs = mutableListOf<Path>()
@@ -189,6 +192,108 @@ class JGitRepositoryTest {
             val renamed = repository.changedFiles().single { it.path == rename.path }
             assertEquals(FileChangeKind.RENAMED, renamed.changeKind)
             assertEquals(rename.previousPath, renamed.previousPath)
+        }
+    }
+
+    @Test
+    fun `ветка задачи создаётся от HEAD, и рабочее дерево оказывается в ней`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        val headBefore = GitCliFixture.headShortHash(root)
+
+        JGitRepository.open(root).use { repository ->
+            val outcome = repository.ensureTaskBranch(TASK_BRANCH)
+
+            assertEquals(TaskBranchOutcome.Created("master"), outcome, "базовой стала ветка, от которой ответвились")
+            assertEquals(TASK_BRANCH, repository.currentBranch())
+            assertEquals(TASK_BRANCH, GitCliFixture.currentBranch(root), "переключение видно и git")
+        }
+
+        // Ветка создана от HEAD, а не от чего-то другого, и незакоммиченные правки
+        // пользователя переключение не потеряло: рабочее дерево осталось тем же.
+        assertEquals(headBefore, GitCliFixture.headShortHash(root), "HEAD не сдвинулся")
+        assertEquals(listOf(" M src/Login.kt", "?? src/New.kt"), GitCliFixture.porcelainLines(root))
+        assertEquals("fun login() = \"token\"\n", Files.readString(root.resolve("src/Login.kt")))
+    }
+
+    @Test
+    fun `повторное обеспечение ветки не создаёт вторую и не трогает историю`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        JGitRepository.open(root).use { repository ->
+            assertEquals(TaskBranchOutcome.Created("master"), repository.ensureTaskBranch(TASK_BRANCH))
+
+            // Коммит шага (T-1.11) уже в ветке задачи: повторный запуск обязан его сохранить.
+            GitCliFixture.run(listOf("git", "commit", "--allow-empty", "-m", "шаг 1"), root)
+            val headAfterStep = GitCliFixture.headShortHash(root)
+
+            assertEquals(TaskBranchOutcome.Existing, repository.ensureTaskBranch(TASK_BRANCH))
+
+            assertEquals(headAfterStep, GitCliFixture.headShortHash(root), "ref ветки не переписан")
+            assertEquals(listOf("шаг 1"), repository.commitLog(limit = LOG_LIMIT).take(1).map { it.message })
+            assertEquals(
+                listOf("refs/heads/$TASK_BRANCH", "refs/heads/master"),
+                GitCliFixture.run(listOf("git", "for-each-ref", "--format=%(refname)", "refs/heads/"), root)
+                    .output.lines().filter { it.isNotBlank() }.sorted(),
+                "ветка задачи одна, второй не появилось",
+            )
+        }
+    }
+
+    @Test
+    fun `репозиторий без коммитов отказывает, а не создаёт ветку`() {
+        val root = GitCliFixture.createEmptyRepo(tempDir("aide-git-empty-"))
+        JGitRepository.open(root).use { repository ->
+            val outcome = assertIs<TaskBranchOutcome.Refused>(repository.ensureTaskBranch(TASK_BRANCH))
+
+            assertEquals(TaskBranchRefusal.NO_COMMITS, outcome.reason)
+            assertTrue(GitCliFixture.run(listOf("git", "branch", "--list"), root).output.isBlank(), "веток нет")
+        }
+    }
+
+    @Test
+    fun `отсоединённый HEAD отказывает — базовой ветки не существует`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        GitCliFixture.run(listOf("git", "checkout", "--detach", "HEAD"), root)
+
+        JGitRepository.open(root).use { repository ->
+            val outcome = assertIs<TaskBranchOutcome.Refused>(repository.ensureTaskBranch(TASK_BRANCH))
+
+            assertEquals(TaskBranchRefusal.DETACHED_HEAD, outcome.reason)
+            assertEquals(GitCliFixture.headShortHash(root), repository.headCommit(), "HEAD остался на месте")
+        }
+    }
+
+    @Test
+    fun `репозиторий только для чтения отказывает до попытки писать`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        val gitDir = root.resolve(".git").toFile()
+
+        JGitRepository.open(root).use { repository ->
+            // Права снимаются у каталога .git: создание ветки пишет туда ссылку, и записать
+            // её нельзя. Пользователь видит причину, а не строку JGit в журнале.
+            check(gitDir.setWritable(false, false)) { "не удалось снять права на ${gitDir.path}" }
+            try {
+                val outcome = assertIs<TaskBranchOutcome.Refused>(repository.ensureTaskBranch(TASK_BRANCH))
+
+                assertEquals(TaskBranchRefusal.READ_ONLY, outcome.reason)
+            } finally {
+                gitDir.setWritable(true, true)
+            }
+        }
+    }
+
+    @Test
+    fun `сбой git при создании ветки даёт отказ, а не исключение`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        // Ветка `refs/heads/ai` — файл, поэтому `refs/heads/ai/<task-id>` существовать
+        // не может: git отказывает в создании, и это тот же сбой, что даёт занятая
+        // кем-то ссылка или правило правок пользователя.
+        GitCliFixture.run(listOf("git", "branch", "ai"), root)
+
+        JGitRepository.open(root).use { repository ->
+            val outcome = assertIs<TaskBranchOutcome.Refused>(repository.ensureTaskBranch(TASK_BRANCH))
+
+            assertEquals(TaskBranchRefusal.GIT_FAILED, outcome.reason)
+            assertEquals("master", repository.currentBranch(), "прогон остался в прежней ветке")
         }
     }
 

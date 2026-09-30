@@ -22,7 +22,9 @@ import dev.aide.client.state.settings.createKeyValueStoreAt
 import dev.aide.client.ui.App
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.Task
 import dev.aide.host.EmbeddedHost
+import dev.aide.host.store.DatabaseFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
@@ -31,12 +33,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
+import kotlin.test.assertEquals
 
 /**
- * Сквозная проверка десктопа (T-0.15, T-1.1): приложение открывает настоящий репозиторий
- * через настоящее соединение WebSocket с настоящим хостом и показывает ветку, дерево и
- * содержимое файла; задача, поставленная из интерфейса, проходит состояния прогона до
- * завершения; после остановки хоста показывается состояние «нет связи» с данными из кэша.
+ * Сквозная проверка десктопа (T-0.15, T-1.1, T-1.18): приложение открывает настоящий
+ * репозиторий через настоящее соединение WebSocket с настоящим хостом и показывает ветку,
+ * дерево и содержимое файла; задача, поставленная из интерфейса, проходит состояния прогона
+ * до завершения, а её ветка `ai/<task-id>` появляется в шапке; после остановки хоста
+ * показывается состояние «нет связи» с данными из кэша.
  *
  * Проверка идёт по тому же композиционному корню, что и у настоящего приложения
  * ([dev.aide.client.ui.App]), на настоящем хосте из `host-core`, поэтому «глазами»
@@ -123,8 +127,10 @@ class DesktopEndToEndTest {
 
     @Test
     fun `задача, поставленная из интерфейса, доходит до состояния завершён`() = runComposeUiTest {
+        val repo = fixture()
+        val database = tempDatabase()
         val host = EmbeddedHost.open(
-            databasePath = tempDatabase(),
+            databasePath = database,
             models = object : AgentModels {
                 override fun current(): Result<ConfiguredModel> =
                     Result.success(ConfiguredModel(SCRIPTED_ALIAS, ScriptedModel()))
@@ -136,11 +142,17 @@ class DesktopEndToEndTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val connection = KtorHostConnection(endpoint = host.endpoint, scope = scope)
         val settings = SettingsStore(createKeyValueStoreAt(Files.createTempFile("aide-settings-agent", ".properties")))
+        // Путь сохранён в настройках: приложение открывает репозиторий само (T-0.15),
+        // а прогон без открытого репозитория не начинается — ему негде взять ветку (T-1.18).
+        settings.repositoryPath = repo.toString()
 
         try {
             connection.start()
             setContent { App(connection = connection, settings = settings, scope = scope) }
             waitUntil(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
+            waitUntil(timeoutMillis = 15_000) {
+                onAllNodesWithText("Ветка: master").fetchSemanticsNodes().isNotEmpty()
+            }
 
             onNodeWithText("Агент").performClick()
             waitUntil(timeoutMillis = 15_000) {
@@ -155,10 +167,21 @@ class DesktopEndToEndTest {
             }
             onNodeWithText("Завершён").assertIsDisplayed()
             println("E2E: задача поставлена и прогон дошёл до завершения")
+
+            // Шапка показывает ветку задачи: имя ветки знает только хост, поэтому оно
+            // читается из базы хоста, а не выводится тестом по соглашению (T-1.18).
+            val posted = taskFrom(database)
+            assertEquals("ai/${posted.id.value}", posted.branch, "задаче записана ветка ai/<task-id>")
+            waitUntil(timeoutMillis = 20_000) {
+                onAllNodesWithText("Ветка: ${posted.branch}").fetchSemanticsNodes().isNotEmpty()
+            }
+            onNodeWithText("Ветка: ${posted.branch}").assertIsDisplayed()
+            println("E2E: шапка показывает ветку задачи ${posted.branch}")
         } finally {
             runBlocking { connection.stop() }
             host.close()
             scope.cancel()
+            repo.toFile().deleteRecursively()
         }
     }
 
@@ -228,6 +251,21 @@ class DesktopEndToEndTest {
      * в домашнем каталоге, и тест писал бы в данные пользователя.
      */
     private fun tempDatabase(): Path = Files.createTempFile("aide-host", ".db")
+
+    /**
+     * Задача, записанная хостом; имя ветки задачи знает только хост (T-1.18).
+     *
+     * База открывается вторым подключением на чтение: соглашение `ai/<task-id>` в тесте
+     * не повторяется, иначе он проверял бы свою же строку, а не то, что записал хост.
+     */
+    private fun taskFrom(database: Path): Task {
+        val store = DatabaseFactory.open(database)
+        return try {
+            store.tasks.all().single()
+        } finally {
+            store.close()
+        }
+    }
 
     /**
      * Скриптованная модель: первый ответ — план, дальше — «шаг выполнен».

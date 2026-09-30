@@ -53,6 +53,7 @@ class AgentRunEngineToolsTest {
         models = fixedModel(llm),
         planner = RunPlanner { _, _ -> plan },
         tools = stepToolsIn(workspace, journal),
+        branches = branchAlreadyExists,
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
 

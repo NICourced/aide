@@ -10,6 +10,8 @@ import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.agent.provider.ModelProvider
 import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RunRepository
+import dev.aide.agent.ports.TaskBranch
+import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.ports.TaskRepository
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
@@ -93,6 +95,8 @@ class RunWorkerTest {
         models = ModelProvider { Result.success(ConfiguredModel("test/scripted", TextModel())) },
         planner = RunPlanner { _, _ -> listOf(PlanStep(index = 0, summary = "шаг", status = StepStatus.PENDING)) },
         tools = testStepTools(),
+        // Ветка в этом тесте ни при чём: проверяется предохранитель воркера, а не T-1.18.
+        branches = TaskBranches { TaskBranch.Existing },
         clock = { Instant.fromEpochMilliseconds(1) },
     )
 

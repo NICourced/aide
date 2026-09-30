@@ -9,6 +9,7 @@ import dev.aide.agent.provider.ProviderCatalog
 import dev.aide.agent.provider.ProviderClients
 import dev.aide.agent.provider.ProviderRegistry
 import dev.aide.agent.ports.RunPorts
+import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.provider.SecretStore
 import dev.aide.agent.tools.StepTools
 import dev.aide.host.agent.AgentConfigHandler
@@ -20,6 +21,7 @@ import dev.aide.host.agent.ServerRunEventSink
 import dev.aide.host.agent.StoreRunRepository
 import dev.aide.host.agent.StoreTaskRepository
 import dev.aide.host.agent.StoreToolCallRecorder
+import dev.aide.host.agent.TaskBranchGuard
 import dev.aide.host.config.AgentConfigStore
 import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ClientSessions
@@ -107,6 +109,9 @@ object HostApp {
         // инструментов агента: воркспейс открывает клиент, а читает его агент (T-1.7).
         single { OpenWorkspaces() }
         single { StageZeroHandler(mode = get(modeQualifier), workspaces = get()) }
+        // Ветка задачи: реализация порта объявлена по типу интерфейса, иначе Koin
+        // разрешал бы её по точному имени класса и не нашёл бы движку (T-1.18).
+        single<TaskBranches> { TaskBranchGuard(workspaces = get(), sessions = get()) }
         single {
             // Реестр и точка вызова собираются из одного экземпляра реестра: определения
             // инструментов у модели и их выполнение обязаны быть про один и тот же набор,
@@ -133,6 +138,7 @@ object HostApp {
                 models = models,
                 planner = planner,
                 tools = get(),
+                branches = get(),
             )
         }
         single {

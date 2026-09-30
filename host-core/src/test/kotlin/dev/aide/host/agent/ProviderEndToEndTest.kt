@@ -19,7 +19,9 @@ import dev.aide.domain.Task
 import dev.aide.domain.TaskStatus
 import dev.aide.host.EmbeddedHost
 import dev.aide.host.config.AgentConfigStore
+import dev.aide.host.git.GitCliFixture
 import dev.aide.host.server.freeLoopbackPort
+import dev.aide.host.workspace.TempRepoFixture
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.RequestId
@@ -73,12 +75,16 @@ class ProviderEndToEndTest {
     private val connections = mutableListOf<KtorHostConnection>()
     private val stub = StubProvider()
 
+    /** Репозиторий с коммитом: прогон начинается в ветке задачи (T-1.18). */
+    private val repo = TempRepoFixture().also { GitCliFixture.createRepo(it.root) }
+
     @AfterTest
     fun tearDown() {
         runBlocking { connections.forEach { runCatching { it.stop() } } }
         connections.clear()
         stub.stop()
         scope.cancel()
+        repo.close()
     }
 
     @Test
@@ -367,7 +373,11 @@ class ProviderEndToEndTest {
 
     private suspend fun connect(host: EmbeddedHost, prefix: String): HostClient {
         val connection = openConnection(host)
-        return HostClient(connection, scope, requestIdPrefix = prefix).also { it.start() }
+        val client = HostClient(connection, scope, requestIdPrefix = prefix).also { it.start() }
+        // Репозиторий открывается до задачи: прогон начинается в ветке задачи (T-1.18),
+        // а ставить её некуда, пока воркспейс не открыт.
+        assertNotNull(client.openWorkspace(repo.root.toString()), "воркспейс обязан открыться")
+        return client
     }
 
     private suspend fun awaitTask(client: HostClient, predicate: (Task) -> Boolean) =
