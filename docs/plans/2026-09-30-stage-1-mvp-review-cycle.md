@@ -340,11 +340,12 @@ class NetworkPolicy(private val allowedHosts: Set<String> = emptySet()) {
 «Каждое состояние видно в UI» читается здесь как «строка состояния знает все значения `RunState`»: кнопки паузы и стопа — T-1.4, но строку, которая показывает `PAUSED` и `STOPPED`, делает эта задача. Ввод задачи нужен, иначе состояния неоткуда взять: поле с кнопкой, которое T-1.40 заменит настоящим чат-вводом (закреплённым внизу, с контекстом и голосом).
 
 **Файлы.**
-- Создать модуль `host-agent`; в нём `AgentRunEngine.kt`, `RunQueue.kt`, `RunControl.kt`, `InterruptedRuns.kt`, `ports/RunRepository.kt`, `ports/TaskRepository.kt`, `ports/AgentEventSink.kt`, `llm/LlmClient.kt`, `prompt/PlannerPrompt.kt`, `prompt/StepPrompt.kt`.
-- `protocol`: `ClientMessage.PostTask`, `ClientMessage.RunsStatus`, `ClientMessage.RunControl`; `HostMessage.TaskPosted`, `HostMessage.RunsSnapshot`, `HostMessage.RunControlled`; `HostEvent.RunStateChanged`; `ProtocolVersion.CURRENT` = `1.1`.
-- `host-core`: `AgentRunHandler` — отдельная группа сообщений агента рядом со `StageZeroHandler`, а не внутри него (репозиторий и агент — разные поводы меняться), адаптеры портов над `HostStore` (`runs`, `tasks`), регистрация в `HostApp`, вызов `InterruptedRuns` при старте, воркер очереди в скоупе хоста.
-- `client-state`: `HostClient` — `postTask`, `runsStatus`, `controlRun`, обработка `RunStateChanged`; в `HostSession` — `runs: List<AgentRun>`.
-- `client-ui`: строка состояния прогона (текст из ресурсов, NFR-13), поле ввода задачи, кнопка постановки.
+- Создать модуль `host-agent`; в нём `AgentRunEngine.kt`, `RunQueue.kt`, `RunControl.kt`, `RunStateWriter.kt` (переходы состояния и статусов задач — «база, потом событие»), `InterruptedRuns.kt`, `RunPlanner.kt`, `ports/RunRepository.kt`, `ports/TaskRepository.kt`, `ports/AgentEventSink.kt`, `llm/LlmClient.kt`, `llm/NotConfiguredLlmClient.kt`, `prompt/PlannerPrompt.kt`, `prompt/StepPrompt.kt`.
+- `protocol`: `ClientMessage.PostTask`, `ClientMessage.AgentStatus`, `ClientMessage.RunControl`; `HostMessage.TaskPosted`, `HostMessage.AgentSnapshot(runs, tasks)`, `HostMessage.RunControlled`; `HostEvent.RunStateChanged`, `HostEvent.TaskStateChanged`; `ProtocolVersion.CURRENT` = `1.1`.
+- `domain`: аддитивно `RunCommand` (команда едет по протоколу, а `protocol` не зависит от `host-agent` — общий тип живёт в домене) и `Task.failureReason: String?` (код причины отказа; без него падение планирования, когда прогона ещё нет, нечем объяснить).
+- `host-core`: `agent/AgentRunHandler` — отдельная группа сообщений агента рядом со `StageZeroHandler` (репозиторий и агент — разные поводы меняться), `agent/ClientMessageRouter.kt`, `agent/RunWorker.kt` (воркер очереди с backoff), `agent/Store*Repository.kt` (адаптеры портов над `HostStore`), `agent/ServerRunEventSink.kt`, `server/ClientSessions.kt` (реестр сессий вынесен из `ProtocolServer`, иначе граф Koin зацикливается), регистрация в `HostApp`, вызов `InterruptedRuns` при старте.
+- `client-state`: `HostClient` — `postTask`, `agentStatus`, `controlRun`, обработка `RunStateChanged` и `TaskStateChanged`; в `HostSession` — `runs: List<AgentRun>` и `tasks: List<Task>`.
+- `client-ui`: `screens/AgentScreen.kt` — строка состояния прогона и задачи (тексты из ресурсов, NFR-13), поле ввода задачи, кнопка постановки, показ отказа постановки и снимка; `strings/StatusText.kt` — коды состояний и причин в текст.
 
 **Контракт движка** (`dev.aide.agent`):
 
@@ -356,6 +357,7 @@ class AgentRunEngine(
     private val runs: RunRepository,
     private val tasks: TaskRepository,
     private val planner: RunPlanner,
+    private val llm: LlmClient,
     private val events: AgentEventSink,
     private val clock: () -> Instant = Instant::now,
 ) {
@@ -374,6 +376,8 @@ fun interface RunPlanner {
     suspend fun plan(task: Task): List<PlanStep>
 }
 ```
+
+`RunCommand` объявлен в домене, а не здесь: команда едет по протоколу (`ClientMessage.RunControl`), а `protocol` не может зависеть от `host-agent` — это подтверждается правилом границ, которое запрещает рантайму агента импорт `dev.aide.protocol`.
 
 **Контракт портов** — узкие, по одному на сущность (как `HostStore` группирует операции по сущностям):
 
@@ -407,15 +411,24 @@ data class LlmRequest(
     /** Системная часть: роль агента и правила. */
     val system: String,
     /** Диалог в порядке следования. */
-    val messages: List<LlmMessage>,
+    val messages: List<String>,
 )
 
-data class LlmResponse(
-    val text: String,
-    /** Токены и стоимость; нет данных — [Cost.known] = false, а не ноль (FR-COST-5). */
-    val cost: Cost,
-    val elapsedMillis: Long,
-)
+/**
+ * Ответ модели: либо текст, либо типизированный отказ (О-9: ошибка — вариант ответа,
+ * а не исключение). `NotConfiguredLlmClient` — ответ по умолчанию, пока провайдер не
+ * настроен (T-1.56), и он же делает отказ видимым на экране, а не молчаливым.
+ */
+sealed interface LlmResponse {
+    data class Text(
+        val text: String,
+        /** Токены и стоимость; нет данных — [Cost.known] = false, а не ноль (FR-COST-5). */
+        val cost: Cost,
+        val elapsedMillis: Long,
+    ) : LlmResponse
+
+    data class Error(val kind: LlmErrorKind, val detail: String?) : LlmResponse
+}
 ```
 
 **Решения.**
@@ -433,12 +446,21 @@ data class LlmResponse(
 - `AgentRunEngineTest` на `ScriptedLlmClient` и фейковых портах: последовательность `PLANNED → RUNNING → FINISHED` и те же состояния в событиях; пауза между шагами встаёт в `PAUSED`, продолжение идёт с того же шага (шаги со статусом `DONE` не повторяются); стоп даёт `STOPPED`, а не `FAILED`; ошибка модели даёт `FAILED` с причиной, и очередь после неё работает; две задачи не идут одновременно — вторая ждёт; отмена корутины прогона не оставляет `RUNNING` в базе.
 - `InterruptedRunsTest`: прогоны в `PLANNED`, `RUNNING`, `PAUSED` и завершённый → прерваны ровно незавершённые, с причиной и временем; задача `QUEUED`/`RUNNING` → `FAILED`.
 - `PlannerPromptTest`: разбор плана из ответа модели — чистый JSON, JSON в обрамлении, мусор (внятный отказ, а не пустой план).
-- Интеграционный тест в `host-core` на настоящем сервере и настоящем клиенте: `PostTask` → событие `RunStateChanged` доходит и меняется в сессии; `RunsStatus` после переподключения отдаёт текущее состояние; там же — перезапуск хоста на той же базе: незавершённый прогон становится `INTERRUPTED`.
+- Интеграционный тест в `host-core` на настоящем сервере и настоящем клиенте: `PostTask` → событие `RunStateChanged` доходит и меняется в сессии; `AgentStatus` отдаёт текущее состояние второму клиенту (настоящий реконнект проверяется в `ReconnectTest` отдельно); там же — перезапуск хоста на той же базе: незавершённый прогон становится `INTERRUPTED`. Отдельно: пауза, продолжение и стоп проходят путь клиент → хост → событие; повтор `PostTask` с тем же `RequestId` не создаёт вторую задачу; сбой рассылки терминального события не превращает завершённый прогон в отказ; постоянный отказ хранилища не превращается в холостой цикл воркера.
 - Сквозной `desktopApp:test` со скриптованной моделью: задача поставлена из интерфейса, состояние появляется в строке, прогон доходит до `FINISHED`.
 
 **Проверка.** `./gradlew :host-agent:test :host-core:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test`; `./gradlew detekt verifyModuleBoundaries build`; правило границ для `host-agent` — с запретом `dev.aide.host`, `dev.aide.client`, `dev.aide.protocol`, `org.eclipse.jgit`, compose и SQLDelight (зависимость `dev.aide.tools` при этом **разрешена**: рантайм агента вызывает инструменты, а не наоборот); `:host-agent:test` в списке задач CI.
 
 **Что останется непроверенным.** Правка плана и подтверждение по режиму — T-1.2: в этой задаче прогон стартует сразу после плана, и окно `PLANNED` короткое, поэтому последовательность доказывается событиями, а не тем, что состояние «задержится» на экране. Ветка задачи и снапшоты — T-1.18/T-1.19: прогон пока ничего не меняет в репозитории. Стоимость только накапливается в прогоне; показывать её будет T-1.5.
+
+**Долг и расхождения, найденные при исполнении и на двух ревью.**
+- **`TaskStatus.REVIEW` ставится по завершении прогона**, хотя в домене это «есть пакет, ожидающий ревью», а пакет собирает T-1.24: до неё задача попадает «на ревью» в ещё не существующий инбокс. Пользовательская остановка записывается как `TaskStatus.FAILED` — отдельного статуса в домене нет, и «остановлено пользователем» неотличимо от сбоя. Оба вопроса закрываются в T-1.24 вместе с пакетом и инбоксом; до тех пор строка прогона показывает `STOPPED`, а строка задачи — причину остановки, так что пользователь не теряет различие.
+- **`Task.branch` заполняется по соглашению `ai/<id>` в `postTask`**, а сама ветка появляется только в T-1.18. Смена формата — правка в двух местах.
+- **`AgentSnapshot` отдаёт все прогоны и задачи без предела**, а экран показывает последние. Постраничность (О-5) нужна до инбокса — T-1.28/T-1.29.
+- **Словарь кодов причин разъехался между хостом и клиентом**: коды едут строками, клиент знает известные и показывает общий текст для остальных. Вынести словарь в `protocol` — вместе с экраном ошибок (T-1.28/T-1.50).
+- **`close()` у `ThreadedConnectionManager` (sqlite-driver 2.0.2) — пустая реализация**: файл базы не освобождается, закрывается только драйвер. Задокументировано в `EmbeddedHost.close()`; закрывать по-настоящему — когда появится причина (например, смена воркспейса).
+- **`HostApp.open` больше не принимает `protocolVersion`, `ProtocolServer` — адрес привязки** (жёстко `127.0.0.1`). Оба параметра не передавал ни один вызов, а версия у хоста одна; возврат адреса — в T-1.51 (телефон по локальной сети), где биндинг на `0.0.0.0` действительно нужен.
+- **Задача при постоянном отказе хранилища остаётся `QUEUED`**: воркер повторяет попытки с растущей паузой и не помечает задачу `FAILED`, потому что записать пометку некуда — отказывает то же хранилище. Восстановление возможно, если отказ временный; иначе задача остаётся в очереди и не выполняется. Худшего — холостого цикла и мёртвого воркера — в коде нет.
 
 ### Задача 3: `T-1.56` Провайдеры и модели: заготовки и свой провайдер — 3д
 

@@ -62,6 +62,18 @@ object ModuleBoundaries {
             action = "в main-коде хоста не зависеть от клиента; клиент подключать только в тестах хоста.",
         ),
         ModuleBoundary(
+            module = "host-agent",
+            forbiddenPackagePrefixes = listOf(
+                "dev.aide.host", "dev.aide.client", "dev.aide.protocol",
+                "androidx.compose", "org.jetbrains.compose", "app.cash.sqldelight", "org.eclipse.jgit",
+            ),
+            explanation = "Рантайм агента не знает ни хоста (зависит от него хост, а не наоборот), " +
+                "ни клиента, ни протокола, ни UI, ни базы, ни git (§ 8.1, § 8.2). " +
+                "Инструменты (dev.aide.tools) при этом разрешены: агент их вызывает",
+            action = "описать нужный доступ портом в host-agent (RunRepository, AgentEventSink) " +
+                "и реализовать его в host-core; инструменты — через dev.aide.tools.",
+        ),
+        ModuleBoundary(
             module = "host-tools",
             forbiddenPackagePrefixes = listOf(
                 "dev.aide.client", "dev.aide.host", "dev.aide.agent", "dev.aide.protocol",

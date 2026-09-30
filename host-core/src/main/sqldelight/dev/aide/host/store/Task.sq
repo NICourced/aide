@@ -20,6 +20,21 @@ SELECT * FROM task WHERE id = ?;
 byStatus:
 SELECT * FROM task WHERE status = ? ORDER BY created_at DESC;
 
+/**
+ * Незавершённые задачи в порядке постановки — очередь и сырьё восстановления после падения (T-1.1).
+ *
+ * «Не завершено» выражено отрицанием завершённых статусов, а не перечислением
+ * незавершённых: новый незавершённый статус иначе молча выпал бы из очереди.
+ */
+unfinished:
+SELECT * FROM task
+WHERE status NOT IN ('REVIEW', 'ACCEPTED', 'REJECTED', 'FAILED')
+ORDER BY created_at;
+
+/** Все задачи в порядке постановки — снимок состояния агента (T-1.1). */
+all:
+SELECT * FROM task ORDER BY created_at;
+
 delete:
 DELETE FROM task WHERE id = ?;
 

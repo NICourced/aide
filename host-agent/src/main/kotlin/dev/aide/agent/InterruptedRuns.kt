@@ -1,0 +1,55 @@
+package dev.aide.agent
+
+import dev.aide.agent.ports.RunRepository
+import dev.aide.agent.ports.TaskRepository
+import dev.aide.domain.AgentRun
+import dev.aide.domain.RunState
+import dev.aide.domain.TaskStatus
+import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
+
+/** Почему прогон прекратился; код, а не текст, — понятную строку строит UI (NFR-13). */
+object RunInterruptReason {
+
+    /** Хост был перезапущен: прогон не продолжается с середины молча (T-1.1). */
+    const val HOST_RESTART: String = "host_restart"
+
+    /** Прогон остановил пользователь. */
+    const val USER_STOP: String = "user_stop"
+
+    /** Ответ модели не разобран в план. */
+    const val PLAN_UNREADABLE: String = "plan_unreadable"
+
+    /** Непредвиденная ошибка клиента модели: сеть, разбор, отказ транспорта. */
+    const val UNEXPECTED: String = "unexpected"
+}
+
+/**
+ * Восстановление после падения хоста (T-1.1).
+ *
+ * При старте хоста незавершённые прогоны помечаются [RunState.INTERRUPTED], а их
+ * задачи — [TaskStatus.FAILED]: молчаливое продолжение прерванного прогона запрещено,
+ * пользователь мог править репозиторий, пока хоста не было. Очередь при старте пуста —
+ * работа не возобновляется сама (решение 8).
+ */
+class InterruptedRuns(
+    private val runs: RunRepository,
+    private val tasks: TaskRepository,
+    private val clock: () -> Instant = Clock.System::now,
+) {
+
+    /** Помечает прерванными ровно незавершённые прогоны; возвращает их для лога. */
+    fun markInterrupted(): List<AgentRun> {
+        val interrupted = runs.unfinished().map(::interrupt)
+        tasks.unfinished().forEach {
+            tasks.save(it.copy(status = TaskStatus.FAILED, failureReason = RunInterruptReason.HOST_RESTART))
+        }
+        return interrupted
+    }
+
+    private fun interrupt(run: AgentRun): AgentRun = run.copy(
+        state = RunState.INTERRUPTED,
+        finishedAt = clock(),
+        interruptReason = RunInterruptReason.HOST_RESTART,
+    ).also(runs::save)
+}

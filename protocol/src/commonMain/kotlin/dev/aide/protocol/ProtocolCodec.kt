@@ -37,6 +37,9 @@ object ClientMessageType {
     const val FILE_TREE = "fileTree"
     const val FILE_CONTENT = "fileContent"
     const val HOST_STATE = "hostState"
+    const val POST_TASK = "postTask"
+    const val AGENT_STATUS = "agentStatus"
+    const val RUN_CONTROL = "runControl"
 }
 
 /** Имена типов сообщений хоста. */
@@ -48,6 +51,9 @@ object HostMessageType {
     const val STATE = "state"
     const val FAILURE = "failure"
     const val INCOMPATIBLE = "incompatible"
+    const val TASK_POSTED = "taskPosted"
+    const val AGENT_SNAPSHOT = "agentSnapshot"
+    const val RUN_CONTROLLED = "runControlled"
     const val EVENT = "event"
 }
 
@@ -82,6 +88,15 @@ object ProtocolCodec {
             envelope(ClientMessageType.FILE_CONTENT, ClientMessage.FileContent.serializer(), message)
         is ClientMessage.HostState ->
             envelope(ClientMessageType.HOST_STATE, ClientMessage.HostState.serializer(), message)
+
+        is ClientMessage.PostTask ->
+            envelope(ClientMessageType.POST_TASK, ClientMessage.PostTask.serializer(), message)
+
+        is ClientMessage.AgentStatus ->
+            envelope(ClientMessageType.AGENT_STATUS, ClientMessage.AgentStatus.serializer(), message)
+
+        is ClientMessage.RunControl ->
+            envelope(ClientMessageType.RUN_CONTROL, ClientMessage.RunControl.serializer(), message)
     }
 
     fun encode(message: HostMessage): ByteArray = when (message) {
@@ -94,6 +109,12 @@ object ProtocolCodec {
         is HostMessage.Failure -> envelope(HostMessageType.FAILURE, HostMessage.Failure.serializer(), message)
         is HostMessage.Incompatible ->
             envelope(HostMessageType.INCOMPATIBLE, HostMessage.Incompatible.serializer(), message)
+        is HostMessage.TaskPosted ->
+            envelope(HostMessageType.TASK_POSTED, HostMessage.TaskPosted.serializer(), message)
+        is HostMessage.AgentSnapshot ->
+            envelope(HostMessageType.AGENT_SNAPSHOT, HostMessage.AgentSnapshot.serializer(), message)
+        is HostMessage.RunControlled ->
+            envelope(HostMessageType.RUN_CONTROLLED, HostMessage.RunControlled.serializer(), message)
         is HostMessage.Event -> envelope(HostMessageType.EVENT, HostMessage.Event.serializer(), message)
     }
 
@@ -105,6 +126,9 @@ object ProtocolCodec {
             ClientMessageType.FILE_TREE -> decode(env, ClientMessage.FileTree.serializer())
             ClientMessageType.FILE_CONTENT -> decode(env, ClientMessage.FileContent.serializer())
             ClientMessageType.HOST_STATE -> decode(env, ClientMessage.HostState.serializer())
+            ClientMessageType.POST_TASK -> decode(env, ClientMessage.PostTask.serializer())
+            ClientMessageType.AGENT_STATUS -> decode(env, ClientMessage.AgentStatus.serializer())
+            ClientMessageType.RUN_CONTROL -> decode(env, ClientMessage.RunControl.serializer())
             else -> DecodeResult.Ignored(env.type, "неизвестный тип сообщения клиента")
         }
     }
@@ -119,6 +143,9 @@ object ProtocolCodec {
             HostMessageType.STATE -> decode(env, HostMessage.State.serializer())
             HostMessageType.FAILURE -> decode(env, HostMessage.Failure.serializer())
             HostMessageType.INCOMPATIBLE -> decode(env, HostMessage.Incompatible.serializer())
+            HostMessageType.TASK_POSTED -> decode(env, HostMessage.TaskPosted.serializer())
+            HostMessageType.AGENT_SNAPSHOT -> decode(env, HostMessage.AgentSnapshot.serializer())
+            HostMessageType.RUN_CONTROLLED -> decode(env, HostMessage.RunControlled.serializer())
             HostMessageType.EVENT -> decode(env, HostMessage.Event.serializer())
             else -> DecodeResult.Ignored(env.type, "неизвестный тип сообщения хоста")
         }

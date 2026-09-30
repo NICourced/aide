@@ -9,6 +9,8 @@ import dev.aide.protocol.HostMode
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import java.net.ServerSocket
+import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,7 +46,7 @@ class EmbeddedHostTest {
     @Test
     fun `хост поднимается, объявляет локальный режим и отдаёт состояние репозитория`() {
         runBlocking {
-            val host = EmbeddedHost.open()
+            val host = EmbeddedHost.open(databasePath = tempDatabase())
             try {
                 assertTrue(
                     host.endpoint.startsWith("ws://127.0.0.1:"),
@@ -74,7 +76,7 @@ class EmbeddedHostTest {
     @Test
     fun `остановка хоста освобождает порт и не роняет клиент`() {
         runBlocking {
-            val host = EmbeddedHost.open()
+            val host = EmbeddedHost.open(databasePath = tempDatabase())
             val port = host.port
             val connection = KtorHostConnection(
                 endpoint = host.endpoint,
@@ -108,7 +110,7 @@ class EmbeddedHostTest {
     @Test
     fun `клиент работает с хостом по указанному адресу и не знает, локальный он или нет`() {
         runBlocking {
-            val host = EmbeddedHost.open()
+            val host = EmbeddedHost.open(databasePath = tempDatabase())
             try {
                 // Тот же клиентский код, но адрес — единственное, что отличает случай.
                 val connection = newConnection("ws://127.0.0.1:${host.port}/ws")
@@ -142,4 +144,10 @@ class EmbeddedHostTest {
     private suspend fun KtorHostConnection.stopSafely() {
         runCatching { stop() }
     }
+
+    /**
+     * База во временном файле: без явного пути хост открыл бы базу приложения
+     * в домашнем каталоге, и тест писал бы в данные пользователя.
+     */
+    private fun tempDatabase(): Path = Files.createTempFile("aide-host", ".db")
 }

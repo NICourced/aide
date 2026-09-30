@@ -3,7 +3,9 @@ import aide.build.VerifyModuleBoundariesTask
 // Модули, чьи границы проверяются (T-0.4). `platform-desktop` в список не входит
 // осознанно: локальный режим (§ 3.3) разрешает ему держать встроенный хост,
 // и ребро `platform-desktop` → `host-core` — не нарушение.
-val guardedModules = setOf("domain", "protocol", "client-state", "client-ui", "host-core", "host-tools")
+val guardedModules = setOf(
+    "domain", "protocol", "client-state", "client-ui", "host-core", "host-agent", "host-tools",
+)
 
 // Проверяются только main-наборы исходников. Тестовые наборы исключены явно, а не
 // «случайно» из-за отсутствия запрещённых импортов в них: интеграционный тест хоста

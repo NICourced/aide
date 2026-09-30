@@ -37,12 +37,54 @@ jobs:
         # :desktopApp:test — сквозная проверка этапа (T-0.15): тот же App, настоящий
         # EmbeddedHost и настоящее WebSocket-соединение. Без этой задачи в списке
         # главное доказательство приёмки этапа не запускалось бы нигде.
-        run: ./gradlew :domain:jvmTest :protocol:jvmTest :host-core:test :host-tools:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test
+        run: ./gradlew :domain:jvmTest :protocol:jvmTest :host-core:test :host-agent:test :host-tools:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test
 
       - name: Сквозной тест этапа действительно исполнился
         # Тест, который не запускается, не существует. Эта проверка превращает
         # «забыли добавить задачу в список» из незаметного в красную сборку.
         run: test -f desktopApp/build/test-results/test/TEST-dev.aide.desktop.DesktopEndToEndTest.xml
+
+      - name: Объявленные тесты действительно исполнились
+        # JUnit 5 молча игнорирует @Test, возвращающий не-void (например, тело вида
+        # `fun x() = runBlocking { … assertIs<…>() }`), а отчёт остаётся зелёным —
+        # класс дефекта из AGENTS.md, который в этапе 0 стоил пропавшего теста.
+        # Проверка сравнивает число @Test в исходниках модуля с числом <testcase>
+        # в его отчёте и валит сборку при расхождении.
+        # Учитываются только конфигурации, которые гоняет этот job: `jvmTest`
+        # у KMP-модулей и `test` у JVM-модулей. Android-конфигурации
+        # (testDebugUnitTest/testReleaseUnitTest) пишут в другой каталог и при
+        # подсчёте по всему `build/test-results` удвоили бы счёт.
+        run: |
+          fail=0
+          check() {
+            module="$1"; results="$2"; shift 2
+            declared=0
+            for set in "$@"; do
+              [ -d "$module/src/$set" ] || continue
+              n=$(grep -rho '@Test' "$module/src/$set" --include='*.kt' | wc -l | tr -d '[:space:]')
+              declared=$((declared + n))
+            done
+            executed=0
+            for report in "$module/build/test-results/$results"/TEST-*.xml; do
+              [ -e "$report" ] || continue
+              n=$(grep -o 'tests="[0-9]*"' "$report" | head -1 | sed 's/[^0-9]//g')
+              executed=$((executed + n))
+            done
+            echo "$module: объявлено @Test = $declared, исполнено <testcase> = $executed"
+            if [ "$declared" -ne "$executed" ]; then
+              echo "::error::$module: объявлено $declared тестов, исполнено $executed — часть тестов не запустилась"
+              fail=1
+            fi
+          }
+          check domain       jvmTest commonTest jvmTest
+          check protocol     jvmTest commonTest jvmTest
+          check host-core    test    test
+          check host-agent   test    test
+          check host-tools   test    test
+          check client-state jvmTest commonTest jvmTest
+          check client-ui    jvmTest commonTest jvmTest
+          check desktopApp   test    test
+          exit $fail
 
       - name: Линт
         run: ./gradlew detekt

@@ -158,5 +158,8 @@ internal fun ClientMessage.requestIdOrNull(): RequestId? = when (this) {
     is ClientMessage.FileTree -> requestId
     is ClientMessage.FileContent -> requestId
     is ClientMessage.HostState -> requestId
+    is ClientMessage.PostTask -> requestId
+    is ClientMessage.AgentStatus -> requestId
+    is ClientMessage.RunControl -> requestId
     is ClientMessage.Hello -> null
 }

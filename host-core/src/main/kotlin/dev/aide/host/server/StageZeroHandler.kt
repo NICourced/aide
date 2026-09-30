@@ -69,6 +69,23 @@ class StageZeroHandler(
             )
         }
 
+        // Сообщения агента маршрутизируются в AgentRunHandler; сюда они не доходят,
+        // но `when` по запечатанному типу обязан их назвать.
+        is ClientMessage.PostTask -> HostMessage.Failure(
+            requestId = message.requestId,
+            error = ProtocolError.Internal("постановку задачи обрабатывает AgentRunHandler"),
+        )
+
+        is ClientMessage.AgentStatus -> HostMessage.Failure(
+            requestId = message.requestId,
+            error = ProtocolError.Internal("состояние агента обрабатывает AgentRunHandler"),
+        )
+
+        is ClientMessage.RunControl -> HostMessage.Failure(
+            requestId = message.requestId,
+            error = ProtocolError.Internal("управление прогоном обрабатывает AgentRunHandler"),
+        )
+
         is ClientMessage.Hello -> HostMessage.Failure(
             requestId = RequestId("unexpected"),
             error = ProtocolError.Internal("приветствие обрабатывает сессия, а не обработчик"),

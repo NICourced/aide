@@ -13,7 +13,13 @@ data class ProtocolVersion(
     override fun toString(): String = "$major.$minor"
 
     companion object {
-        /** Версия, которую объявляют и хост, и клиент этой сборки. */
-        val CURRENT: ProtocolVersion = ProtocolVersion(major = 1, minor = 0)
+        /**
+         * Версия, которую объявляют и хост, и клиент этой сборки.
+         *
+         * 1.1 добавляет сообщения агента (T-1.1). Правило совместимости не менялось:
+         * хост обслуживает клиента не новее себя, поэтому старый клиент 1.0 продолжает
+         * работать с новым хостом.
+         */
+        val CURRENT: ProtocolVersion = ProtocolVersion(major = 1, minor = 1)
     }
 }

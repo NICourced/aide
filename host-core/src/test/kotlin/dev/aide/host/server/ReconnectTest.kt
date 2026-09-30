@@ -89,6 +89,11 @@ class ReconnectTest {
                 requestId = RequestId("x"),
                 error = ProtocolError.Internal("приветствие обрабатывает сессия"),
             )
+
+            else -> HostMessage.Failure(
+                requestId = RequestId("unused"),
+                error = ProtocolError.NotImplemented("сообщения агента в этом тесте не участвуют"),
+            )
         }
     }
 

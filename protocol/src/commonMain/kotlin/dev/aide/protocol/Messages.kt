@@ -1,5 +1,11 @@
 package dev.aide.protocol
 
+import dev.aide.domain.AgentRun
+import dev.aide.domain.AutonomyMode
+import dev.aide.domain.RunCommand
+import dev.aide.domain.RunId
+import dev.aide.domain.Task
+import dev.aide.domain.TaskId
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -61,6 +67,43 @@ sealed interface ClientMessage {
         val requestId: RequestId,
         /** Открытый воркспейс. */
         val workspaceId: WorkspaceId,
+    ) : ClientMessage
+
+    /** Поставить задачу в очередь на выполнение агентом (T-1.1). */
+    @Serializable
+    @SerialName("postTask")
+    data class PostTask(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Постановка задачи: текст или расшифровка голоса. */
+        val prompt: String,
+        /** Режим автономности, с которым задача принимается в работу. */
+        val mode: AutonomyMode,
+    ) : ClientMessage
+
+    /**
+     * Запросить состояние агента: прогоны и задачи (T-1.1).
+     *
+     * Им же подключившийся позже клиент узнаёт текущее состояние — состояние приходит
+     * событиями, а не из истории, поэтому один снимок закрывает оба списка.
+     */
+    @Serializable
+    @SerialName("agentStatus")
+    data class AgentStatus(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+    ) : ClientMessage
+
+    /** Пауза, продолжение или остановка прогона. */
+    @Serializable
+    @SerialName("runControl")
+    data class RunControl(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Прогон, к которому относится команда. */
+        val runId: RunId,
+        /** Что сделать с прогоном. */
+        val command: RunCommand,
     ) : ClientMessage
 }
 
@@ -136,6 +179,38 @@ sealed interface HostMessage {
         val reason: IncompatibilityReason,
         /** Версия хоста, чтобы клиент мог показать её пользователю. */
         val hostVersion: ProtocolVersion,
+    ) : HostMessage
+
+    /** Задача поставлена в очередь. */
+    @Serializable
+    @SerialName("taskPosted")
+    data class TaskPosted(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Идентификатор созданной задачи. */
+        val taskId: TaskId,
+    ) : HostMessage
+
+    /** Состояние агента: ответ на [ClientMessage.AgentStatus]. */
+    @Serializable
+    @SerialName("agentSnapshot")
+    data class AgentSnapshot(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Прогоны в порядке запуска. */
+        val runs: List<AgentRun>,
+        /** Задачи в порядке постановки. */
+        val tasks: List<Task>,
+    ) : HostMessage
+
+    /** Команда управления прогоном принята. */
+    @Serializable
+    @SerialName("runControlled")
+    data class RunControlled(
+        /** Идентификатор запроса. */
+        val requestId: RequestId,
+        /** Прогон, к которому отнесена команда. */
+        val runId: RunId,
     ) : HostMessage
 
     /** Событие без запроса. */

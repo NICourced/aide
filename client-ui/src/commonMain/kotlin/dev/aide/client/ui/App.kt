@@ -24,18 +24,29 @@ import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.HostCallException
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.HostConnection
+import dev.aide.client.state.HostSession
 import dev.aide.client.state.settings.SettingsStore
+import dev.aide.client.ui.screens.AgentScreen
 import dev.aide.client.ui.screens.RepoScreen
 import dev.aide.client.ui.screens.SettingsScreen
 import dev.aide.client.ui.strings.Strings
 import dev.aide.client.ui.strings.incompatibleMessage
 import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.client.ui.theme.AideTheme
+import dev.aide.domain.AutonomyMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /** Куда приложение может перейти. Один экран — одна задача (FR-LAYOUT-5). */
-private enum class Destination { REPOSITORY, SETTINGS }
+private enum class Destination { REPOSITORY, AGENT, SETTINGS }
+
+/**
+ * Режим автономности по умолчанию для поставленной задачи.
+ *
+ * Выбор режима в настройках — T-1.15; до него задача ставится в самом безопасном
+ * режиме «спрашивать перед изменениями», а не в полном автомате.
+ */
+private val DEFAULT_AUTONOMY_MODE = AutonomyMode.ASK_BEFORE_CHANGES
 
 @Composable
 fun App(
@@ -71,6 +82,9 @@ fun App(
     val file by state.fileState.collectAsState()
     val hostState by state.hostState.collectAsState()
 
+    // Прогоны живут в сессии клиента: состояние приходит событием и запросом (T-1.1).
+    val session by client.session.collectAsState()
+
     var destination by remember { mutableStateOf(Destination.REPOSITORY) }
 
     AideTheme(preference = settings.theme) {
@@ -81,12 +95,21 @@ fun App(
                     Button(onClick = { destination = Destination.REPOSITORY }) {
                         Text(Strings.text(Strings.repoTreeTitle))
                     }
+                    Button(onClick = { destination = Destination.AGENT }) {
+                        Text(Strings.text(Strings.agentTitle))
+                    }
                     Button(onClick = { destination = Destination.SETTINGS }) {
                         Text(Strings.text(Strings.actionSettings))
                     }
                 }
 
                 when (destination) {
+                    Destination.AGENT -> AgentDestination(
+                        session = session,
+                        client = client,
+                        scope = coroutineScope,
+                    )
+
                     Destination.SETTINGS -> SettingsScreen(
                         settings = settings,
                         onOpenRepository = { path ->
@@ -117,6 +140,36 @@ fun App(
             }
         }
     }
+}
+
+/**
+ * Экран агента со своим состоянием ошибки (T-1.1).
+ *
+ * Отдельная функция, а не ветка внутри [App]: состояние `requestFailed` живёт ровно
+ * столько, сколько открыт экран, — при уходе оно забывается вместе с композицией,
+ * а при входе заново запрашивается снимок. Неудачный снимок и неудачная постановка
+ * задачи показываются одинаково: оба означают, что хост не ответил.
+ */
+@Composable
+private fun AgentDestination(session: HostSession, client: HostClient, scope: CoroutineScope) {
+    var requestFailed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        client.agentStatus().onFailure { requestFailed = true }
+    }
+
+    AgentScreen(
+        runs = session.runs,
+        tasks = session.tasks,
+        requestFailed = requestFailed,
+        onPostTask = { prompt ->
+            // Compose-скоуп: запись в состояние идёт на главном диспетчере.
+            scope.launch {
+                requestFailed = false
+                client.postTask(prompt, DEFAULT_AUTONOMY_MODE).onFailure { requestFailed = true }
+            }
+        },
+    )
 }
 
 @Composable

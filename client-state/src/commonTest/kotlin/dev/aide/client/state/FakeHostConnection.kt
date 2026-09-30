@@ -8,6 +8,7 @@ import dev.aide.protocol.HostMessage
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.HostStatePayload
 import dev.aide.protocol.ProtocolVersion
+import dev.aide.domain.TaskId
 import dev.aide.protocol.SessionId
 import dev.aide.protocol.WorkspaceId
 import kotlinx.coroutines.channels.Channel
@@ -115,6 +116,12 @@ internal class FakeHostConnection : HostConnection {
                 mode = HostMode.LOCAL,
             ),
         )
+
+        is ClientMessage.PostTask -> HostMessage.TaskPosted(message.requestId, TaskId("t-task"))
+
+        is ClientMessage.AgentStatus -> HostMessage.AgentSnapshot(message.requestId, emptyList(), emptyList())
+
+        is ClientMessage.RunControl -> HostMessage.RunControlled(message.requestId, message.runId)
     }
 
     private companion object {

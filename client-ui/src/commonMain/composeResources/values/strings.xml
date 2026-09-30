@@ -28,6 +28,32 @@
     <string name="action_back">Назад</string>
     <string name="action_settings">Настройки</string>
 
+    <string name="agent_title">Агент</string>
+    <string name="agent_task_hint">Опишите задачу</string>
+    <string name="agent_post_task">Поставить задачу</string>
+    <string name="run_state_none">Прогонов пока нет</string>
+    <string name="run_state_planned">План готов</string>
+    <string name="run_state_running">Выполняется</string>
+    <string name="run_state_paused">Пауза</string>
+    <string name="run_state_finished">Завершён</string>
+    <string name="run_state_failed">Ошибка прогона</string>
+    <string name="run_state_stopped">Остановлен</string>
+    <string name="run_state_interrupted">Прерван перезапуском хоста</string>
+
+    <string name="task_status_none">Задач пока нет</string>
+    <string name="task_status_queued">Задача в очереди</string>
+    <string name="task_status_running">Задача выполняется</string>
+    <string name="task_status_review">Ждёт ревью</string>
+    <string name="task_status_accepted">Принята</string>
+    <string name="task_status_rejected">Отклонена</string>
+    <string name="task_status_failed">Задача завершилась ошибкой</string>
+    <string name="task_failure_not_configured">Провайдер модели не настроен: добавьте его в настройках</string>
+    <string name="task_failure_plan_unreadable">Модель вернула неразбираемый план</string>
+    <string name="task_failure_user_stop">Прогон остановлен пользователем</string>
+    <string name="task_failure_host_restart">Прогон прерван перезапуском хоста</string>
+    <string name="task_failure_generic">Причина неизвестна, подробности — в журнале хоста</string>
+    <string name="agent_request_failed">Не удалось связаться с хостом: проверьте соединение</string>
+
     <string name="settings_title">Настройки</string>
     <string name="settings_repository_path">Путь к репозиторию</string>
     <string name="settings_repository_path_hint">Например, /projects/aide</string>

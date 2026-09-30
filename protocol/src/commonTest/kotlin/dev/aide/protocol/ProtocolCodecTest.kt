@@ -1,5 +1,15 @@
 package dev.aide.protocol
 
+import dev.aide.domain.AgentRun
+import dev.aide.domain.AutonomyMode
+import dev.aide.domain.Cost
+import dev.aide.domain.RunCommand
+import dev.aide.domain.RunId
+import dev.aide.domain.RunState
+import dev.aide.domain.Task
+import dev.aide.domain.TaskId
+import dev.aide.domain.TaskStatus
+import kotlinx.datetime.Instant
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -182,7 +192,7 @@ class ProtocolCodecTest {
 
     @Test
     fun `версия печатается как major,minor`() {
-        assertEquals("1.0", ProtocolVersion.CURRENT.toString())
+        assertEquals("1.1", ProtocolVersion.CURRENT.toString())
         assertEquals("2.5", ProtocolVersion(2, 5).toString())
     }
 
@@ -195,6 +205,12 @@ class ProtocolCodecTest {
             ClientMessage.FileTree(requestId, workspaceId),
             ClientMessage.FileContent(requestId, workspaceId, "src/auth/Login.kt"),
             ClientMessage.HostState(requestId, workspaceId),
+            ClientMessage.PostTask(requestId, "Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES),
+            ClientMessage.PostTask(requestId, "Только предложи", AutonomyMode.SUGGEST_ONLY),
+            ClientMessage.AgentStatus(requestId),
+            ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.PAUSE),
+            ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.RESUME),
+            ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.STOP),
         )
         messages.forEach { message ->
             assertEquals(message, clientMessage(ProtocolCodec.encode(message)))
@@ -234,13 +250,41 @@ class ProtocolCodecTest {
             HostMessage.State(requestId, state.copy(mode = HostMode.REMOTE)),
             HostMessage.Failure(requestId, ProtocolError.NotFound("src/Main.kt")),
             HostMessage.Incompatible(IncompatibilityReason.HOST_OUTDATED, ProtocolVersion(2, 0)),
+            HostMessage.TaskPosted(requestId, TaskId("t-1")),
+            HostMessage.AgentSnapshot(requestId, listOf(agentRun()), listOf(task())),
+            HostMessage.RunControlled(requestId, RunId("r-1")),
             HostMessage.Event(HostEvent.WorkspaceChanged(workspaceId)),
+            HostMessage.Event(HostEvent.RunStateChanged(agentRun())),
+            HostMessage.Event(HostEvent.TaskStateChanged(task())),
             HostMessage.Event(HostEvent.HostShuttingDown),
         )
         messages.forEach { message ->
             assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
         }
     }
+
+    /** Задача для проверки round-trip: статус, причина отказа и ветка. */
+    private fun task(): Task = Task(
+        id = TaskId("t-1"),
+        title = "Авторизация",
+        prompt = "Сделай выдачу токена",
+        branch = "ai/t-1",
+        status = TaskStatus.FAILED,
+        failureReason = "NOT_CONFIGURED",
+        createdAt = Instant.fromEpochMilliseconds(1_758_535_200_000),
+    )
+
+    /** Прогон для проверки round-trip: состояние, план, стоимость и момент старта. */
+    private fun agentRun(): AgentRun = AgentRun(
+        id = RunId("r-1"),
+        taskId = TaskId("t-1"),
+        state = RunState.RUNNING,
+        mode = AutonomyMode.ASK_BEFORE_CHANGES,
+        startedAt = Instant.fromEpochMilliseconds(1_758_535_200_000),
+        elapsedMillis = 250,
+        cost = Cost(amountMicros = 120, known = true),
+        interruptReason = "host_restart",
+    )
 
     @Test
     fun `каждый вариант ProtocolError переживает round-trip`() {
@@ -280,6 +324,7 @@ class ProtocolCodecTest {
         }
         val events: List<HostEvent> = listOf(
             HostEvent.WorkspaceChanged(workspaceId),
+            HostEvent.RunStateChanged(agentRun().copy(state = RunState.PAUSED)),
             HostEvent.HostShuttingDown,
         )
         events.forEach { event ->

@@ -24,6 +24,14 @@ SELECT * FROM agent_run WHERE id = ?;
 byTask:
 SELECT * FROM agent_run WHERE task_id = ? ORDER BY started_at;
 
+/** Все прогоны хоста в порядке запуска — ответ на запрос состояния (T-1.1). */
+all:
+SELECT * FROM agent_run ORDER BY started_at;
+
+/** Прогоны, не завершившиеся до остановки хоста — сырьё восстановления после падения (T-1.1). */
+unfinished:
+SELECT * FROM agent_run WHERE finished_at IS NULL ORDER BY started_at;
+
 /** Суммарная стоимость задачи по всем её прогонам (FR-AGENT-10). */
 totalCostMicrosByTask:
 SELECT coalesce(sum(cost_micros), 0) FROM agent_run WHERE task_id = ? AND cost_known = 1;

@@ -240,6 +240,9 @@ internal fun HostMessage.requestIdOrNull(): RequestId? = when (this) {
     is HostMessage.Content -> requestId
     is HostMessage.State -> requestId
     is HostMessage.Failure -> requestId
+    is HostMessage.TaskPosted -> requestId
+    is HostMessage.AgentSnapshot -> requestId
+    is HostMessage.RunControlled -> requestId
     else -> null
 }
 
@@ -249,5 +252,8 @@ internal fun ClientMessage.requestIdOrNull(): RequestId? = when (this) {
     is ClientMessage.FileTree -> requestId
     is ClientMessage.FileContent -> requestId
     is ClientMessage.HostState -> requestId
+    is ClientMessage.PostTask -> requestId
+    is ClientMessage.AgentStatus -> requestId
+    is ClientMessage.RunControl -> requestId
     is ClientMessage.Hello -> null
 }

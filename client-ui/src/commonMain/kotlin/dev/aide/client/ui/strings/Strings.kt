@@ -4,6 +4,10 @@ import androidx.compose.runtime.Composable
 import dev.aide.client.ui.resources.Res
 import dev.aide.client.ui.resources.action_back
 import dev.aide.client.ui.resources.action_settings
+import dev.aide.client.ui.resources.agent_post_task
+import dev.aide.client.ui.resources.agent_request_failed
+import dev.aide.client.ui.resources.agent_task_hint
+import dev.aide.client.ui.resources.agent_title
 import dev.aide.client.ui.resources.app_name
 import dev.aide.client.ui.resources.connection_closed
 import dev.aide.client.ui.resources.connection_connecting
@@ -17,6 +21,26 @@ import dev.aide.client.ui.resources.repo_header_branch
 import dev.aide.client.ui.resources.repo_header_root
 import dev.aide.client.ui.resources.repo_tree_title
 import dev.aide.client.ui.resources.repo_tree_truncated
+import dev.aide.client.ui.resources.run_state_failed
+import dev.aide.client.ui.resources.run_state_finished
+import dev.aide.client.ui.resources.run_state_interrupted
+import dev.aide.client.ui.resources.run_state_none
+import dev.aide.client.ui.resources.run_state_paused
+import dev.aide.client.ui.resources.run_state_planned
+import dev.aide.client.ui.resources.run_state_running
+import dev.aide.client.ui.resources.run_state_stopped
+import dev.aide.client.ui.resources.task_failure_generic
+import dev.aide.client.ui.resources.task_failure_host_restart
+import dev.aide.client.ui.resources.task_failure_not_configured
+import dev.aide.client.ui.resources.task_failure_plan_unreadable
+import dev.aide.client.ui.resources.task_failure_user_stop
+import dev.aide.client.ui.resources.task_status_accepted
+import dev.aide.client.ui.resources.task_status_failed
+import dev.aide.client.ui.resources.task_status_none
+import dev.aide.client.ui.resources.task_status_queued
+import dev.aide.client.ui.resources.task_status_rejected
+import dev.aide.client.ui.resources.task_status_review
+import dev.aide.client.ui.resources.task_status_running
 import dev.aide.client.ui.resources.settings_control_mode
 import dev.aide.client.ui.resources.settings_control_mode_buttons
 import dev.aide.client.ui.resources.settings_control_mode_gestures
@@ -69,6 +93,32 @@ object Strings {
 
     val actionBack: StringResource = Res.string.action_back
     val actionSettings: StringResource = Res.string.action_settings
+
+    val agentTitle: StringResource = Res.string.agent_title
+    val agentTaskHint: StringResource = Res.string.agent_task_hint
+    val agentPostTask: StringResource = Res.string.agent_post_task
+    val runStateNone: StringResource = Res.string.run_state_none
+    val runStatePlanned: StringResource = Res.string.run_state_planned
+    val runStateRunning: StringResource = Res.string.run_state_running
+    val runStatePaused: StringResource = Res.string.run_state_paused
+    val runStateFinished: StringResource = Res.string.run_state_finished
+    val runStateFailed: StringResource = Res.string.run_state_failed
+    val runStateStopped: StringResource = Res.string.run_state_stopped
+    val runStateInterrupted: StringResource = Res.string.run_state_interrupted
+
+    val taskStatusNone: StringResource = Res.string.task_status_none
+    val taskStatusQueued: StringResource = Res.string.task_status_queued
+    val taskStatusRunning: StringResource = Res.string.task_status_running
+    val taskStatusReview: StringResource = Res.string.task_status_review
+    val taskStatusAccepted: StringResource = Res.string.task_status_accepted
+    val taskStatusRejected: StringResource = Res.string.task_status_rejected
+    val taskStatusFailed: StringResource = Res.string.task_status_failed
+    val taskFailureNotConfigured: StringResource = Res.string.task_failure_not_configured
+    val taskFailurePlanUnreadable: StringResource = Res.string.task_failure_plan_unreadable
+    val taskFailureUserStop: StringResource = Res.string.task_failure_user_stop
+    val taskFailureHostRestart: StringResource = Res.string.task_failure_host_restart
+    val taskFailureGeneric: StringResource = Res.string.task_failure_generic
+    val agentRequestFailed: StringResource = Res.string.agent_request_failed
 
     val stateLoadingTitle: StringResource = Res.string.state_loading_title
     val stateLoadingSkeleton: StringResource = Res.string.state_loading_skeleton

@@ -39,6 +39,19 @@ class RunStore internal constructor(private val database: HostDatabase) {
     fun byTask(taskId: TaskId): List<AgentRun> =
         database.agentRunQueries.byTask(taskId.value).executeAsList().map(RowMapper::run)
 
+    /** Читает все прогоны хоста в порядке запуска — ответ на запрос состояния прогонов (T-1.1). */
+    fun all(): List<AgentRun> = database.agentRunQueries.all().executeAsList().map(RowMapper::run)
+
+    /**
+     * Прогоны, не завершившиеся до остановки хоста (`finished_at` = null).
+     *
+     * Признак «незавершён» берётся из колонки, а не из состояния: завершённый прогон
+     * обязан иметь `finishedAt`, и по нему восстановление отличает прерванный прогон
+     * от законченного (T-1.1). Добавление запроса схему не меняет, миграция не нужна.
+     */
+    fun unfinished(): List<AgentRun> =
+        database.agentRunQueries.unfinished().executeAsList().map(RowMapper::run)
+
     /**
      * Суммарная стоимость всех прогонов задачи.
      *

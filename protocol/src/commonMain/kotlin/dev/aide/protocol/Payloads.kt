@@ -1,5 +1,7 @@
 package dev.aide.protocol
 
+import dev.aide.domain.AgentRun
+import dev.aide.domain.Task
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -84,6 +86,34 @@ sealed interface HostEvent {
     data class WorkspaceChanged(
         /** Какой воркспейс изменился. */
         val workspaceId: WorkspaceId,
+    ) : HostEvent
+
+    /**
+     * Состояние прогона изменилось (T-1.1).
+     *
+     * Событие — единственный способ доставить смену состояния клиенту, который о ней
+     * не спрашивал (§ 8.4); подключившийся позже клиент узнаёт состояние запросом
+     * [ClientMessage.AgentStatus], а не из истории событий.
+     */
+    @Serializable
+    @SerialName("runStateChanged")
+    data class RunStateChanged(
+        /** Прогон в новом состоянии. */
+        val run: AgentRun,
+    ) : HostEvent
+
+    /**
+     * Статус задачи изменился (T-1.1).
+     *
+     * Отдельное событие, а не только смена прогона: задача меняет статус и до появления
+     * прогона (постановка в очередь, отказ планирования), и без него подключённый клиент
+     * не увидел бы ни «в очереди», ни причины отказа.
+     */
+    @Serializable
+    @SerialName("taskStateChanged")
+    data class TaskStateChanged(
+        /** Задача в новом статусе. */
+        val task: Task,
     ) : HostEvent
 
     /** Хост завершает работу; клиенту нужно показать состояние «нет связи» (§ 6.1). */

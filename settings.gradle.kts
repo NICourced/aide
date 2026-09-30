@@ -23,6 +23,7 @@ include(
     ":domain",
     ":protocol",
     ":host-core",
+    ":host-agent",
     ":host-tools",
     ":client-state",
     ":client-ui",

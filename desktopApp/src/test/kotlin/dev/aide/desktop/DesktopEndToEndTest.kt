@@ -7,12 +7,17 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.runComposeUiTest
+import dev.aide.agent.llm.LlmClient
+import dev.aide.agent.llm.LlmRequest
+import dev.aide.agent.llm.LlmResponse
 import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.KtorHostConnection
 import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.state.settings.createKeyValueStoreAt
 import dev.aide.client.ui.App
+import dev.aide.domain.Cost
 import dev.aide.host.EmbeddedHost
 import java.nio.file.Files
 import java.nio.file.Path
@@ -24,15 +29,17 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 
 /**
- * Сквозная проверка десктопа (T-0.15): приложение открывает настоящий репозиторий через
- * настоящее соединение WebSocket с настоящим хостом и показывает ветку, дерево и
- * содержимое файла, а после остановки хоста — состояние «нет связи» с данными из кэша.
+ * Сквозная проверка десктопа (T-0.15, T-1.1): приложение открывает настоящий репозиторий
+ * через настоящее соединение WebSocket с настоящим хостом и показывает ветку, дерево и
+ * содержимое файла; задача, поставленная из интерфейса, проходит состояния прогона до
+ * завершения; после остановки хоста показывается состояние «нет связи» с данными из кэша.
  *
  * Проверка идёт по тому же композиционному корню, что и у настоящего приложения
  * ([dev.aide.client.ui.App]), на настоящем хосте из `host-core`, поэтому «глазами»
  * здесь проверять нечего: на экране оказывается ровно то, что утверждает тест.
- * Адрес хоста выдаётся `EmbeddedHost` на свободном порту, настройки пишутся в
- * временный файл — на настройки пользователя и на его репозитории тест не влияет.
+ * Адрес хоста выдаётся `EmbeddedHost` на свободном порту, настройки и база пишутся
+ * во временные файлы — на настройки пользователя и на его репозитории тест не влияет.
+ * Модель скриптованная: настоящее провайдера в CI нет и не будет (О-2).
  */
 @OptIn(ExperimentalTestApi::class)
 class DesktopEndToEndTest {
@@ -59,7 +66,7 @@ class DesktopEndToEndTest {
     @Test
     fun `десктоп открывает репозиторий при запуске и показывает ветку, дерево и файл`() = runComposeUiTest {
         val repo = fixture()
-        val host = EmbeddedHost.open()
+        val host = EmbeddedHost.open(databasePath = tempDatabase())
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val connection = KtorHostConnection(endpoint = host.endpoint, scope = scope)
         val settingsFile = Files.createTempFile("aide-settings", ".properties")
@@ -111,8 +118,40 @@ class DesktopEndToEndTest {
     }
 
     @Test
+    fun `задача, поставленная из интерфейса, доходит до состояния завершён`() = runComposeUiTest {
+        val host = EmbeddedHost.open(databasePath = tempDatabase(), llmClient = ScriptedModel())
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val connection = KtorHostConnection(endpoint = host.endpoint, scope = scope)
+        val settings = SettingsStore(createKeyValueStoreAt(Files.createTempFile("aide-settings-agent", ".properties")))
+
+        try {
+            connection.start()
+            setContent { App(connection = connection, settings = settings, scope = scope) }
+            waitUntil(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
+
+            onNodeWithText("Агент").performClick()
+            waitUntil(timeoutMillis = 15_000) {
+                onAllNodesWithTag("task-input").fetchSemanticsNodes().isNotEmpty()
+            }
+            onNodeWithTag("task-input").performTextInput("Почини сборку")
+            onNodeWithTag("post-task").performClick()
+
+            // Состояние приходит событием RunStateChanged; строка состояния обязана его показать.
+            waitUntil(timeoutMillis = 20_000) {
+                onAllNodesWithText("Завершён").fetchSemanticsNodes().isNotEmpty()
+            }
+            onNodeWithText("Завершён").assertIsDisplayed()
+            println("E2E: задача поставлена и прогон дошёл до завершения")
+        } finally {
+            runBlocking { connection.stop() }
+            host.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `без сохранённого пути приложение предлагает выбрать репозиторий`() = runComposeUiTest {
-        val host = EmbeddedHost.open()
+        val host = EmbeddedHost.open(databasePath = tempDatabase())
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val connection = KtorHostConnection(endpoint = host.endpoint, scope = scope)
         val settingsFile = Files.createTempFile("aide-settings-empty", ".properties")
@@ -131,6 +170,32 @@ class DesktopEndToEndTest {
             runBlocking { connection.stop() }
             host.close()
             scope.cancel()
+        }
+    }
+
+    /**
+     * База во временном файле: без явного пути хост открыл бы базу приложения
+     * в домашнем каталоге, и тест писал бы в данные пользователя.
+     */
+    private fun tempDatabase(): Path = Files.createTempFile("aide-host", ".db")
+
+    /**
+     * Скриптованная модель: первый ответ — план, дальше — «шаг выполнен».
+     *
+     * Формат плана — часть контракта `PlannerPrompt`; тест задаёт его строкой, поэтому
+     * сквозной прогон не зависит от настоящего провайдера и сети (О-2, О-11).
+     */
+    private class ScriptedModel : LlmClient {
+        private var calls = 0
+
+        override suspend fun complete(request: LlmRequest): LlmResponse {
+            calls += 1
+            val text = if (calls == 1) {
+                """{"steps":[{"summary":"Прочитать логи"},{"summary":"Исправить сборку"}]}"""
+            } else {
+                "шаг выполнен"
+            }
+            return LlmResponse.Text(text = text, cost = Cost(), elapsedMillis = 1)
         }
     }
 }

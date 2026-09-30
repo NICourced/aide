@@ -1,5 +1,11 @@
 package dev.aide.client.state
 
+import dev.aide.domain.AgentRun
+import dev.aide.domain.AutonomyMode
+import dev.aide.domain.RunCommand
+import dev.aide.domain.RunId
+import dev.aide.domain.Task
+import dev.aide.domain.TaskId
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreePayload
@@ -29,6 +35,10 @@ data class HostSession(
     val tree: FileTreePayload? = null,
     /** Последний открытый файл; null, если файл не выбран. */
     val openFile: FileContentPayload? = null,
+    /** Прогоны хоста в порядке запуска; обновляются событиями и запросом состояния (T-1.1). */
+    val runs: List<AgentRun> = emptyList(),
+    /** Задачи хоста в порядке постановки; статус приходит событиями и запросом (T-1.1). */
+    val tasks: List<Task> = emptyList(),
     /** Последняя ошибка запроса; null, если ошибок нет. */
     val lastError: ProtocolError? = null,
 )
@@ -38,8 +48,8 @@ data class HostSession(
  *
  * Отдельно решает задачу «после реконнекта клиент получает актуальное состояние»:
  * при переходе соединения в [ConnectionState.Connected] с признаком `reconnected`
- * клиент заново запрашивает состояние открытого воркспейса, дерево и открытый файл,
- * а не полагается на данные, полученные до обрыва.
+ * клиент заново запрашивает состояние открытого воркспейса, дерево, открытый файл
+ * и состояние прогонов, а не полагается на данные, полученные до обрыва.
  *
  * Запросы клиент шлёт из нескольких корутин сразу — обработчика событий, экрана,
  * восстановления после обрыва, — поэтому общее состояние защищено: идентификаторы
@@ -54,7 +64,7 @@ data class HostSession(
 class HostClient(
     private val connection: HostConnection,
     private val scope: CoroutineScope,
-    private val requestIdPrefix: String = newRequestIdPrefix(),
+    requestIdPrefix: String = newRequestIdPrefix(),
 ) {
 
     private val _session = MutableStateFlow(HostSession())
@@ -65,15 +75,13 @@ class HostClient(
     /** true, если хост прислал [HostEvent.HostShuttingDown]; сбрасывается после реконнекта. */
     val hostShuttingDown: StateFlow<Boolean> = _hostShuttingDown.asStateFlow()
 
-    private var sequence = 0
-
     /**
-     * Замок счётчика [sequence]. Запросы уходят из нескольких корутин одновременно, и без
-     * замка `++sequence` теряет инкременты: два запроса получают один [RequestId], ответ на
-     * первый достаётся второму, а первый вызывающий ждёт до таймаута. Хост при этом считает
-     * второй запрос повтором и отдаёт чужой ответ — на запрос дерева приходит состояние хоста.
+     * Выдача идентификаторов запросов. Запросы уходят из нескольких корутин одновременно,
+     * и без замка `++sequence` теряет инкременты: два запроса получают один [RequestId],
+     * ответ на первый достаётся второму, а первый вызывающий ждёт до таймаута. Хост при
+     * этом считает второй запрос повтором и отдаёт чужой ответ.
      */
-    private val sequenceLock = Mutex()
+    private val requestIds = RequestIdSequence(requestIdPrefix)
 
     /**
      * Замок согласования первого обновления после открытия воркспейса.
@@ -95,8 +103,8 @@ class HostClient(
      * Подписывается на состояние соединения и события хоста.
      *
      * Событие [HostEvent.WorkspaceChanged] заставляет перезапросить состояние открытого
-     * воркспейса; [HostEvent.HostShuttingDown] сразу помечает сессию, чтобы UI перешёл
-     * в состояние «нет связи», не дожидаясь закрытия сокета.
+     * воркспейса; [HostEvent.RunStateChanged] обновляет прогон в сессии; [HostEvent.HostShuttingDown]
+     * сразу помечает сессию, чтобы UI перешёл в состояние «нет связи», не дожидаясь закрытия сокета.
      */
     fun start() {
         connection.start()
@@ -104,6 +112,7 @@ class HostClient(
             connection.state.collect { state ->
                 if (state is ConnectionState.Connected && state.reconnected) {
                     refreshWorkspace()
+                    agentStatus()
                 }
             }
         }
@@ -112,6 +121,8 @@ class HostClient(
                 val event = (message as? HostMessage.Event)?.event ?: return@collect
                 when (event) {
                     is HostEvent.WorkspaceChanged -> {
+                        // Событие могло прийти раньше ответа на открытие: тогда воркспейса клиент
+                        // ещё не знает, и обновление обязан выполнить открывающий — см. openWorkspace.
                         val aboutOpenWorkspace = workspaceChangeLock.withLock {
                             val open = _session.value.workspaceId
                             if (open == null) {
@@ -124,6 +135,10 @@ class HostClient(
                         if (aboutOpenWorkspace) refreshWorkspace()
                     }
 
+                    is HostEvent.RunStateChanged -> _session.update { it.withRun(event.run) }
+
+                    is HostEvent.TaskStateChanged -> _session.update { it.withTask(event.task) }
+
                     HostEvent.HostShuttingDown -> _hostShuttingDown.value = true
                 }
             }
@@ -132,7 +147,7 @@ class HostClient(
 
     /** Открывает репозиторий по пути; возвращает идентификатор воркспейса или null при ошибке. */
     suspend fun openWorkspace(path: String): WorkspaceId? {
-        val requestId = nextRequestId()
+        val requestId = requestIds.next()
         val response = connection.request(ClientMessage.OpenWorkspace(requestId, path))
         return when (response) {
             is HostMessage.WorkspaceOpened -> {
@@ -161,8 +176,8 @@ class HostClient(
     }
 
     /** Запрашивает дерево файлов открытого воркспейса; результат сохраняется в [session]. */
-    suspend fun fileTree(): Result<FileTreePayload> = call { workspaceId ->
-        val requestId = nextRequestId()
+    suspend fun fileTree(): Result<FileTreePayload> = _session.call { workspaceId ->
+        val requestId = requestIds.next()
         when (val response = connection.request(ClientMessage.FileTree(requestId, workspaceId))) {
             is HostMessage.Tree -> Result.success(response.tree)
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
@@ -171,8 +186,8 @@ class HostClient(
     }.onSuccess { tree -> _session.update { it.copy(tree = tree) } }
 
     /** Запрашивает содержимое файла; результат сохраняется в [session] как открытый файл. */
-    suspend fun fileContent(path: String): Result<FileContentPayload> = call { workspaceId ->
-        val requestId = nextRequestId()
+    suspend fun fileContent(path: String): Result<FileContentPayload> = _session.call { workspaceId ->
+        val requestId = requestIds.next()
         when (val response = connection.request(ClientMessage.FileContent(requestId, workspaceId, path))) {
             is HostMessage.Content -> Result.success(response.content)
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
@@ -186,8 +201,8 @@ class HostClient(
     }
 
     /** Запрашивает состояние хоста: ветку, корень, режим; результат сохраняется в [session]. */
-    suspend fun hostState(): Result<HostStatePayload> = call { workspaceId ->
-        val requestId = nextRequestId()
+    suspend fun hostState(): Result<HostStatePayload> = _session.call { workspaceId ->
+        val requestId = requestIds.next()
         when (val response = connection.request(ClientMessage.HostState(requestId, workspaceId))) {
             is HostMessage.State -> Result.success(response.state)
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
@@ -195,11 +210,42 @@ class HostClient(
         }
     }.onSuccess { state -> _session.update { it.copy(hostState = state, lastError = null) } }
 
-    private suspend fun <T> call(block: suspend (WorkspaceId) -> Result<T>): Result<T> {
-        val workspaceId = _session.value.workspaceId
-            ?: return Result.failure(HostCallException(ProtocolError.Internal("воркспейс не открыт")))
-        return block(workspaceId).onFailure { error ->
-            if (error is HostCallException) _session.update { it.copy(lastError = error.error) }
+    /** Ставит задачу в очередь на выполнение агентом (T-1.1). */
+    suspend fun postTask(prompt: String, mode: AutonomyMode): Result<TaskId> {
+        val requestId = requestIds.next()
+        return when (val response = connection.request(ClientMessage.PostTask(requestId, prompt, mode))) {
+            is HostMessage.TaskPosted -> Result.success(response.taskId)
+            is HostMessage.Failure -> Result.failure(HostCallException(response.error))
+            else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на постановку задачи")))
+        }
+    }
+
+    /**
+     * Запрашивает состояние агента: прогоны и задачи; результат сохраняется в [session].
+     *
+     * Воркспейс не нужен: прогоны и задачи принадлежат хосту целиком, и подключившийся
+     * позже клиент узнаёт текущее состояние именно так, а не из истории событий (T-1.1).
+     */
+    suspend fun agentStatus(): Result<Unit> {
+        val requestId = requestIds.next()
+        return when (val response = connection.request(ClientMessage.AgentStatus(requestId))) {
+            is HostMessage.AgentSnapshot -> {
+                _session.update { it.copy(runs = response.runs, tasks = response.tasks) }
+                Result.success(Unit)
+            }
+
+            is HostMessage.Failure -> Result.failure(HostCallException(response.error))
+            else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос агента")))
+        }
+    }
+
+    /** Пауза, продолжение или остановка прогона (T-1.1; действия в UI — T-1.4). */
+    suspend fun controlRun(runId: RunId, command: RunCommand): Result<Unit> {
+        val requestId = requestIds.next()
+        return when (val response = connection.request(ClientMessage.RunControl(requestId, runId, command))) {
+            is HostMessage.RunControlled -> Result.success(Unit)
+            is HostMessage.Failure -> Result.failure(HostCallException(response.error))
+            else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на управление прогоном")))
         }
     }
 
@@ -218,10 +264,6 @@ class HostClient(
         _session.value.openFile?.path?.let { path -> fileContent(path) }
     }
 
-    private suspend fun nextRequestId(): RequestId = sequenceLock.withLock {
-        RequestId("$requestIdPrefix-${++sequence}")
-    }
-
     companion object {
         /** Основание системы счисления для короткого префикса. */
         private const val HEX_RADIX = 16
@@ -234,5 +276,45 @@ class HostClient(
     }
 }
 
+/** Обновляет прогон в сессии, сохраняя порядок по времени старта. */
+private fun HostSession.withRun(run: AgentRun): HostSession =
+    copy(runs = (runs.filterNot { it.id == run.id } + run).sortedBy { it.startedAt })
+
+/** Обновляет задачу в сессии, сохраняя порядок постановки. */
+private fun HostSession.withTask(task: Task): HostSession =
+    copy(tasks = (tasks.filterNot { it.id == task.id } + task).sortedBy { it.createdAt })
+
+/**
+ * Выполняет запрос по открытому воркспейсу.
+ *
+ * Ошибка запоминается в [HostSession.lastError], но возвращается и вызывающему: экран
+ * показывает состояние, а вызывающий решает, как на него реагировать.
+ */
+private suspend fun <T> MutableStateFlow<HostSession>.call(
+    block: suspend (WorkspaceId) -> Result<T>,
+): Result<T> {
+    val workspaceId = value.workspaceId
+        ?: return Result.failure(HostCallException(ProtocolError.Internal("воркспейс не открыт")))
+    return block(workspaceId).onFailure { error ->
+        if (error is HostCallException) update { it.copy(lastError = error.error) }
+    }
+}
+
 /** Ошибка вызова хоста, несущая типизированную причину из протокола. */
 class HostCallException(val error: ProtocolError) : Exception(error.toString())
+
+/**
+ * Выдача идентификаторов запросов под замком.
+ *
+ * Отдельный тип, а не поле [HostClient]: счётчик с замком — самостоятельная забота,
+ * и вынесение её держит класс доступа к хосту в пределах числа функций, которое
+ * проверяет линтер.
+ */
+internal class RequestIdSequence(private val prefix: String) {
+
+    private var sequence = 0
+    private val lock = Mutex()
+
+    /** Следующий уникальный идентификатор запроса. */
+    suspend fun next(): RequestId = lock.withLock { RequestId("$prefix-${++sequence}") }
+}

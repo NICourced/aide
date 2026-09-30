@@ -31,6 +31,10 @@ dependencies {
     // host-tools и держит его тип в своей сигнатуре, поэтому потребитель адаптера
     // должен видеть dev.aide.tools.limits без отдельной строки зависимости.
     api(project(":host-tools"))
+    // api, а не implementation: HostApp.open и EmbeddedHost.open держат в публичных
+    // сигнатурах dev.aide.agent.LlmClient и dev.aide.agent.RunPlanner, поэтому
+    // потребитель хоста (desktopApp, тесты) видит их без отдельной строки зависимости.
+    api(project(":host-agent"))
     // api, а не implementation: ClientMessageHandler, ClientSession и ProtocolServer
     // держат в публичных сигнатурах типы протокола (ClientMessage, HostMessage,
     // ProtocolVersion, HostMode, RequestId). Домен приходит транзитивно.

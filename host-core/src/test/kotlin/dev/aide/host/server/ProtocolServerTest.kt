@@ -93,6 +93,11 @@ class ProtocolServerTest {
                 requestId = RequestId("unexpected"),
                 error = ProtocolError.Internal("приветствие обрабатывает сессия"),
             )
+
+            else -> HostMessage.Failure(
+                requestId = RequestId("unused"),
+                error = ProtocolError.NotImplemented("сообщения агента в этом тесте не участвуют"),
+            )
         }
     }
 
@@ -412,5 +417,10 @@ private class ClientHandlerReturningEvent : ClientMessageHandler {
         )
 
         is ClientMessage.Hello -> HostMessage.Event(HostEvent.HostShuttingDown)
+
+        else -> HostMessage.Failure(
+            requestId = RequestId("unused"),
+            error = ProtocolError.NotImplemented("сообщения агента в этом тесте не участвуют"),
+        )
     }
 }

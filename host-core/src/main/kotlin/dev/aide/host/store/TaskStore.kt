@@ -35,6 +35,19 @@ class TaskStore internal constructor(private val database: HostDatabase) {
     fun byStatus(status: TaskStatus): List<Task> =
         database.taskQueries.byStatus(status.name).executeAsList().map(RowMapper::task)
 
+    /**
+     * Задачи, работа по которым ещё не завершена, в порядке постановки.
+     *
+     * «Не завершено» задано отрицанием завершённых статусов, поэтому новый незавершённый
+     * статус не выпадет из очереди. Порядок возрастающий, а не как у [byStatus]: очередь —
+     * FIFO, следующая задача берётся по времени постановки (О-8). Схему это не меняет.
+     */
+    fun unfinished(): List<Task> =
+        database.taskQueries.unfinished().executeAsList().map(RowMapper::task)
+
+    /** Все задачи в порядке постановки — снимок состояния агента (T-1.1). */
+    fun all(): List<Task> = database.taskQueries.all().executeAsList().map(RowMapper::task)
+
     /** Удаляет задачу. Журнал её прогонов при этом не удаляется (§ 10.2). */
     fun delete(id: TaskId) {
         database.taskQueries.delete(id.value)
