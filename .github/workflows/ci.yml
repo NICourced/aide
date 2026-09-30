@@ -130,3 +130,28 @@ jobs:
       - name: Тесты JVM-модулей под Windows
         shell: bash
         run: ./gradlew :client-ui:jvmTest :client-state:jvmTest
+
+      - name: Упаковка десктопа в .msi и .exe
+        # jpackage собирает установщик только на своей платформе и для .msi/.exe требует WiX.
+        # На образах GitHub он обычно уже есть; если нет — ставим и добавляем его bin в PATH,
+        # иначе jpackage не найдёт candle/light и упадёт с невнятной ошибкой.
+        shell: pwsh
+        run: |
+          $wixBin = Get-ChildItem "C:\Program Files (x86)" -Directory -Filter "WiX Toolset*" -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName "bin" } | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $wixBin) {
+            choco install wixtoolset --no-progress -y
+            $wixBin = Get-ChildItem "C:\Program Files (x86)" -Directory -Filter "WiX Toolset*" -ErrorAction SilentlyContinue |
+              ForEach-Object { Join-Path $_.FullName "bin" } | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if ($wixBin) { $env:PATH = "$wixBin;$env:PATH" }
+          ./gradlew :desktopApp:packageMsi :desktopApp:packageExe
+
+      - name: Выгрузка установщиков Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-installers
+          if-no-files-found: error
+          path: |
+            desktopApp/build/compose/binaries/main/msi/*.msi
+            desktopApp/build/compose/binaries/main/exe/*.exe

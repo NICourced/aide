@@ -1,5 +1,7 @@
 @file:OptIn(org.jetbrains.compose.ExperimentalComposeLibrary::class)
 
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+
 plugins {
     alias(libs.plugins.kotlinJvm)
     alias(libs.plugins.composeMultiplatform)
@@ -32,5 +34,26 @@ dependencies {
 compose.desktop {
     application {
         mainClass = "dev.aide.desktop.MainKt"
+        nativeDistributions {
+            // Форматы упаковки. Собирается только тот, что соответствует текущей ОС:
+            // jpackage не умеет кросс-сборку, поэтому AppImage и .deb получаются на Linux,
+            // а .msi и .exe — на Windows (см. AGENTS.md, раздел «Окружение»).
+            targetFormats(
+                TargetFormat.AppImage,
+                TargetFormat.Deb,
+                TargetFormat.Msi,
+                TargetFormat.Exe,
+            )
+            packageName = "AIStudio"
+            packageVersion = "0.1.0"
+            description = "AI-first IDE: агент выполняет задачу, человек ревьюит изменения"
+            vendor = "AI Studio"
+            // Модули JDK, которые jpackage не находит сам: он видит только то, что связано
+            // в байткоде, а обращение к драйверу SQLite идёт через JDBC-справочник служб,
+            // к TLS — через криптопровайдер, а к `sun.misc.Unsafe` — рефлексией. Без них
+            // приложение собирается, но падает при первом обращении к базе или к провайдеру
+            // модели, причём уже на машине пользователя.
+            modules("java.instrument", "java.sql", "jdk.unsupported", "jdk.crypto.ec")
+        }
     }
 }
