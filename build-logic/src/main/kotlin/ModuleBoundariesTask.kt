@@ -61,6 +61,17 @@ object ModuleBoundaries {
             explanation = "Хост не знает клиента и не зависит от UI (§ 8.1); клиент допустим только в тестах хоста",
             action = "в main-коде хоста не зависеть от клиента; клиент подключать только в тестах хоста.",
         ),
+        ModuleBoundary(
+            module = "host-tools",
+            forbiddenPackagePrefixes = listOf(
+                "dev.aide.client", "dev.aide.host", "dev.aide.agent", "dev.aide.protocol",
+                "androidx.compose", "org.jetbrains.compose", "app.cash.sqldelight", "org.eclipse.jgit",
+            ),
+            explanation = "Инструменты не знают ни клиента, ни хоста, ни рантайма агента, ни протокола, ни UI, " +
+                "ни базы, ни git: зависит от инструментов хост, а не наоборот (§ 8.1, § 8.2)",
+            action = "описать нужный доступ портом в host-tools (WorkspaceBoundary, ToolCallRecorder) " +
+                "и реализовать его в host-core.",
+        ),
     )
 
     /** Возвращает список нарушений: «файл: запрещённый пакет» — по одной записи на каждое вхождение в начало строки с import. */

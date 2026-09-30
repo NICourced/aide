@@ -34,6 +34,38 @@ class ModuleBoundariesTest {
     }
 
     @Test
+    fun `импорт хоста в host-tools считается нарушением`() {
+        val violations = ModuleBoundaries.findViolations(
+            module = "host-tools",
+            files = mapOf("ReadFileTool.kt" to "import dev.aide.host.workspace.WorkspaceFileSystem\n"),
+        )
+        assertEquals(
+            listOf("ReadFileTool.kt: dev.aide.host → dev.aide.host.workspace.WorkspaceFileSystem"),
+            violations,
+        )
+    }
+
+    /**
+     * Проверяется каждым префиксом отдельно: правило, скопированное у `host-core`
+     * (там этих запретов нет), прошло бы такой набор молча.
+     */
+    @Test
+    fun `импорты агента, протокола и git в host-tools считаются нарушением`() {
+        val cases = listOf(
+            "Tool.kt: dev.aide.agent → dev.aide.agent.AgentRun" to "import dev.aide.agent.AgentRun",
+            "Tool.kt: dev.aide.protocol → dev.aide.protocol.HostMode" to "import dev.aide.protocol.HostMode",
+            "Tool.kt: org.eclipse.jgit → org.eclipse.jgit.api.Git" to "import org.eclipse.jgit.api.Git",
+        )
+        cases.forEach { (expected, importLine) ->
+            val violations = ModuleBoundaries.findViolations(
+                module = "host-tools",
+                files = mapOf("Tool.kt" to "$importLine\n"),
+            )
+            assertEquals(listOf(expected), violations, "ожидалось нарушение для «$importLine»")
+        }
+    }
+
+    @Test
     fun `чистый файл нарушений не даёт`() {
         val violations = ModuleBoundaries.findViolations(
             module = "domain",

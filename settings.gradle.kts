@@ -23,6 +23,7 @@ include(
     ":domain",
     ":protocol",
     ":host-core",
+    ":host-tools",
     ":client-state",
     ":client-ui",
     ":platform-android",

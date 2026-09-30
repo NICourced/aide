@@ -37,7 +37,7 @@ jobs:
         # :desktopApp:test — сквозная проверка этапа (T-0.15): тот же App, настоящий
         # EmbeddedHost и настоящее WebSocket-соединение. Без этой задачи в списке
         # главное доказательство приёмки этапа не запускалось бы нигде.
-        run: ./gradlew :domain:jvmTest :protocol:jvmTest :host-core:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test
+        run: ./gradlew :domain:jvmTest :protocol:jvmTest :host-core:test :host-tools:test :client-state:jvmTest :client-ui:jvmTest :desktopApp:test
 
       - name: Сквозной тест этапа действительно исполнился
         # Тест, который не запускается, не существует. Эта проверка превращает

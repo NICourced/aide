@@ -27,6 +27,10 @@ sqldelight {
 
 dependencies {
     implementation(project(":domain"))
+    // api, а не implementation: WorkspaceBoundaryAdapter реализует публичный порт
+    // host-tools и держит его тип в своей сигнатуре, поэтому потребитель адаптера
+    // должен видеть dev.aide.tools.limits без отдельной строки зависимости.
+    api(project(":host-tools"))
     // api, а не implementation: ClientMessageHandler, ClientSession и ProtocolServer
     // держат в публичных сигнатурах типы протокола (ClientMessage, HostMessage,
     // ProtocolVersion, HostMode, RequestId). Домен приходит транзитивно.
