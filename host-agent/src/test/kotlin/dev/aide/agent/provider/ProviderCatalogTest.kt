@@ -15,10 +15,10 @@ class ProviderCatalogTest {
 
     private val entries = ProviderCatalog.entries
 
-    /** Сервисы, которые обязана содержать заготовка (критерий T-1.56). */
+    /** Сервисы, которые обязана содержать заготовка (критерий T-1.56 плюс региональные адреса). */
     private val requiredProviders = listOf(
-        "openai", "anthropic", "moonshot", "deepseek", "qwen", "openrouter",
-        "groq", "mistral", "xai", "gemini", "ollama", "lmstudio", "vllm",
+        "openai", "anthropic", "moonshot", "moonshot-cn", "deepseek", "qwen", "qwen-cn",
+        "openrouter", "groq", "mistral", "xai", "gemini", "ollama", "lmstudio", "vllm",
     )
 
     @Test
@@ -30,19 +30,36 @@ class ProviderCatalogTest {
     }
 
     @Test
-    fun `у каждой заготовки есть модель с контекстом, пределом вывода, возможностями и ставками`() {
+    fun `у каждой заготовки есть модель с контекстом и пределом вывода`() {
+        // Ставки могут быть неизвестны: цена меняется у провайдера, а не у нас, и выдумывать
+        // её нельзя — от неё зависит учёт стоимости. Неизвестная цена помечается как неполная
+        // (FR-COST-5), а не превращается в ноль. Пара ставок при этом обязана быть парой:
+        // половина известна, половина нет — это уже ошибка заполнения.
         val incomplete = entries.filter { entry ->
             entry.models.isEmpty() ||
-                entry.models.any {
-                    it.contextWindow <= 0 || it.maxOutputTokens <= 0 ||
-                        it.pricePerMillionInMicros == null || it.pricePerMillionOutMicros == null
-                }
+                entry.models.any { it.contextWindow <= 0 || it.maxOutputTokens <= 0 }
         }
-
         assertTrue(
             incomplete.isEmpty(),
             "заготовки без заполненной модели: ${incomplete.map { it.provider.id }}",
         )
+
+        val halfPriced = entries.flatMap { it.models }.filter {
+            (it.pricePerMillionInMicros == null) != (it.pricePerMillionOutMicros == null)
+        }
+        assertTrue(halfPriced.isEmpty(), "ставка задана половиной: ${halfPriced.map { it.alias }}")
+    }
+
+    @Test
+    fun `ставки заготовок не бывают отрицательными, а хотя бы одна известна`() {
+        // Ноль — законная ставка: локальные провайдеры бесплатны (FR-COST-1: «явная ставка
+        // либо ноль для бесплатных»). Неизвестная цена — не ноль, а отсутствие ставки.
+        val prices = entries.flatMap { it.models }
+            .flatMap { listOfNotNull(it.pricePerMillionInMicros, it.pricePerMillionOutMicros) }
+
+        assertTrue(prices.isNotEmpty(), "каталог без единой известной цены бесполезен для учёта стоимости")
+        assertTrue(prices.all { it >= 0 }, "цена не бывает отрицательной: $prices")
+        assertTrue(prices.any { it > 0 }, "все ставки нулевые — тогда известной цены нет ни у кого")
     }
 
     @Test

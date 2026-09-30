@@ -56,20 +56,37 @@
     "provider": {
       "id": "moonshot",
       "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://api.moonshot.ai/v1",
+      "apiKeyEnv": "MOONSHOT_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "moonshot/kimi-k3",
+        "provider": "moonshot",
+        "model": "kimi-k3",
+        "displayName": "Kimi K3",
+        "contextWindow": 1048576,
+        "maxOutputTokens": 131072,
+        "toolUse": true
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "moonshot-cn",
+      "type": "OPENAI_COMPATIBLE",
       "baseUrl": "https://api.moonshot.cn/v1",
       "apiKeyEnv": "MOONSHOT_API_KEY"
     },
     "models": [
       {
-        "alias": "moonshot/kimi-k2",
-        "provider": "moonshot",
-        "model": "kimi-k2-0711-preview",
-        "displayName": "Kimi K2",
-        "contextWindow": 131072,
-        "maxOutputTokens": 16384,
-        "toolUse": true,
-        "pricePerMillionInMicros": 600000,
-        "pricePerMillionOutMicros": 2500000
+        "alias": "moonshot-cn/kimi-k3",
+        "provider": "moonshot-cn",
+        "model": "kimi-k3",
+        "displayName": "Kimi K3",
+        "contextWindow": 1048576,
+        "maxOutputTokens": 131072,
+        "toolUse": true
       }
     ]
   },
@@ -77,31 +94,31 @@
     "provider": {
       "id": "deepseek",
       "type": "OPENAI_COMPATIBLE",
-      "baseUrl": "https://api.deepseek.com/v1",
+      "baseUrl": "https://api.deepseek.com",
       "apiKeyEnv": "DEEPSEEK_API_KEY"
     },
     "models": [
       {
-        "alias": "deepseek/deepseek-chat",
+        "alias": "deepseek/deepseek-flash",
         "provider": "deepseek",
-        "model": "deepseek-chat",
-        "displayName": "DeepSeek Chat",
-        "contextWindow": 64000,
-        "maxOutputTokens": 8192,
+        "model": "deepseek-flash",
+        "displayName": "DeepSeek Flash",
+        "contextWindow": 1000000,
+        "maxOutputTokens": 384000,
         "toolUse": true,
-        "pricePerMillionInMicros": 270000,
-        "pricePerMillionOutMicros": 1100000
+        "pricePerMillionInMicros": 300000,
+        "pricePerMillionOutMicros": 1200000
       },
       {
-        "alias": "deepseek/deepseek-reasoner",
+        "alias": "deepseek/deepseek-v4-pro",
         "provider": "deepseek",
-        "model": "deepseek-reasoner",
-        "displayName": "DeepSeek Reasoner",
-        "contextWindow": 64000,
-        "maxOutputTokens": 8192,
-        "toolUse": false,
-        "pricePerMillionInMicros": 550000,
-        "pricePerMillionOutMicros": 2190000
+        "model": "deepseek-v4-pro",
+        "displayName": "DeepSeek V4 Pro",
+        "contextWindow": 1000000,
+        "maxOutputTokens": 384000,
+        "toolUse": true,
+        "pricePerMillionInMicros": 1320000,
+        "pricePerMillionOutMicros": 3960000
       }
     ]
   },
@@ -109,20 +126,37 @@
     "provider": {
       "id": "qwen",
       "type": "OPENAI_COMPATIBLE",
+      "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "apiKeyEnv": "DASHSCOPE_API_KEY"
+    },
+    "models": [
+      {
+        "alias": "qwen/qwen3.8-max",
+        "provider": "qwen",
+        "model": "qwen3.8-max",
+        "displayName": "Qwen3.8 Max",
+        "contextWindow": 32000,
+        "maxOutputTokens": 8192,
+        "toolUse": true
+      }
+    ]
+  },
+  {
+    "provider": {
+      "id": "qwen-cn",
+      "type": "OPENAI_COMPATIBLE",
       "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "apiKeyEnv": "DASHSCOPE_API_KEY"
     },
     "models": [
       {
-        "alias": "qwen/qwen-max",
-        "provider": "qwen",
-        "model": "qwen-max",
-        "displayName": "Qwen Max",
+        "alias": "qwen-cn/qwen3.8-max",
+        "provider": "qwen-cn",
+        "model": "qwen3.8-max",
+        "displayName": "Qwen3.8 Max",
         "contextWindow": 32000,
         "maxOutputTokens": 8192,
-        "toolUse": true,
-        "pricePerMillionInMicros": 1600000,
-        "pricePerMillionOutMicros": 6400000
+        "toolUse": true
       }
     ]
   },
@@ -135,15 +169,13 @@
     },
     "models": [
       {
-        "alias": "openrouter/deepseek-chat",
+        "alias": "openrouter/gpt-4o",
         "provider": "openrouter",
-        "model": "deepseek/deepseek-chat",
-        "displayName": "DeepSeek Chat через OpenRouter",
-        "contextWindow": 64000,
-        "maxOutputTokens": 8192,
-        "toolUse": true,
-        "pricePerMillionInMicros": 270000,
-        "pricePerMillionOutMicros": 1100000
+        "model": "openai/gpt-4o",
+        "displayName": "GPT-4o через OpenRouter",
+        "contextWindow": 128000,
+        "maxOutputTokens": 16384,
+        "toolUse": true
       }
     ]
   },
