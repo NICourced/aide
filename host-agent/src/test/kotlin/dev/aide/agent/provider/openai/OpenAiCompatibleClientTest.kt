@@ -3,6 +3,8 @@ package dev.aide.agent.provider.openai
 import dev.aide.agent.llm.LlmErrorKind
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.llm.LlmToolCall
+import dev.aide.agent.llm.LlmToolDefinition
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelProfile
@@ -20,10 +22,13 @@ import io.ktor.http.headersOf
 import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 /**
  * T-1.56: адаптер chat completions на записанных запросах и ответах.
@@ -81,6 +86,16 @@ class OpenAiCompatibleClientTest {
     private fun jsonEngine(body: String, status: HttpStatusCode = HttpStatusCode.OK): MockEngine =
         MockEngine { respond(body, status, headersOf(HttpHeaders.ContentType, "application/json")) }
 
+    private val tools = listOf(
+        LlmToolDefinition(
+            name = "read_file",
+            description = "Прочитать файл",
+            argumentsSchema = Json.parseToJsonElement(
+                """{"type":"object","properties":{"path":{"type":"string"}}}""",
+            ) as JsonObject,
+        ),
+    )
+
     private val ask = LlmRequest(system = "Ты — агент", messages = listOf("Почини сборку"))
 
     @Test
@@ -125,9 +140,9 @@ class OpenAiCompatibleClientTest {
     }
 
     @Test
-    fun `инструменты в запрос не попадают, пока их нет`() = runBlocking {
-        // `toolUse` профиля описывает модель, а не то, что уже умеет эта сборка:
-        // определения инструментов появятся вместе с первым инструментом (T-1.7).
+    fun `без инструментов поля tools в запросе нет`() = runBlocking {
+        // Пустой список инструментов — это «вызывать нечего», и незачем отправлять его
+        // серверу: поле появляется только вместе с определениями (T-1.57).
         val (client, engine) = request(model = model(toolUse = false))
 
         client.complete(ask)
@@ -135,6 +150,110 @@ class OpenAiCompatibleClientTest {
         val body = engine.requestHistory.single().body.toByteArray().decodeToString()
         assertTrue(body.contains(""""messages""""), "тело запроса обязано быть непустым: $body")
         assertTrue(""""tools"""" !in body, "поля tools в запросе быть не должно: $body")
+    }
+
+    @Test
+    fun `запрос с инструментами несёт tools в формате chat completions`() = runBlocking {
+        val (client, engine) = request()
+
+        client.complete(ask.copy(tools = tools))
+
+        val body = engine.requestHistory.single().body.toByteArray().decodeToString()
+        assertTrue(body.contains(""""tools""""), "определения инструментов обязаны уехать: $body")
+        assertTrue(body.contains(""""type":"function""""), "элемент списка описывает функцию: $body")
+        assertTrue(body.contains(""""name":"read_file""""), "имя инструмента потеряно: $body")
+        assertTrue(body.contains(""""description":"Прочитать файл""""), "описание потеряно: $body")
+        assertTrue(body.contains(""""parameters""""), "схема аргументов eдет полем parameters: $body")
+        assertTrue(""""path"""" in body, "схема аргументов обязана уехать целиком: $body")
+    }
+
+    @Test
+    fun `tool_calls ответа превращаются в вызовы инструментов`() = runBlocking {
+        val body = """
+            {
+              "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                  "role": "assistant",
+                  "content": null,
+                  "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{\"path\":\"a.kt\"}"}
+                  }]
+                }
+              }],
+              "usage": {"prompt_tokens": 10, "completion_tokens": 20}
+            }
+        """.trimIndent()
+        val (client, _) = request(body = body)
+
+        val text = assertIs<LlmResponse.Text>(client.complete(ask))
+
+        assertEquals("", text.text, "ответ одним вызовом инструмента — это не ответ текстом")
+        assertEquals(
+            listOf(LlmToolCall(id = "call_1", name = "read_file", arguments = """{"path":"a.kt"}""")),
+            text.toolCalls,
+        )
+    }
+
+    @Test
+    fun `вызов инструмента без аргументов делает ответ неразбираемым`() = runBlocking {
+        // Пустая строка не является строкой JSON: отдать её значило бы перенести отказ
+        // разбора ответа в разбор аргументов у вызывающего.
+        val body = """
+            {
+              "choices": [{
+                "index": 0,
+                "message": {
+                  "role": "assistant",
+                  "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file"}
+                  }]
+                }
+              }]
+            }
+        """.trimIndent()
+        val (client, _) = request(body = body)
+
+        val response = client.complete(ask)
+
+        assertEquals(LlmErrorKind.RESPONSE_UNREADABLE, assertIs<LlmResponse.Error>(response).kind)
+    }
+
+    @Test
+    fun `обрезанный по пределу вывода ответ виден по finish_reason`() = runBlocking {
+        val body = """
+            {
+              "choices": [{
+                "index": 0,
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": "не докон"}
+              }]
+            }
+        """.trimIndent()
+        val (client, _) = request(body = body)
+
+        val text = assertIs<LlmResponse.Text>(client.complete(ask))
+
+        assertTrue(text.truncated, "обрезанный ответ обязан быть виден вызывающему, а не выглядеть полным")
+    }
+
+    @Test
+    fun `полный ответ не помечается обрезанным`() = runBlocking {
+        val body = """
+            {
+              "choices": [{"index": 0, "finish_reason": "stop", "message": {"content": "готово"}}]
+            }
+        """.trimIndent()
+        val (client, _) = request(body = body)
+
+        val text = assertIs<LlmResponse.Text>(client.complete(ask))
+
+        assertFalse(text.truncated)
     }
 
     @Test

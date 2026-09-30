@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * T-1.56: выбор модели по конфигурации, ключ из переменной окружения, проверка доступа.
@@ -177,27 +178,21 @@ class ProviderRegistryTest {
     }
 
     @Test
-    fun `протокол без адаптера даёт отказ unsupported`() {
-        val anthropic = AgentConfig(
-            defaultModel = "anthropic/claude",
-            providers = listOf(
-                ProviderProfile("anthropic", ProviderType.ANTHROPIC, "https://api.anthropic.com/v1", null),
-            ),
-            models = listOf(
-                ModelProfile("anthropic/claude", "anthropic", "claude-3-5-sonnet", "", 200_000, 8_192, true),
-            ),
-        )
-        // Настоящая фабрика: она и должна отказать, не сделав ни одного запроса —
-        // движок, который всё равно дёрнул бы сеть, был бы молчаливой ошибкой.
-        val http = HttpClient(MockEngine { error("для протокола без адаптера запросов быть не должно") })
-        val registry = ProviderRegistry(config = { anthropic }, env = { null }, clients = ProviderClients(http))
+    fun `каждый объявленный протокол обслуживается адаптером`() {
+        // T-1.57: отказ «адаптера ещё нет» убран для ANTHROPIC. Протокол объявлен
+        // перечислением в домене, а адаптер живёт здесь, поэтому проверка идёт по всем
+        // значениям перечисления сразу: новый протокол без адаптера обязан быть виден
+        // здесь, а не превращаться в загадочный отказ на живом провайдере.
+        val http = HttpClient(MockEngine { error("для сборки клиента запросов быть не должно") })
+        val clients = ProviderClients(http)
+        val provider = ProviderProfile("local", ProviderType.OPENAI_COMPATIBLE, "http://127.0.0.1:9/v1", null)
+        val model = config().models.single()
 
-        val failure = registry.current().exceptionOrNull()
+        ProviderType.entries.forEach { type ->
+            val created = clients.create(provider.copy(type = type), model, null)
 
-        assertEquals(
-            ModelCheckFailure.Unsupported,
-            assertIs<ModelUnavailableException>(failure).failure,
-        )
+            assertTrue(created.isSuccess, "у протокола $type обязан быть адаптер: ${created.exceptionOrNull()}")
+        }
     }
 
     @Test

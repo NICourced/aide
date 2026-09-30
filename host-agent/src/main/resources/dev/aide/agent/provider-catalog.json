@@ -40,9 +40,9 @@
     },
     "models": [
       {
-        "alias": "anthropic/claude-3-5-sonnet",
+        "alias": "anthropic/claude-3-5-sonnet-20241022",
         "provider": "anthropic",
-        "model": "claude-3-5-sonnet-latest",
+        "model": "claude-3-5-sonnet-20241022",
         "displayName": "Claude 3.5 Sonnet",
         "contextWindow": 200000,
         "maxOutputTokens": 8192,

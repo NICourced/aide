@@ -17,10 +17,15 @@ dependencies {
     api(libs.ktor.client.core)
 
     implementation(libs.kotlinx.coroutines.core)
-    // План приходит от модели JSON-ом, разбирается он здесь; тело запроса к провайдеру
-    // и разбор ответа — тоже JSON. Плагин сериализации не нужен: `@Serializable`
-    // в модуле нет, всё разбирается рантаймным `Json.parseToJsonElement`.
-    implementation(libs.kotlinx.serialization.json)
+    // api, а не implementation: JsonObject стоит в публичной сигнатуре определения
+    // инструмента (LlmToolDefinition.argumentsSchema), а определения собирает тот, кто
+    // знает инструменты, — модуль инструментов (T-1.7), а не рантайм агента. При
+    // implementation сборка сломалась бы у потребителя, а не здесь.
+    //
+    // Плагин сериализации при этом по-прежнему не нужен: `@Serializable` в модуле нет —
+    // план, тела запросов к провайдеру и ответы разбираются рантаймным
+    // `Json.parseToJsonElement`.
+    api(libs.kotlinx.serialization.json)
     implementation(libs.slf4j.api)
 
     testImplementation(libs.kotlin.test)

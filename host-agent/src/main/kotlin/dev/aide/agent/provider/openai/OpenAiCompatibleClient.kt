@@ -3,7 +3,16 @@ package dev.aide.agent.provider.openai
 import dev.aide.agent.llm.LlmErrorKind
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.llm.LlmToolCall
+import dev.aide.agent.llm.LlmToolDefinition
 import dev.aide.agent.provider.ProviderClient
+import dev.aide.agent.provider.checkFailureOf
+import dev.aide.agent.provider.costOf
+import dev.aide.agent.provider.elapsedMillis
+import dev.aide.agent.provider.errorKindOf
+import dev.aide.agent.provider.stringField
+import dev.aide.agent.provider.tokenCount
+import dev.aide.agent.provider.unreadableResponse
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelProfile
@@ -26,20 +35,15 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 
-/** Микроединиц стоимости в единице тарификации провайдера. */
-private const val MICROS_PER_MILLION: Long = 1_000_000
-
-/** Наносекунд в миллисекунде: длительность вызова записывается в миллисекундах. */
-private const val NANOS_PER_MILLI: Long = 1_000_000
+/** Причина остановки, означающая обрезанный ответ: модель упёрлась в предел вывода. */
+private const val FINISH_LENGTH: String = "length"
 
 /**
  * Адаптер протокола chat completions (T-1.56, О-2).
@@ -50,9 +54,9 @@ private const val NANOS_PER_MILLI: Long = 1_000_000
  * поэтому вендор здесь не назван ни разу.
  *
  * Запросы не потоковые (О-2): движок ждёт ответ целиком, а прогресс пользователь видит
- * по вызовам инструментов. Вызовов инструментов в запросе пока нет (T-1.7), поэтому
- * `toolUse` профиля описывает модель, а не то, что эта сборка уже умеет: поле появится
- * в запросе вместе с первым инструментом.
+ * по вызовам инструментов. Инструменты мапятся на `tools` и `tool_calls` этого формата
+ * (T-1.57): определения приходят в запросе, вызовы возвращаются в ответе одинаково у
+ * обоих протоколов, а различие форматов остаётся здесь.
  *
  * @param http клиент Ktor: в тестах — на `MockEngine` с записанными ответами, сети
  *   в автоматических тестах нет (О-11).
@@ -75,7 +79,7 @@ class OpenAiCompatibleClient(
     override suspend fun complete(request: LlmRequest): LlmResponse {
         val startedNanos = System.nanoTime()
         return try {
-            val response = http.post(endpoint("chat/completions")) {
+            val response = http.post(endpoint(CHAT_PATH)) {
                 applyHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(requestBody(request))
@@ -90,21 +94,31 @@ class OpenAiCompatibleClient(
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun checkAccess(): ModelCheckFailure? = try {
-        val response = http.get(endpoint("models")) { applyHeaders() }
-        accessFailure(response)
+        val response = http.get(endpoint(MODELS_PATH)) { applyHeaders() }
+        checkFailureOf(response)
     } catch (error: Exception) {
         currentCoroutineContext().ensureActive()
         logger.warn("Проверка доступа к ${provider.id} не удалась: ${error.message}", error)
         ModelCheckFailure.RequestFailed(error.message)
     }
 
-    /** Тело запроса: модель, предел вывода и диалог с системной частью впереди. */
+    /**
+     * Тело запроса: модель, предел вывода, диалог с системной частью впереди и инструменты.
+     *
+     * Поле `tools` появляется только при непустом списке: провайдеры читают его как
+     * «вот что можно вызывать», и отправлять пустой список незачем.
+     */
     private fun requestBody(request: LlmRequest): String = buildJsonObject {
         put("model", model.model)
         put("max_tokens", model.maxOutputTokens)
         putJsonArray("messages") {
             add(message("system", request.system))
             request.messages.forEach { add(message("user", it)) }
+        }
+        if (request.tools.isNotEmpty()) {
+            putJsonArray("tools") {
+                request.tools.forEach { add(tool(it)) }
+            }
         }
     }.toString()
 
@@ -113,39 +127,49 @@ class OpenAiCompatibleClient(
         put("content", content)
     }
 
+    /** Определение инструмента в формате chat completions: тип `function` и её схема. */
+    private fun tool(definition: LlmToolDefinition): JsonObject = buildJsonObject {
+        put("type", "function")
+        putJsonObject("function") {
+            put("name", definition.name)
+            put("description", definition.description)
+            put("parameters", definition.argumentsSchema)
+        }
+    }
+
     /**
-     * Разбор ответа: текст, токены и стоимость.
+     * Разбор ответа: текст, вызовы инструментов, токены и стоимость.
      *
      * Нет `usage` — цена неизвестна, а не ноль (FR-COST-5): провайдер, не посчитавший
-     * токены, не даёт права утверждать, что прогон ничего не стоил.
+     * токены, не даёт права утверждать, что прогон ничего не стоил. Текст может быть
+     * пустым, если модель ответила одним вызовом инструмента, — это не пустой ответ.
      */
-    private suspend fun readCompletion(response: HttpResponse, elapsedMillis: Long): LlmResponse {
+    private suspend fun readCompletion(response: HttpResponse, elapsed: Long): LlmResponse {
         val status = response.status
         if (status != HttpStatusCode.OK) {
-            return LlmResponse.Error(kindOf(status), "HTTP ${status.value}")
+            return LlmResponse.Error(errorKindOf(status), "HTTP ${status.value}")
         }
         val parsed = runCatching { Json.parseToJsonElement(response.bodyAsText()) }.getOrNull()
-        val text = parsed?.choicesText()
+        val choice = parsed?.firstChoice()
+        val message = choice?.messageOf()
+        // Содержимого может не быть вовсе: модель, отвечающая одним вызовом инструмента,
+        // присылает `content: null`. Пустой текст и отсутствующие вызовы — вот что значит
+        // «в ответе нет ничего».
+        val text = message?.contentText().orEmpty()
+        val calls = message?.toolCalls()
         return when {
-            parsed == null -> LlmResponse.Error(LlmErrorKind.RESPONSE_UNREADABLE, "ответ не является JSON")
-            text == null -> LlmResponse.Error(LlmErrorKind.RESPONSE_UNREADABLE, "в ответе нет текста модели")
-            else -> LlmResponse.Text(text = text, cost = parsed.cost(model), elapsedMillis = elapsedMillis)
+            parsed == null -> unreadableResponse("ответ не является JSON")
+            calls == null -> unreadableResponse("ответ без разбираемых вызовов инструментов")
+            text.isBlank() && calls.isEmpty() -> unreadableResponse("в ответе нет текста модели")
+            else -> LlmResponse.Text(
+                text = text,
+                cost = parsed.responseCost(model),
+                elapsedMillis = elapsed,
+                toolCalls = calls,
+                truncated = choice?.stringField("finish_reason") == FINISH_LENGTH,
+            )
         }
     }
-
-    /** Ответ на `GET /models`: 401/403 — ключ, 429 — лимит, 404/405 — запрос не поддерживается. */
-    private suspend fun accessFailure(response: HttpResponse): ModelCheckFailure? = when (response.status.value) {
-        HttpStatusCode.OK.value ->
-            if (response.isJson()) null else ModelCheckFailure.ResponseUnreadable("ответ не JSON")
-
-        HttpStatusCode.Unauthorized.value, HttpStatusCode.Forbidden.value -> ModelCheckFailure.Unauthorized
-        HttpStatusCode.TooManyRequests.value -> ModelCheckFailure.RateLimited
-        HttpStatusCode.NotFound.value, HttpStatusCode.MethodNotAllowed.value -> ModelCheckFailure.Unsupported
-        else -> ModelCheckFailure.RequestFailed("HTTP ${response.status.value}")
-    }
-
-    private suspend fun HttpResponse.isJson(): Boolean =
-        runCatching { Json.parseToJsonElement(bodyAsText()) }.isSuccess
 
     private fun endpoint(path: String): String = "${provider.baseUrl.trimEnd('/')}/$path"
 
@@ -154,42 +178,66 @@ class OpenAiCompatibleClient(
         apiKey?.let { header(HttpHeaders.Authorization, "Bearer $it") }
         provider.customHeaders.forEach { (name, value) -> header(name, value) }
     }
-}
 
-/** Цена по ставкам профиля; отсутствие любой из ставок делает итог неизвестным. */
-private fun JsonElement.cost(model: ModelProfile): Cost {
-    val usage = ((this as? JsonObject)?.get("usage") as? JsonObject)
-    val inRate = model.pricePerMillionInMicros
-    val outRate = model.pricePerMillionOutMicros
-    if (usage == null || inRate == null || outRate == null) {
-        // Провайдер, не посчитавший токены, не даёт права считать прогон бесплатным (FR-COST-5).
-        return Cost(known = false)
+    private companion object {
+
+        /** Путь ответа модели в этом протоколе. */
+        const val CHAT_PATH: String = "chat/completions"
+
+        /** Путь списка моделей: им проверяется доступ, без вызова самой модели. */
+        const val MODELS_PATH: String = "models"
     }
-    val inTokens = usage.tokenCount("prompt_tokens")
-    val outTokens = usage.tokenCount("completion_tokens")
-    return Cost(
-        amountMicros = inTokens * inRate / MICROS_PER_MILLION + outTokens * outRate / MICROS_PER_MILLION,
-        known = true,
-    )
 }
 
-/** Текст первого ответа модели: у chat completions это `choices[0].message.content`. */
-private fun JsonElement.choicesText(): String? {
-    val choice = (this as? JsonObject)?.get("choices")?.let { it as? JsonArray }?.firstOrNull() as? JsonObject
-    val content = (choice?.get("message") as? JsonObject)?.get("content") as? JsonPrimitive
-    return content?.contentOrNull?.takeIf { it.isNotBlank() }
+/** Первый вариант ответа: у chat completions модель отвечает в `choices[0]`. */
+private fun JsonElement.firstChoice(): JsonObject? =
+    ((this as? JsonObject)?.get("choices") as? JsonArray)?.firstOrNull() as? JsonObject
+
+/** Сообщение модели внутри варианта ответа. */
+private fun JsonObject.messageOf(): JsonObject? = this["message"] as? JsonObject
+
+/** Текст ответа; null — поля нет или оно не строка (содержимым может быть и список частей). */
+private fun JsonObject.contentText(): String? = stringField("content")
+
+/** Цена по токенам `usage`; нет `usage` — цена неизвестна, а не ноль (FR-COST-5). */
+private fun JsonElement.responseCost(model: ModelProfile): Cost {
+    val usage = ((this as? JsonObject)?.get("usage") as? JsonObject) ?: return Cost(known = false)
+    return costOf(usage.tokenCount("prompt_tokens"), usage.tokenCount("completion_tokens"), model)
 }
 
-/** Число токенов в `usage`; отсутствие поля считается нулём — иначе отказ был бы непонятен. */
-private fun JsonObject.tokenCount(field: String): Long =
-    (this[field] as? JsonPrimitive)?.longOrNull ?: 0
+/**
+ * Вызовы инструментов из сообщения; null — поле есть, но разобрать его нельзя.
+ *
+ * Пустое поле и отсутствие поля одинаковы: модель ответила текстом. А вот неполный
+ * вызов делает неразбираемым весь ответ — выполнить его нельзя, и молча потерять
+ * один из нескольких вызовов значило бы оставить работу наполовину сделанной.
+ */
+private fun JsonObject.toolCalls(): List<LlmToolCall>? {
+    val raw = this["tool_calls"]
+    val parsed = (raw as? JsonArray)?.map { (it as? JsonObject)?.functionCall() }
+    return when {
+        raw == null -> emptyList()
+        parsed == null || parsed.any { it == null } -> null
+        else -> parsed.filterNotNull()
+    }
+}
 
-/** Длительность вызова в миллисекундах. */
-private fun elapsedMillis(startedNanos: Long): Long = (System.nanoTime() - startedNanos) / NANOS_PER_MILLI
-
-/** Как ошибка HTTP отображается в код причины отказа модели (решение 7). */
-private fun kindOf(status: HttpStatusCode): LlmErrorKind = when (status.value) {
-    HttpStatusCode.Unauthorized.value, HttpStatusCode.Forbidden.value -> LlmErrorKind.UNAUTHORIZED
-    HttpStatusCode.TooManyRequests.value -> LlmErrorKind.RATE_LIMITED
-    else -> LlmErrorKind.REQUEST_FAILED
+/**
+ * Один вызов: id, имя и аргументы строкой — в этом формате они уже строка JSON.
+ *
+ * Отсутствующие аргументы — неполный вызов, а не вызов с пустыми: пустая строка не
+ * является строкой JSON, и вызывающий получил бы ошибку разбора вместо отказа разбора
+ * ответа.
+ */
+private fun JsonObject.functionCall(): LlmToolCall? {
+    val function = this["function"] as? JsonObject
+    val id = stringField("id")
+    val name = function?.stringField("name")
+    val arguments = function?.stringField("arguments")
+    val complete = !id.isNullOrBlank() && !name.isNullOrBlank() && arguments != null
+    return if (complete) {
+        LlmToolCall(id = id.orEmpty(), name = name.orEmpty(), arguments = arguments.orEmpty())
+    } else {
+        null
+    }
 }

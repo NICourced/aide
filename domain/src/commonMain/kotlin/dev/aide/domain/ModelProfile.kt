@@ -15,7 +15,7 @@ enum class ProviderType {
     /** `/chat/completions` — формат chat completions. */
     OPENAI_COMPATIBLE,
 
-    /** Messages API (Claude). Заготовка есть, адаптер — T-1.57. */
+    /** Messages API (Claude): другая форма запроса, другой способ вызова инструментов. */
     ANTHROPIC,
 }
 
