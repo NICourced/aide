@@ -49,9 +49,11 @@ import dev.aide.tools.file.FindFilesTool
 import dev.aide.tools.file.ReadFileTool
 import dev.aide.tools.file.SearchTextTool
 import dev.aide.tools.file.WriteFileTool
+import dev.aide.tools.limits.NetworkPolicy
 import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.StepCommits
+import dev.aide.tools.sandbox.RunCommandTool
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.ProtocolVersion
 import io.ktor.client.HttpClient
@@ -263,16 +265,18 @@ object HostApp {
 }
 
 /**
- * Инструменты шага, как их собирает хост: чтение, запись и внутренняя фиксация (T-1.11).
+ * Инструменты шага, как их собирает хост: чтение, запись, терминал и внутренняя фиксация (T-1.9, T-1.11).
  *
- * Список вынесен из Koin-определения: `commit_step` требует порт фиксации, и в модуле
- * он собирался бы вместе с остальным графом, удлиняя `module` сверх порога `LongMethod`.
+ * Список вынесен из Koin-определения: `commit_step` требует порт фиксации, `run_command` —
+ * предел сети, и в модуле они собирались бы вместе с остальным графом, удлиняя `module`
+ * сверх порога `LongMethod`.
  */
-private fun hostTools(commits: StepCommits): List<AgentTool> = listOf(
+private fun hostTools(commits: StepCommits, network: NetworkPolicy): List<AgentTool> = listOf(
     ReadFileTool,
     FindFilesTool,
     SearchTextTool,
     WriteFileTool,
+    RunCommandTool(network),
     CommitStepTool(commits),
 )
 
@@ -290,7 +294,9 @@ private fun stepToolsOf(
     snapshots: ChangeSnapshots,
     context: ToolContext,
 ): StepTools {
-    val registry = ToolRegistry(hostTools(commits))
+    // Предел сети создаётся здесь, а не приходит из настроек: в этапе 1 список разрешённых
+    // хостов задавать негде (интерфейс — этап 3), поэтому по умолчанию пуст и это отказ.
+    val registry = ToolRegistry(hostTools(commits, NetworkPolicy()))
     return StepTools.of(
         registry = registry,
         invoker = ToolInvoker(

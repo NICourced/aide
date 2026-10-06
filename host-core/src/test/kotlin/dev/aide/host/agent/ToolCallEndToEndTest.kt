@@ -26,6 +26,7 @@ import dev.aide.host.EmbeddedHost
 import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.git.GitCliFixture
 import dev.aide.tools.file.WriteFileTool
+import dev.aide.tools.sandbox.RunCommandTool
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import java.nio.file.Files
@@ -35,6 +36,7 @@ import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
@@ -136,7 +138,7 @@ class ToolCallEndToEndTest {
             val repo = cleanRepoWithFile("aide-write-repo", "hello.txt", CONTENT)
 
             val database = Files.createTempFile("aide-write", ".db")
-            allowWrite(database)
+            allow(database, WriteFileTool.TOOL_NAME)
             val model = ToolCallingModel("write_file", """{"path":"hello.txt","content":"$WRITTEN"}""")
             val host = host(database, model)
             val run = try {
@@ -176,7 +178,7 @@ class ToolCallEndToEndTest {
             val repo = cleanRepoWithFile("aide-commit-repo", "hello.txt", CONTENT)
 
             val database = Files.createTempFile("aide-commit", ".db")
-            allowWrite(database)
+            allow(database, WriteFileTool.TOOL_NAME)
             val model = ToolCallingModel("write_file", """{"path":"hello.txt","content":"$WRITTEN"}""")
             val host = host(database, model)
             val run = try {
@@ -206,6 +208,71 @@ class ToolCallEndToEndTest {
         }
     }
 
+    @Test
+    fun `разрешённая команда выполняется, её вывод уходит модели, а изменение фиксируется коммитом`() {
+        runBlocking {
+            val repo = cleanRepoWithFile("aide-command-repo", "hello.txt", CONTENT)
+
+            val database = Files.createTempFile("aide-command", ".db")
+            allow(database, RunCommandTool.TOOL_NAME)
+            val model = ToolCallingModel(RunCommandTool.TOOL_NAME, COMMAND_ARGUMENTS)
+            val host = host(database, model)
+            val run = try {
+                val client = openClient(host)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTask("Выполни команду", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                finish(client)
+            } finally {
+                host.close()
+            }
+
+            assertEquals(
+                COMMAND_WRITTEN,
+                repo.resolve("hello.txt").toFile().readText(),
+                "команда обязана изменить файл",
+            )
+            val messages = gitLog(repo, "--format=%s", "ai/${run.taskId.value}")
+            assertTrue(
+                messages.any { it.startsWith("Шаг 1") },
+                "изменяющий шаг с выполненной командой обязан быть закоммичен: $messages",
+            )
+
+            val result = assertNotNull(
+                model.requests[1].messages.lastOrNull { it.role == LlmRole.TOOL },
+                "вывод команды обязан вернуться модели",
+            )
+            assertTrue(result.content.contains(COMMAND_OUTPUT), "модель обязана увидеть stdout: ${result.content}")
+
+            val recorded = journal(database, run, RunCommandTool.TOOL_NAME)
+            assertEquals(ToolOutcome.SUCCESS, recorded.outcome, recorded.result)
+        }
+    }
+
+    @Test
+    fun `при ASK команда не запускается, а прогон доходит до finished`() {
+        runBlocking {
+            val repo = cleanRepoWithFile("aide-command-ask", "hello.txt", CONTENT)
+
+            val database = Files.createTempFile("aide-command-ask", ".db")
+            val model = ToolCallingModel(RunCommandTool.TOOL_NAME, """{"command":["touch","never-created.txt"]}""")
+            val host = host(database, model)
+            val run = try {
+                val client = openClient(host)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTask("Выполни команду", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                finish(client)
+            } finally {
+                host.close()
+            }
+
+            assertFalse(
+                repo.resolve("never-created.txt").toFile().exists(),
+                "при ASK команда не должна запускаться",
+            )
+            assertEquals(ToolOutcome.DENIED, journal(database, run, RunCommandTool.TOOL_NAME).outcome)
+        }
+    }
+
     /** Ветка задачи на чистом дереве: иначе правки пользователя уехали бы в отложенные (T-1.59). */
     private fun cleanRepoWithFile(prefix: String, name: String, content: String): Path {
         val repo = GitCliFixture.createRepo(Files.createTempDirectory(prefix))
@@ -218,10 +285,10 @@ class ToolCallEndToEndTest {
     }
 
     /** Разрешает запись в базе до старта хоста: без этого вызов упрётся в объявленное умолчание ASK. */
-    private fun allowWrite(database: Path) {
+    private fun allow(database: Path, tool: String) {
         val seed = DatabaseFactory.open(database)
         try {
-            seed.permissions.save(ToolPermission(WriteFileTool.TOOL_NAME, Permission.ALLOW, Permission.ALLOW))
+            seed.permissions.save(ToolPermission(tool, Permission.ALLOW, Permission.ALLOW))
         } finally {
             seed.close()
         }
@@ -304,6 +371,14 @@ class ToolCallEndToEndTest {
 
         /** Содержимое, которым агент перезаписывает файл: отличается от исходного, иначе записи не видно. */
         const val WRITTEN: String = "изменено агентом"
+
+        /** Вывод команды: по нему видно, что результат дошёл до модели, а не только до журнала. */
+        const val COMMAND_OUTPUT: String = "вывод-команды"
+
+        /** Команда печатает вывод и меняет файл: одна и та же для проверок stdout и коммита шага. */
+        const val COMMAND_ARGUMENTS: String =
+            """{"command":["sh","-c","echo $COMMAND_OUTPUT; echo изменено-командой > hello.txt"]}"""
+        const val COMMAND_WRITTEN: String = "изменено-командой\n"
         const val READ_FILE: String = "read_file"
         const val WRITE_FILE: String = "write_file"
         const val COMMIT_STEP: String = "commit_step"

@@ -25,15 +25,15 @@ private const val TYPE_ARRAY: String = "array"
  * точке, и её отказ — обычный результат для модели: та поправится сама.
  *
  * Поддержан ровно тот объём JSON Schema, который объявляют инструменты этапа 1:
- * `type: object`, `properties` с типом поля и `required`. Незнакомое ключевое слово
- * схемы (`description`, `enum`, что угодно ещё) не делает вызов негодным: схемы пишем
- * мы же, и запрещать в них лишнее значило бы ломать вызов на описании поля.
+ * `type: object`, `properties` с типом поля, `required` и `items` у массива (T-1.9).
+ * Незнакомое ключевое слово схемы (`description`, `enum`, что угодно ещё) не делает
+ * вызов негодным: схемы пишем мы же, и запрещать в них лишнее значило бы ломать вызов
+ * на описании поля.
  */
 object ArgumentsSchema {
 
     private const val KEY_PROPERTIES: String = "properties"
     private const val KEY_REQUIRED: String = "required"
-    private const val KEY_TYPE: String = "type"
     private val EMPTY_OBJECT: JsonObject = JsonObject(emptyMap())
 
     /**
@@ -62,15 +62,33 @@ object ArgumentsSchema {
         return "неизвестный аргумент «$unknown»; допустимы: ${properties.keys.joinToString(", ")}"
     }
 
-    /** Тип аргумента не тот, что объявлен. */
-    private fun argumentOfWrongType(properties: Map<String, JsonObject>, arguments: JsonObject): String? {
-        arguments.forEach { (name, value) ->
-            val expected = properties[name]?.typeName()
-            if (!matches(expected, value)) {
-                return "аргумент «$name» должен быть ${word(expected)}, а пришёл ${describe(value)}"
-            }
+    /**
+     * Тип аргумента не тот, что объявлен; у массива проверяются ещё и элементы (T-1.9).
+     *
+     * Элементы — потому что `command` у `run_command` объявлен массивом строк: без этой
+     * проверки `["ls", 42]` уехало бы в процесс, а не вернулось модели отказом. Проверка
+     * узкая — ровно объявленный нами `items`, а не общий JSON Schema.
+     */
+    private fun argumentOfWrongType(properties: Map<String, JsonObject>, arguments: JsonObject): String? =
+        arguments.entries.firstNotNullOfOrNull { (name, value) -> complaint(name, properties[name], value) }
+
+    /** Претензия к одному аргументу: сначала его собственный тип, потом тип элементов. */
+    private fun complaint(name: String, property: JsonObject?, value: JsonElement): String? {
+        val expected = property?.typeName()
+        if (!matches(expected, value)) {
+            return "аргумент «$name» должен быть ${word(expected)}, а пришёл ${describe(value)}"
         }
-        return null
+        return arrayElementComplaint(name, property, value)
+    }
+
+    /** Отказ по элементу массива; null — либо не массив, либо `items` не объявлены. */
+    private fun arrayElementComplaint(name: String, property: JsonObject?, value: JsonElement): String? {
+        val array = value as? JsonArray ?: return null
+        val itemType = property?.itemsTypeName()
+        val wrong = itemType?.let { type -> array.firstOrNull { !matches(type, it) } }
+        return wrong?.let {
+            "аргумент «$name»: элемент массива должен быть ${word(itemType)}, а пришёл ${describe(it)}"
+        }
     }
 
     /** Незнакомый тип в схеме считается «проверять нечем»: отказ здесь был бы ложным. */
@@ -95,11 +113,17 @@ object ArgumentsSchema {
             ?.mapNotNull { it.primitive()?.takeIf { p -> p.isString }?.content }
             .orEmpty()
 
-    private fun JsonObject.typeName(): String? =
-        (this[KEY_TYPE] as? JsonPrimitive)?.takeIf { it.isString }?.content
-
     private fun JsonElement.primitive(): JsonPrimitive? = this as? JsonPrimitive
 }
+
+private const val KEY_TYPE: String = "type"
+private const val KEY_ITEMS: String = "items"
+
+private fun JsonObject.typeName(): String? =
+    (this[KEY_TYPE] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+/** Тип элементов массива, если он объявлен: у `command` это `string`. */
+private fun JsonObject.itemsTypeName(): String? = (this[KEY_ITEMS] as? JsonObject)?.typeName()
 
 /** Слово для ожидаемого типа — то, что модель прочитает первой. */
 private fun word(type: String?): String = when (type) {
