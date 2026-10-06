@@ -6,6 +6,9 @@ import dev.aide.host.git.ChangedFile
 import dev.aide.host.git.CommitInfo
 import dev.aide.host.git.GitRepository
 import dev.aide.host.git.SnapshotOutcome
+import dev.aide.host.git.StashOutcome
+import dev.aide.host.git.StashRepository
+import dev.aide.host.git.StashReturnOutcome
 import dev.aide.host.git.TaskBranchOutcome
 import dev.aide.host.git.TaskBranchRefusal
 import dev.aide.host.server.ClientMessageHandler
@@ -179,6 +182,13 @@ class TaskBranchGuardTest {
         override fun snapshotRefs(): List<String> = emptyList()
 
         override fun deleteSnapshots(refs: List<String>) = Unit
+
+        override val workStash: StashRepository = object : StashRepository {
+            override fun stashEdits(ref: String, message: String): StashOutcome = StashOutcome.Nothing
+
+            override fun returnStashEdits(ref: String, branch: String?): StashReturnOutcome =
+                StashReturnOutcome.Returned
+        }
 
         override fun close() = Unit
 

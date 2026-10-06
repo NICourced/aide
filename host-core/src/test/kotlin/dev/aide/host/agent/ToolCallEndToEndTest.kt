@@ -132,6 +132,10 @@ class ToolCallEndToEndTest {
         // без коммитов ответвлять не от чего — прогон отказался бы до первого чтения.
         val repo = GitCliFixture.createRepo(Files.createTempDirectory("aide-tools-repo"))
         repo.resolve(name).writeText(content)
+        // Файл коммитится: прогон начинается с чистого дерева (T-1.59), и незакоммиченный
+        // новый файл уехал бы в отложенные правки, а не достался агенту.
+        GitCliFixture.run(listOf("git", "add", name), repo)
+        GitCliFixture.run(listOf("git", "commit", "-m", "файл для чтения"), repo)
         return repo
     }
 

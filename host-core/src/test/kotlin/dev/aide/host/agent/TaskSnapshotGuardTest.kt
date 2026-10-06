@@ -14,6 +14,9 @@ import dev.aide.host.git.GitCliFixture
 import dev.aide.host.git.GitRepository
 import dev.aide.host.git.JGitRepository
 import dev.aide.host.git.SnapshotOutcome
+import dev.aide.host.git.StashOutcome
+import dev.aide.host.git.StashRepository
+import dev.aide.host.git.StashReturnOutcome
 import dev.aide.host.git.TaskBranchOutcome
 import dev.aide.host.git.snapshotRefName
 import dev.aide.host.store.HostStore
@@ -229,6 +232,13 @@ class TaskSnapshotGuardTest {
         override fun snapshotRefs(): List<String> = emptyList()
 
         override fun deleteSnapshots(refs: List<String>) = Unit
+
+        override val workStash: StashRepository = object : StashRepository {
+            override fun stashEdits(ref: String, message: String): StashOutcome = StashOutcome.Nothing
+
+            override fun returnStashEdits(ref: String, branch: String?): StashReturnOutcome =
+                StashReturnOutcome.Returned
+        }
 
         override fun close() = Unit
     }

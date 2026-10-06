@@ -20,13 +20,18 @@ import kotlinx.datetime.Instant
 @OptIn(ExperimentalTestApi::class)
 class TaskStatusLineTest {
 
-    private fun task(status: TaskStatus, reason: String? = null): Task = Task(
+    private fun task(
+        status: TaskStatus,
+        reason: String? = null,
+        stashRef: String? = null,
+    ): Task = Task(
         id = TaskId("t-1"),
         title = "Авторизация",
         prompt = "Почини сборку",
         branch = "ai/t-1",
         status = status,
         failureReason = reason,
+        stashRef = stashRef,
         createdAt = Instant.fromEpochMilliseconds(0),
     )
 
@@ -64,5 +69,28 @@ class TaskStatusLineTest {
         setContent { TaskStatusLine(task = task(TaskStatus.FAILED, "неведомая_причина")) }
 
         onNodeWithText("Причина неизвестна, подробности — в журнале хоста").assertIsDisplayed()
+    }
+
+    @Test
+    fun `отложенные правки видны, пока не вернулись`() = runComposeUiTest {
+        setContent { TaskStatusLine(task = task(TaskStatus.RUNNING, stashRef = "refs/ai/stash/t-1")) }
+
+        onNodeWithText("Правки отложены и ждут возврата").assertIsDisplayed()
+    }
+
+    @Test
+    fun `без отложенного ссылки на правки нет`() = runComposeUiTest {
+        setContent { TaskStatusLine(task = task(TaskStatus.RUNNING)) }
+
+        onNodeWithText("Правки отложены и ждут возврата").assertDoesNotExist()
+    }
+
+    @Test
+    fun `конфликт возврата объясняется вместе с признаком отложенного`() = runComposeUiTest {
+        setContent { TaskStatusLine(task = task(TaskStatus.FAILED, "stash_conflict", stashRef = "refs/ai/stash/t-1")) }
+
+        onNodeWithText("Возврат правок конфликтует с работой агента: правки сохранены и ждут разбора")
+            .assertIsDisplayed()
+        onNodeWithText("Правки отложены и ждут возврата").assertIsDisplayed()
     }
 }

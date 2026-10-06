@@ -137,8 +137,12 @@ import dev.aide.client.ui.resources.task_failure_missing_key
 import dev.aide.client.ui.resources.task_failure_rate_limited
 import dev.aide.client.ui.resources.task_failure_request_failed
 import dev.aide.client.ui.resources.task_failure_response_unreadable
+import dev.aide.client.ui.resources.task_failure_stash_conflict
+import dev.aide.client.ui.resources.task_failure_stash_failed
+import dev.aide.client.ui.resources.task_failure_stash_return_failed
 import dev.aide.client.ui.resources.task_failure_unauthorized
 import dev.aide.client.ui.resources.task_failure_unsupported
+import dev.aide.client.ui.resources.task_stash_pending
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -289,6 +293,10 @@ object Strings {
     val taskFailureRateLimited: StringResource = Res.string.task_failure_rate_limited
     val taskFailureRequestFailed: StringResource = Res.string.task_failure_request_failed
     val taskFailureResponseUnreadable: StringResource = Res.string.task_failure_response_unreadable
+    val taskFailureStashConflict: StringResource = Res.string.task_failure_stash_conflict
+    val taskFailureStashReturnFailed: StringResource = Res.string.task_failure_stash_return_failed
+    val taskFailureStashFailed: StringResource = Res.string.task_failure_stash_failed
+    val taskStashPending: StringResource = Res.string.task_stash_pending
 
     val connectionConnecting: StringResource = Res.string.connection_connecting
     val connectionReconnecting: StringResource = Res.string.connection_reconnecting

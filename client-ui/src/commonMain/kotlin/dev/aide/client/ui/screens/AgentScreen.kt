@@ -90,7 +90,7 @@ fun RunStateLine(run: AgentRun?, modifier: Modifier = Modifier) {
     Text(text, modifier = modifier.testTag("run-state"), style = MaterialTheme.typography.bodyLarge)
 }
 
-/** Строка задачи: статус и, при отказе, причина (T-1.1). */
+/** Строка задачи: статус, причина отказа и признак отложенных правок (T-1.1, T-1.59). */
 @Composable
 fun TaskStatusLine(task: Task?, modifier: Modifier = Modifier) {
     Column(modifier = modifier.testTag("task-status")) {
@@ -106,6 +106,11 @@ fun TaskStatusLine(task: Task?, modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
+        }
+        // Пока ссылка на отложенное непуста, правки человека лежат в стороне и ждут возврата.
+        // Признак едет в самой задаче, поэтому отдельного сообщения протокола не нужно (T-1.59).
+        if (task != null && task.stashRef != null) {
+            Text(Strings.text(Strings.taskStashPending), style = MaterialTheme.typography.bodySmall)
         }
     }
 }

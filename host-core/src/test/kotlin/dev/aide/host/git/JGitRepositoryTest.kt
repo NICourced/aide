@@ -8,6 +8,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import org.eclipse.jgit.lib.RefUpdate
@@ -23,6 +24,9 @@ private const val SNAPSHOT_MILLIS = 1_758_535_200_000L
 
 /** Повод снапшота в имени ссылки. */
 private const val LABEL = "before-agent-step"
+
+/** Ссылка на отложенные правки пользователя из соглашения T-1.59. */
+private const val STASH_REF = "refs/ai/stash/t-1"
 
 class JGitRepositoryTest {
 
@@ -424,6 +428,108 @@ class JGitRepositoryTest {
             assertFailsWith<GitAccessException>("исход $result означает, что ссылка могла остаться") {
                 requireDeleted(ref, result)
             }
+        }
+    }
+
+    @Test
+    fun `правки откладываются целиком, включая новые файлы`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        val head = GitCliFixture.headHash(root)
+
+        JGitRepository.open(root).use { repository ->
+            val outcome = assertIs<StashOutcome.Stashed>(repository.workStash.stashEdits(STASH_REF, "ai/t-1"))
+
+            assertEquals(STASH_REF, outcome.ref)
+            assertEquals("master", outcome.branch, "правки были на текущей ветке — её и надо запомнить")
+            assertTrue(GitCliFixture.porcelainLines(root).isEmpty(), "дерево обязано стать чистым")
+            assertEquals(
+                "fun login() = Unit\n",
+                Files.readString(root.resolve("src/Login.kt")),
+                "правка человека уехала в сторону, а не осталась в дереве",
+            )
+            assertFalse(Files.exists(root.resolve("src/New.kt")), "новый файл — такая же правка человека")
+            assertEquals(head, GitCliFixture.headHash(root), "HEAD не сдвинулся")
+            assertEquals(listOf(STASH_REF), GitCliFixture.refNames(root, STASH_REF_PREFIX), "отложенное — ссылка")
+        }
+    }
+
+    @Test
+    fun `чистое дерево — откладывать нечего`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        // Правки фикстуры принимаются коммитом: дерево становится чистым, откладывать нечего.
+        GitCliFixture.run(listOf("git", "add", "-A"), root)
+        GitCliFixture.run(listOf("git", "commit", "-m", "правки приняты"), root)
+
+        JGitRepository.open(root).use { repository ->
+            assertEquals(StashOutcome.Nothing, repository.workStash.stashEdits(STASH_REF, "ai/t-1"))
+            assertTrue(GitCliFixture.refNames(root, STASH_REF_PREFIX).isEmpty(), "лишней ссылки не появилось")
+        }
+    }
+
+    @Test
+    fun `репозиторий без коммитов правки не откладывает`() {
+        val root = GitCliFixture.createEmptyRepo(tempDir("aide-git-empty-"))
+        Files.writeString(root.resolve("New.kt"), "class New\n")
+
+        JGitRepository.open(root).use { repository ->
+            // Ссылаться не на что: откладывать некуда, и файл остаётся на месте — прогон
+            // дальше сам откажет по ветке (`NO_COMMITS`), но правки не пропадут.
+            assertEquals(StashOutcome.Nothing, repository.workStash.stashEdits(STASH_REF, "ai/t-1"))
+            assertTrue(Files.exists(root.resolve("New.kt")))
+        }
+    }
+
+    @Test
+    fun `возврат ставит правки на прежнюю ветку и убирает ссылку`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+
+        JGitRepository.open(root).use { repository ->
+            repository.workStash.stashEdits(STASH_REF, "ai/t-1")
+            // Ветка задачи: агент работает в ней, дерево при этом чистое.
+            repository.ensureTaskBranch(TASK_BRANCH)
+            assertTrue(GitCliFixture.porcelainLines(root).isEmpty())
+
+            assertEquals(StashReturnOutcome.Returned, repository.workStash.returnStashEdits(STASH_REF, "master"))
+
+            assertEquals("master", repository.currentBranch(), "правки вернулись туда, где были")
+            assertEquals(listOf(" M src/Login.kt", "?? src/New.kt"), GitCliFixture.porcelainLines(root))
+            assertEquals("fun login() = \"token\"\n", Files.readString(root.resolve("src/Login.kt")))
+            assertTrue(GitCliFixture.refNames(root, STASH_REF_PREFIX).isEmpty(), "ссылка убрана после успеха")
+        }
+    }
+
+    @Test
+    fun `конфликт возврата сохраняет отложенное и оставляет метки конфликта`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+
+        JGitRepository.open(root).use { repository ->
+            repository.workStash.stashEdits(STASH_REF, "ai/t-1")
+            repository.ensureTaskBranch(TASK_BRANCH)
+            // Агент правит тот же файл, что и человек: возврат на ветку задачи конфликтует.
+            Files.writeString(root.resolve("src/Login.kt"), "fun login() = \"agent\"\n")
+            GitCliFixture.run(listOf("git", "add", "src/Login.kt"), root)
+            GitCliFixture.run(listOf("git", "commit", "-m", "шаг агента"), root)
+
+            assertEquals(StashReturnOutcome.Conflict, repository.workStash.returnStashEdits(STASH_REF, TASK_BRANCH))
+
+            assertEquals(
+                listOf(STASH_REF),
+                GitCliFixture.refNames(root, STASH_REF_PREFIX),
+                "при конфликте отложенное не теряется: ссылка остаётся",
+            )
+            val content = Files.readString(root.resolve("src/Login.kt"))
+            assertTrue(content.contains("<<<<<<<"), "конфликт показан метками, а не проглочен")
+            assertTrue(content.contains("\"token\""), "правка человека в конфликте присутствует")
+        }
+    }
+
+    @Test
+    fun `возврат без ссылки — отказ, а не тихий успех`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+
+        JGitRepository.open(root).use { repository ->
+            // Ссылки нет: отложенное потеряно, и молчать об этом нельзя.
+            assertEquals(StashReturnOutcome.Refused, repository.workStash.returnStashEdits(STASH_REF, "master"))
         }
     }
 

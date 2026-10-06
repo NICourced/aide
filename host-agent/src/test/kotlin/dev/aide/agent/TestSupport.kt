@@ -6,10 +6,13 @@ import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RunRepository
 import dev.aide.agent.ports.Snapshots
+import dev.aide.agent.ports.StashReturn
 import dev.aide.agent.ports.TaskBranch
 import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.ports.TaskRepository
 import dev.aide.agent.ports.TaskSnapshot
+import dev.aide.agent.ports.TaskStash
+import dev.aide.agent.ports.WorkStash
 import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.agent.provider.ModelProvider
 import dev.aide.agent.provider.ModelUnavailableException
@@ -149,6 +152,49 @@ val branchAlreadyExists: TaskBranches = TaskBranches { TaskBranch.Existing }
 
 /** Порт снапшотов, отвечающий «коммитов нет»: тестам без T-1.19 важно лишь, что прогон идёт без снапшота. */
 val noSnapshots: Snapshots = Snapshots { TaskSnapshot.NoHead }
+
+/** Порт отложенных правок, отвечающий «откладывать нечего»: тестам без T-1.59 важен лишь ход прогона. */
+val noWorkStash: WorkStash = object : WorkStash {
+    override suspend fun stash(taskId: TaskId): TaskStash = TaskStash.Nothing
+
+    override suspend fun restore(ref: String, branch: String?): StashReturn = StashReturn.Returned
+}
+
+/**
+ * Порт отложенных правок в тестах (T-1.59): запоминает, что и когда у него спросили.
+ *
+ * По умолчанию «откладывать нечего» и «правки вернулись»: так прогон идёт как раньше,
+ * а конкретный исход задаёт тест.
+ */
+class FakeWorkStash(
+    private var stashOutcome: TaskStash = TaskStash.Nothing,
+    private var restoreOutcome: StashReturn = StashReturn.Returned,
+) : WorkStash {
+
+    /** Задачи, правки которых просили отложить, в порядке обращений. */
+    val stashed = mutableListOf<TaskId>()
+
+    /** Ссылки и ветки, которые просили вернуть, в порядке обращений. */
+    val restored = mutableListOf<Pair<String, String?>>()
+
+    fun answerStash(outcome: TaskStash) {
+        stashOutcome = outcome
+    }
+
+    fun answerRestore(outcome: StashReturn) {
+        restoreOutcome = outcome
+    }
+
+    override suspend fun stash(taskId: TaskId): TaskStash {
+        stashed += taskId
+        return stashOutcome
+    }
+
+    override suspend fun restore(ref: String, branch: String?): StashReturn {
+        restored += ref to branch
+        return restoreOutcome
+    }
+}
 
 /** Прогон с заданным состоянием; незавершённые — без `finishedAt`. */
 fun testRun(id: String, state: RunState, finishedAt: Instant? = null): AgentRun = AgentRun(

@@ -5,7 +5,9 @@ import dev.aide.protocol.ProtocolError
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.exists
+import kotlinx.coroutines.CancellationException
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.api.errors.StashApplyFailureException
 import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.RenameDetector
 import org.eclipse.jgit.lib.Constants
@@ -33,6 +35,8 @@ class JGitRepository private constructor(
     private val taskBranches = TaskBranchOperation(repository, git)
 
     private val snapshots = SnapshotOperation(repository)
+
+    override val workStash: StashRepository = StashOperation(repository, git)
 
     override fun currentBranch(): String = repository.branch ?: DETACHED_HEAD
 
@@ -261,8 +265,12 @@ private class SnapshotOperation(private val repository: Repository) {
         } else {
             refused(ref, "исход ${result.name}")
         }
+    } catch (cancel: CancellationException) {
+        // Отмена — не «снапшот не поставлен»: если внутри появятся suspend-вызовы, отменённая
+        // корутина обязана остаться отменённой (STOPPED), а не превратиться в отказ прогона.
+        throw cancel
     } catch (error: Exception) {
-        refused(ref, error.message.orEmpty())
+        refused(ref, error.message.orEmpty(), error)
     }
 
     /** Ссылки снапшотов, от старых к новым: метка времени в имени сортируется как число. */
@@ -277,29 +285,43 @@ private class SnapshotOperation(private val repository: Repository) {
     /**
      * Удаляет ссылки; коммиты остаются в истории — снапшот это ссылка, а не ветка.
      *
-     * Исход удаления проверяется [requireDeleted]: `RefUpdate.delete()` сообщает о неудаче
-     * значением, и без проверки неудачное удаление выглядело бы успехом — ссылки копились бы,
-     * а лимит соблюдался бы только на бумаге.
+     * Неудача на одной ссылке не прекращает уборку остальных: первый же сбой иначе оставлял бы
+     * хвост неудалённых ссылок, и лимит соблюдался бы только на бумаге. Причины собираются
+     * и бросаются после обхода — вызывающий видит, что уборка прошла не полностью.
      */
     fun delete(refs: List<String>) {
-        refs.forEach(::deleteOne)
+        val failed = mutableListOf<String>()
+        refs.forEach { ref ->
+            runCatching { deleteOne(ref) }.onFailure { error ->
+                if (error is CancellationException) throw error
+                logger.warn("Снапшот $ref не удалён: ${error.message}", error)
+                failed += ref
+            }
+        }
+        if (failed.isNotEmpty()) {
+            throw GitAccessException(
+                ProtocolError.Internal("не удалось удалить снапшоты", failed.joinToString()),
+            )
+        }
     }
 
-    /** Удаляет одну ссылку; неудачный исход — отказ с диагностикой в журнале, а не тишина. */
+    /** Удаляет одну ссылку; неудачный исход — [GitAccessException] наружу, а не тишина. */
     @Suppress("TooGenericExceptionCaught")
     private fun deleteOne(ref: String) {
         val result = runCatching {
             repository.updateRef(ref).apply { isForceUpdate = true }.delete()
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
             throw GitAccessException(ProtocolError.Internal("не удалось удалить снапшот $ref", error.message))
         }
-        if (!result.isDeleted()) logger.warn("Снапшот $ref не удалён: исход ${result.name}")
         requireDeleted(ref, result)
     }
 
     /** Отказ постановки снапшота: причина — в журнал, наружу — значение-отказ. */
-    private fun refused(ref: String, detail: String): SnapshotOutcome {
-        logger.warn("Снапшот $ref не поставлен: $detail")
+    private fun refused(ref: String, detail: String, cause: Throwable? = null): SnapshotOutcome {
+        // Причина с исключением: без него стек теряется, и разбирать сбой нечем.
+        if (cause == null) logger.warn("Снапшот $ref не поставлен: $detail")
+        else logger.warn("Снапшот $ref не поставлен: $detail", cause)
         return SnapshotOutcome.Refused
     }
 
@@ -310,6 +332,101 @@ private class SnapshotOperation(private val repository: Repository) {
     private companion object {
         /** Исходы записи ссылки, означающие, что она записана; остальные — отказ. */
         val WRITTEN = setOf(RefUpdate.Result.NEW, RefUpdate.Result.FORCED, RefUpdate.Result.NO_CHANGE)
+    }
+}
+
+/**
+ * Отложенные правки пользователя в отдельной ссылке (T-1.59).
+ *
+ * Отдельный класс от [TaskBranchOperation] и [SnapshotOperation]: он один двигает рабочее
+ * дерево и индекс (убирая правки из дерева и возвращая их), поэтому и предпроверки у него
+ * свои — «откладывать нечего» и «ссылки на отложенное нет». Ссылка `refs/ai/stash/<task-id>`
+ * лежит вне `refs/stash`: отложенное принадлежит задаче, а стек stash пользователя не трогается.
+ */
+private class StashOperation(private val repository: Repository, private val git: Git) : StashRepository {
+
+    private val logger = LoggerFactory.getLogger(StashOperation::class.java)
+
+    /**
+     * Откладывает правки в ссылку [ref]; рабочее дерево после этого совпадает с HEAD.
+     *
+     * Без коммитов ссылаться не на что, а откладывать в никуда нельзя — возвращается
+     * [StashOutcome.Nothing], и прогон дальше сам откажет по ветке (`NO_COMMITS`).
+     * Чистое дерево — тоже [StashOutcome.Nothing]: откладывать нечего.
+     */
+    override fun stashEdits(ref: String, message: String): StashOutcome {
+        if (runCatching { repository.resolve(Constants.HEAD) }.getOrNull() == null) {
+            return StashOutcome.Nothing
+        }
+        return if (hasLocalChanges()) attempt(ref, message) else StashOutcome.Nothing
+    }
+
+    /**
+     * Возвращает правки [ref] на ветку [branch] (null — остаться там, где стоим).
+     *
+     * Ссылка не найдена — отказ, а не успех: отложенное потеряно, и молчать об этом нельзя.
+     * Конфликт с работой агента — [StashReturnOutcome.Conflict]: дерево остаётся с метками
+     * конфликта, а ссылка — на месте, чтобы правки человека не пропали (§ 8.3, NFR-SAFE-2).
+     */
+    override fun returnStashEdits(ref: String, branch: String?): StashReturnOutcome {
+        if (runCatching { repository.exactRef(ref) }.getOrNull() == null) {
+            logger.warn("Отложенные правки не возвращены: ссылки $ref нет")
+            return StashReturnOutcome.Refused
+        }
+        return attemptReturn(ref, branch)
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun attempt(ref: String, message: String): StashOutcome = try {
+        val commit = git.stashCreate()
+            .setIncludeUntracked(true)
+            .setRef(ref)
+            .setWorkingDirectoryMessage(message)
+            .call()
+        // null — откладывать оказалось нечего: так JGit сообщает о пустом наборе изменений.
+        if (commit == null) StashOutcome.Nothing else StashOutcome.Stashed(ref, repository.branch)
+    } catch (cancel: CancellationException) {
+        throw cancel
+    } catch (error: Exception) {
+        logger.warn("Правки не отложены в $ref: ${error.message}", error)
+        StashOutcome.Refused
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun attemptReturn(ref: String, branch: String?): StashReturnOutcome = try {
+        if (branch != null) git.checkout().setName(branch).call()
+        git.stashApply().setStashRef(ref).setRestoreUntracked(true).call()
+        // Ссылка убирается только после успешного возврата: при конфликте она — единственная
+        // копия правок, и удалить её значит их потерять.
+        drop(ref)
+        StashReturnOutcome.Returned
+    } catch (error: StashApplyFailureException) {
+        logger.warn("Возврат отложенных правок конфликтует с работой агента ($ref)", error)
+        StashReturnOutcome.Conflict
+    } catch (cancel: CancellationException) {
+        throw cancel
+    } catch (error: Exception) {
+        logger.warn("Отложенные правки не возвращены ($ref): ${error.message}", error)
+        StashReturnOutcome.Refused
+    }
+
+    /** Убирает ссылку отложенного после успешного возврата; неудачный исход — отказ. */
+    private fun drop(ref: String) {
+        val result = repository.updateRef(ref).apply { isForceUpdate = true }.delete()
+        requireDeleted(ref, result)
+    }
+
+    /** Есть ли что откладывать: изменённые, новые, удалённые и конфликтные файлы рабочего дерева. */
+    private fun hasLocalChanges(): Boolean = git.status().call().let { status ->
+        listOf(
+            status.added,
+            status.changed,
+            status.modified,
+            status.removed,
+            status.missing,
+            status.conflicting,
+            status.untracked,
+        ).any { it.isNotEmpty() }
     }
 }
 

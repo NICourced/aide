@@ -12,6 +12,7 @@ import dev.aide.agent.ports.RepositoryPorts
 import dev.aide.agent.ports.RunPorts
 import dev.aide.agent.ports.Snapshots
 import dev.aide.agent.ports.TaskBranches
+import dev.aide.agent.ports.WorkStash
 import dev.aide.agent.provider.SecretStore
 import dev.aide.agent.tools.StepTools
 import dev.aide.host.agent.AgentConfigHandler
@@ -20,11 +21,13 @@ import dev.aide.host.agent.ClientMessageRouter
 import dev.aide.host.agent.ModelSecretHandler
 import dev.aide.host.agent.RunWorker
 import dev.aide.host.agent.ServerRunEventSink
+import dev.aide.host.agent.StashRecovery
 import dev.aide.host.agent.StoreRunRepository
 import dev.aide.host.agent.StoreTaskRepository
 import dev.aide.host.agent.StoreToolCallRecorder
 import dev.aide.host.agent.TaskBranchGuard
 import dev.aide.host.agent.TaskSnapshotGuard
+import dev.aide.host.agent.WorkStashGuard
 import dev.aide.host.config.AgentConfigStore
 import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ClientSessions
@@ -111,7 +114,11 @@ object HostApp {
         // Открытые воркспейсы — одна точка правды и для обработчика клиента, и для
         // инструментов агента: воркспейс открывает клиент, а читает его агент (T-1.7).
         single { OpenWorkspaces() }
-        single { StageZeroHandler(mode = get(modeQualifier), workspaces = get()) }
+        single { StageZeroHandler(mode = get(modeQualifier), workspaces = get(), onWorkspaceOpened = {
+            // Возврат отложенных правок после падения хоста (T-1.59): репозиторий открыт лишь
+            // сейчас, и вернуть правки можно только в него.
+            get<StashRecovery>().afterRestart()
+        }) }
         // Ветка задачи: реализация порта объявлена по типу интерфейса, иначе Koin
         // разрешал бы её по точному имени класса и не нашёл бы движку (T-1.18).
         single<TaskBranches> { TaskBranchGuard(workspaces = get(), sessions = get()) }
@@ -119,6 +126,9 @@ object HostApp {
         // Koin разрешает по точному ключу типа (T-1.19). Защита «в использовании» берётся
         // из хранилища: какие снапшоты нужны незакрытым задачам, знает только хост.
         single<Snapshots> { TaskSnapshotGuard(workspaces = get(), store = get()) }
+        // Отложенные правки: реализация — поверх открытого воркспейса (T-1.59).
+        single<WorkStash> { WorkStashGuard(workspaces = get(), sessions = get()) }
+        single { StashRecovery(stashes = get(), store = get(), events = ServerRunEventSink(get())) }
         single {
             // Реестр и точка вызова собираются из одного экземпляра реестра: определения
             // инструментов у модели и их выполнение обязаны быть про один и тот же набор,
@@ -145,7 +155,7 @@ object HostApp {
                 models = models,
                 planner = planner,
                 tools = get(),
-                repositories = RepositoryPorts(branches = get(), snapshots = get()),
+                repositories = RepositoryPorts(branches = get(), snapshots = get(), workStash = get()),
             )
         }
         single {

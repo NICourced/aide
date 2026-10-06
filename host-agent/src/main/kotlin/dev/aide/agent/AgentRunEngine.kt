@@ -96,11 +96,12 @@ private fun reasonOf(error: Throwable): String = when (error) {
  * работает выбранным клиентом. Поэтому смена модели в настройках не меняет правила
  * идущего прогона (FR-AGENT-5), а отказ выбора — обычное состояние с кодом причины.
  *
- * Ветку задачи и снапшот движок получает из [RepositoryPorts]. Ветка ставится в начале
- * прогона и до планирования (T-1.18): планирование читает репозиторий, и читать его надо
- * уже в той ветке, где агент будет работать. Снапшот ставится там же (T-1.19) — это точка
- * отсчёта для отката; пустой репозиторий снапшота не даёт, и это не мешает прогону:
- * без коммитов читать и планировать можно.
+ * Ветку задачи, снапшот и отложенные правки движок получает из [RepositoryPorts]. Незакоммиченные
+ * правки человека откладываются до `checkout` (T-1.59), затем ставится ветка задачи и до
+ * планирования (T-1.18): планирование читает репозиторий, и читать его надо уже в той ветке,
+ * где агент будет работать. Снапшот ставится там же (T-1.19) — это точка отсчёта для отката;
+ * пустой репозиторий снапшота не даёт, и это не мешает прогону: без коммитов читать и планировать
+ * можно. После прогона, каким бы исходом он ни завершился, правки возвращаются на свою ветку.
  *
  * @param clock источник времени; подменяется в тестах.
  */
@@ -119,6 +120,7 @@ class AgentRunEngine(
     private val writer = RunStateWriter(ports.runs, ports.tasks, ports.events, clock, Mutex())
     private val placement = TaskBranchPlacement(repositories.branches, writer)
     private val runSnapshots = RunSnapshots(repositories.snapshots, writer)
+    private val workStash = TaskWorkStash(repositories.workStash, ports.tasks, writer)
     private val controls = ConcurrentHashMap<RunId, RunControl>()
     private val pendingModes = ConcurrentHashMap<TaskId, AutonomyMode>()
 
@@ -164,15 +166,16 @@ class AgentRunEngine(
     }
 
     /**
-     * Ведёт одну задачу: статус, выбор модели, ветка задачи, план, прогон.
+     * Ведёт одну задачу: статус, выбор модели, отложенные правки, ветка, план, прогон.
      *
      * Модель выбирается до планирования: прогон создаётся, когда план готов (решение 2),
      * и алиас модели обязан попасть в уже созданный прогон. Отказ на любом из шагов
      * виден на задаче, потому что прогона в этот момент ещё не существует.
      *
-     * Порядок «модель, потом ветка» осознан: если прогон не может начаться из-за
-     * выбранной модели, репозиторий пользователя не переключается — незачем менять
-     * его состояние ради прогона, которого не будет.
+     * Порядок «модель, потом правки, потом ветка» осознан: если прогон не может начаться
+     * из-за выбранной модели, репозиторий пользователя не переключается — незачем менять
+     * его состояние ради прогона, которого не будет. Правки откладываются до `checkout`
+     * ветки задачи, а возвращаются в [finally] — после любого исхода прогона (T-1.59).
      */
     private suspend fun executeOrFail(task: Task) {
         val running = task.copy(status = TaskStatus.RUNNING)
@@ -181,12 +184,18 @@ class AgentRunEngine(
         // оставаться в памяти до конца жизни хоста.
         val mode = pendingModes.remove(task.id) ?: DEFAULT_MODE
         val model = modelOrFail(task)
-        if (model != null) {
-            val placed = placement.place(running)
-            if (placed != null) {
-                val plan = planOrFail(placed, model)
-                if (plan != null) executeRun(placed, plan, mode, model)
-            }
+        // Откладывать правки незачем, если прогон всё равно не начнётся: порядок «модель,
+        // потом правки» не трогает репозиторий ради прогона, которого не будет.
+        val stashed = if (model == null) null else workStash.beforeRun(running)
+        if (model == null || stashed == null) return
+        try {
+            val placed = placement.place(stashed)
+            val plan = if (placed == null) null else planOrFail(placed, model)
+            if (placed != null && plan != null) executeRun(placed, plan, mode, model)
+        } finally {
+            // Возврат в NonCancellable: остановка и отмена хоста не должны оставить правки
+            // отложенными, иначе для человека прогон выглядит как их потеря (T-1.59).
+            withContext(NonCancellable) { workStash.afterRun(task.id) }
         }
     }
 

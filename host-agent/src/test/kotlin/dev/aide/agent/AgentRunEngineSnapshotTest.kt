@@ -35,7 +35,7 @@ class AgentRunEngineSnapshotTest {
         models = fixedModel(textModel()),
         planner = RunPlanner { _, _ -> plan("шаг") },
         tools = tools,
-        repositories = RepositoryPorts(branchAlreadyExists, snapshots),
+        repositories = RepositoryPorts(branchAlreadyExists, snapshots, noWorkStash),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
 

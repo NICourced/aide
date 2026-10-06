@@ -58,12 +58,29 @@ fun taskFailureResource(reason: String?): StringResource = when (reason) {
     ModelFailureCode.RATE_LIMITED -> Strings.taskFailureRateLimited
     ModelFailureCode.REQUEST_FAILED -> Strings.taskFailureRequestFailed
     ModelFailureCode.RESPONSE_UNREADABLE -> Strings.taskFailureResponseUnreadable
+    else -> codedFailureResource(reason)
+}
+
+/**
+ * Текст причины по коду-строке, а не по коду провайдера.
+ *
+ * Отдельная функция, потому что кодов-строк становится больше, и одна большая `when`
+ * перешагнула бы порог сложности линтера. Порядок разбора не важен: множества кодов
+ * не пересекаются, поэтому проверки идут в произвольном порядке.
+ */
+private fun codedFailureResource(reason: String?): StringResource = when (reason) {
     PLAN_UNREADABLE -> Strings.taskFailurePlanUnreadable
     USER_STOP -> Strings.taskFailureUserStop
     HOST_RESTART -> Strings.taskFailureHostRestart
+    STASH_CONFLICT -> Strings.taskFailureStashConflict
+    STASH_RETURN_FAILED -> Strings.taskFailureStashReturnFailed
+    STASH_FAILED -> Strings.taskFailureStashFailed
     else -> Strings.taskFailureGeneric
 }
 
 private const val PLAN_UNREADABLE = "plan_unreadable"
 private const val USER_STOP = "user_stop"
 private const val HOST_RESTART = "host_restart"
+private const val STASH_CONFLICT = "stash_conflict"
+private const val STASH_RETURN_FAILED = "stash_return_failed"
+private const val STASH_FAILED = "stash_failed"

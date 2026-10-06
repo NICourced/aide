@@ -272,10 +272,11 @@ class AgentRunProtocolTest {
     }
 
     @Test
-    fun `прогон идёт в ветке задачи, и клиент видит её в состоянии хоста`() = runBlocking {
+    fun `прогон идёт в ветке задачи, а после него дерево возвращается на базовую`() = runBlocking {
+        val model = GateModel()
         val host = EmbeddedHost.open(
             databasePath = tempDatabase(),
-            models = scripted(TextModel()),
+            models = scripted(model),
             planner = fixedPlanner(1),
         )
         try {
@@ -284,19 +285,25 @@ class AgentRunProtocolTest {
             awaitConnected(connection)
             openRepository(client)
 
-            // Открытие репозитория состояние обновило: дальше клиент не спрашивает хост сам,
-            // и ветку задачи он обязан увидеть потому, что хост разослал событие о смене
-            // воркспейса после переключения (T-1.18).
             assertEquals("master", awaitBranch(client, "master"), "состояние открытого репозитория доходит до клиента")
             val headBefore = headOfRepo()
 
             val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
-            assertNotNull(awaitRun(client) { it.state == RunState.FINISHED }, "прогон обязан завершиться")
             val taskBranch = "ai/${taskId.value}"
 
+            // Модель ждёт разрешения, то есть прогон ещё идёт: ветка задачи видна в шапке
+            // потому, что хост разослал событие о смене воркспейса после переключения (T-1.18).
             assertEquals(taskBranch, awaitBranch(client, taskBranch), "шапка обязана показать ветку задачи")
-            assertEquals(taskBranch, GitCliFixture.currentBranch(repo.root), "репозиторий остался в ветке задачи")
+            assertEquals(taskBranch, GitCliFixture.currentBranch(repo.root), "прогон идёт в ветке задачи")
+            model.release()
+            assertNotNull(awaitRun(client) { it.state == RunState.FINISHED }, "прогон обязан завершиться")
+
+            // T-1.59: дерево возвращается на ветку пользователя вместе с его правками, и шапка
+            // узнаёт об этом из события — иначе она осталась бы на ветке агента.
+            assertEquals("master", awaitBranch(client, "master"), "шапка видит возврат на базовую ветку")
+            assertEquals("master", GitCliFixture.currentBranch(repo.root), "репозиторий вернулся на базовую ветку")
             assertEquals(headBefore, headOfRepo(), "ветка создана от HEAD: сам HEAD не сдвинулся")
+            assertTrue(refOf(taskBranch).isNotEmpty(), "ветка задачи осталась в репозитории")
             assertEquals(
                 "master",
                 assertNotNull(awaitTask(client) { it.id == taskId }).baseBranch,
@@ -322,7 +329,8 @@ class AgentRunProtocolTest {
             openRepository(client)
             val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
             assertNotNull(awaitRun(client) { it.state == RunState.FINISHED })
-            assertEquals("ai/${taskId.value}", awaitBranch(client, "ai/${taskId.value}"))
+            // T-1.59: после прогона дерево вернулось на базовую ветку, а ветка задачи осталась.
+            assertEquals("master", awaitBranch(client, "master"))
             taskId to refOf("ai/${taskId.value}")
         } finally {
             firstHost.close()
@@ -346,7 +354,7 @@ class AgentRunProtocolTest {
             val restored = client.session.value.tasks.single { it.id == taskId }
             assertEquals("ai/${taskId.value}", restored.branch)
             assertEquals("master", restored.baseBranch, "записанная база переживает перезапуск хоста")
-            assertEquals("ai/${taskId.value}", awaitBranch(client, "ai/${taskId.value}"))
+            assertEquals("master", awaitBranch(client, "master"), "перезапуск не оставляет дерево в ветке агента")
             assertEquals(refBeforeRestart, refOf("ai/${taskId.value}"), "ref ветки не пересоздан")
         } finally {
             secondHost.close()

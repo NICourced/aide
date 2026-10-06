@@ -12,10 +12,13 @@ import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RepositoryPorts
 import dev.aide.agent.ports.RunRepository
 import dev.aide.agent.ports.Snapshots
+import dev.aide.agent.ports.StashReturn
 import dev.aide.agent.ports.TaskBranch
 import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.ports.TaskRepository
 import dev.aide.agent.ports.TaskSnapshot
+import dev.aide.agent.ports.TaskStash
+import dev.aide.agent.ports.WorkStash
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
@@ -100,9 +103,15 @@ class RunWorkerTest {
         tools = testStepTools(),
         // Ветка в этом тесте ни при чём: проверяется предохранитель воркера, а не T-1.18.
         // Снапшот тоже ни при чём: «коммитов нет» — самый дешёвый исход порта (T-1.19).
+        // Откладывать нечего: правки пользователя тут не предмет проверки (T-1.59).
         repositories = RepositoryPorts(
             branches = TaskBranches { TaskBranch.Existing },
             snapshots = Snapshots { TaskSnapshot.NoHead },
+            workStash = object : WorkStash {
+                override suspend fun stash(taskId: TaskId): TaskStash = TaskStash.Nothing
+
+                override suspend fun restore(ref: String, branch: String?): StashReturn = StashReturn.Returned
+            },
         ),
         clock = { Instant.fromEpochMilliseconds(1) },
     )

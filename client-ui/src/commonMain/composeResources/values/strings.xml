@@ -53,6 +53,10 @@
     <string name="task_failure_user_stop">Прогон остановлен пользователем</string>
     <string name="task_failure_host_restart">Прогон прерван перезапуском хоста</string>
     <string name="task_failure_generic">Причина неизвестна, подробности — в журнале хоста</string>
+    <string name="task_stash_pending">Правки отложены и ждут возврата</string>
+    <string name="task_failure_stash_conflict">Возврат правок конфликтует с работой агента: правки сохранены и ждут разбора</string>
+    <string name="task_failure_stash_return_failed">Не удалось вернуть отложенные правки: они сохранены</string>
+    <string name="task_failure_stash_failed">Не удалось отложить правки перед прогоном</string>
     <string name="agent_request_failed">Не удалось связаться с хостом: проверьте соединение</string>
 
     <string name="settings_title">Настройки</string>

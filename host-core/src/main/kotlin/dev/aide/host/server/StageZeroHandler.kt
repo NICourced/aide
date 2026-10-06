@@ -32,12 +32,16 @@ import java.nio.file.Path
  * @param mode режим, который хост объявляет клиенту; на поведение обработчика не влияет.
  * @param startedAtMillis момент запуска — от него считается время работы хоста.
  * @param workspaces открытые воркспейсы хоста; тесты могут передать свой набор.
+ * @param onWorkspaceOpened что сделать, когда воркспейс открыт (T-1.59): репозиторий появляется
+ *   только здесь, поэтому возврат отложенных правок после падения хоста привязан к открытию,
+ *   а не к старту процесса. По умолчанию — ничего: обработчику не важно, кто ещё слушает.
  */
 class StageZeroHandler(
     private val openGit: (Path) -> GitRepository = { path -> JGitRepository.open(path) },
     private val mode: HostMode = HostMode.LOCAL,
     private val startedAtMillis: Long = System.currentTimeMillis(),
     private val workspaces: OpenWorkspaces = OpenWorkspaces(),
+    private val onWorkspaceOpened: suspend () -> Unit = { },
 ) : ClientMessageHandler, AutoCloseable {
 
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
@@ -119,7 +123,7 @@ class StageZeroHandler(
      * наружу: одно плохое сообщение не должно ронять сессию.
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun openWorkspace(message: ClientMessage.OpenWorkspace): HostMessage = try {
+    private suspend fun openWorkspace(message: ClientMessage.OpenWorkspace): HostMessage = try {
         val workspace = Workspace.open(Path.of(message.path))
         val fileSystem = WorkspaceFileSystem(workspace)
         workspaces.add(
@@ -133,6 +137,9 @@ class StageZeroHandler(
                 git = openGitFor(workspace),
             ),
         )
+        // До ответа клиенту: репозиторий уже открыт, и возврат отложенных правок (T-1.59)
+        // успевает лечь в состояние, которое клиент запросит сразу после открытия.
+        onWorkspaceOpened()
         HostMessage.WorkspaceOpened(message.requestId, workspace.id)
     } catch (error: WorkspaceAccessException) {
         HostMessage.Failure(message.requestId, error.error)

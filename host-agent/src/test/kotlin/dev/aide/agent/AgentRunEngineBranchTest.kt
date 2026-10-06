@@ -47,6 +47,7 @@ class AgentRunEngineBranchTest {
                 branches.ensure(branch)
             },
             snapshots = noSnapshots,
+            workStash = noWorkStash,
         ),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )

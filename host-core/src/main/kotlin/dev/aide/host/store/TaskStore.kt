@@ -59,6 +59,16 @@ class TaskStore internal constructor(private val database: HostDatabase) {
     /** Все задачи в порядке постановки — снимок состояния агента (T-1.1). */
     fun all(): List<Task> = database.taskQueries.all().executeAsList().map(RowMapper::task)
 
+    /**
+     * Задачи с отложенными, ещё не возвращёнными правками пользователя (T-1.59).
+     *
+     * Фильтр идёт в Kotlin по разобранной задаче, а не SQL по колонке: ссылка на отложенное
+     * лежит в `payload` — это поле задачи, а не признак, по которому строят выборку. Обращение
+     * редкое (старт хоста и открытие воркспейса), а задач в базе немного; заводить под это
+     * колонку значило бы тянуть миграцию ради одного восстановления.
+     */
+    fun pendingStash(): List<Task> = all().filter { it.stashRef != null }
+
     /** Удаляет задачу. Журнал её прогонов при этом не удаляется (§ 10.2). */
     fun delete(id: TaskId) {
         database.taskQueries.delete(id.value)
