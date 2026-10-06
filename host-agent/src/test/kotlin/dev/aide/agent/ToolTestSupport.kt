@@ -22,6 +22,8 @@ import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.StepCommit
 import dev.aide.tools.ports.StepCommits
 import dev.aide.tools.ports.ToolCallRecorder
+import dev.aide.tools.sandbox.RunLintTool
+import dev.aide.tools.sandbox.RunTestsTool
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -83,14 +85,23 @@ fun stepToolsIn(
 }
 
 /**
- * Реестр инструментов шага, как его собирает хост: чтение, запись и внутренняя фиксация.
+ * Реестр инструментов шага, как его собирает хост: чтение, запись, тесты, линтер
+ * и внутренняя фиксация.
  *
  * `commit_step` в наборе обязателен: движок зовёт его после изменяющего шага, и без него
  * прогон записал бы в журнал «инструмента агент не знает» вместо коммита (T-1.11).
+ * `run_tests` и `run_lint` — потому что их регистрирует настоящий хост (T-1.10), и
+ * фикстура обязана повторять его реестр, а не урезать его незаметно.
  */
-private fun defaultTools(commits: StepCommits): List<AgentTool> =
-    listOf(ReadFileTool, FindFilesTool, SearchTextTool, WriteFileTool, CommitStepTool(commits))
-
+private fun defaultTools(commits: StepCommits): List<AgentTool> = listOf(
+    ReadFileTool,
+    FindFilesTool,
+    SearchTextTool,
+    WriteFileTool,
+    CommitStepTool(commits),
+    RunTestsTool(),
+    RunLintTool(),
+)
 /**
  * Порт фиксации шага в тестах движка: запоминает ветки и сообщения, с которыми его звали.
  *

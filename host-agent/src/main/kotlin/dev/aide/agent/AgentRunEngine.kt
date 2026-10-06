@@ -379,6 +379,9 @@ class AgentRunEngine(
             val results = response.toolCalls.map { call ->
                 val result = tools.invoke(run.id, call)
                 current = writer.snapshot(current, result.snapshotRef)
+                // Отчёт тестов и линтера (T-1.10) вкладывает тот же писатель: инструмент
+                // не знает `runId`, а состояние прогона пишет один движок (О-8).
+                current = writer.testReport(current, result.testReport)
                 if (tools.isChanging(call, result)) changing = true
                 LlmMessage.tool(call.id, result.text)
             }

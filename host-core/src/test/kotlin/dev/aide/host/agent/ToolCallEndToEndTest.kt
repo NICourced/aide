@@ -19,6 +19,7 @@ import dev.aide.domain.Permission
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunState
 import dev.aide.domain.StepStatus
+import dev.aide.domain.TestState
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
@@ -27,11 +28,13 @@ import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.git.GitCliFixture
 import dev.aide.tools.file.WriteFileTool
 import dev.aide.tools.sandbox.RunCommandTool
+import dev.aide.tools.sandbox.RunTestsTool
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -273,6 +276,45 @@ class ToolCallEndToEndTest {
         }
     }
 
+    @Test
+    fun `прогон тестов доходит до клиента отчётом, а коммита шага не даёт`() {
+        runBlocking {
+            val repo = repoWithTests("aide-tests-repo")
+
+            val database = Files.createTempFile("aide-tests", ".db")
+            allow(database, RunTestsTool.TOOL_NAME)
+            val model = ToolCallingModel(RunTestsTool.TOOL_NAME, """{}""")
+            val host = host(database, model)
+            val run = try {
+                val client = openClient(host)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTask("Прогони тесты", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                finish(client)
+            } finally {
+                host.close()
+            }
+
+            // Отчёт доехал событием и сессия клиента его хранит (решение 5).
+            val report = assertNotNull(run.testReport, "отчёт обязан доехать до AgentRun клиента")
+            assertEquals(TestState.RED, report.state, "упавший тест — красный прогон")
+            val failure = report.failures.single()
+            assertEquals("dev.aide.SampleTest.падает", failure.name)
+            assertEquals(
+                "src/test/kotlin/dev/aide/SampleTest.kt",
+                failure.file,
+                "status обязан быть привязан к файлу теста (уровень файла)",
+            )
+
+            // Прогон тестов не изменяет репозиторий: коммита шага после него быть не должно (решение 7).
+            val messages = gitLog(repo, "--format=%s", "ai/${run.taskId.value}")
+            assertTrue(messages.none { it.startsWith("Шаг 1") }, "прогон тестов не порождает коммит: $messages")
+
+            // Отчёт лежит в базе: после остановки хоста он читается заново (аддитивное поле AgentRun).
+            val stored = storedRun(database, run)
+            assertEquals(TestState.RED, stored.testReport?.state, "отчёт обязан пережить перезапуск хоста")
+        }
+    }
+
     /** Ветка задачи на чистом дереве: иначе правки пользователя уехали бы в отложенные (T-1.59). */
     private fun cleanRepoWithFile(prefix: String, name: String, content: String): Path {
         val repo = GitCliFixture.createRepo(Files.createTempDirectory(prefix))
@@ -310,6 +352,40 @@ class ToolCallEndToEndTest {
         GitCliFixture.run(listOf("git", "add", name), repo)
         GitCliFixture.run(listOf("git", "commit", "-m", "файл для чтения"), repo)
         return repo
+    }
+
+    /**
+     * Репозиторий-«проект» с исполняемой обёрткой Gradle и файлом теста.
+     *
+     * Обёртка — заглушка, которая сама пишет отчёт: настоящий Gradle в тестах не
+     * запускается (О-11), а проверяется весь путь от детекта проекта до отчёта у клиента.
+     * Файл теста нужен, чтобы `classname` из отчёта привязался к настоящему файлу.
+     */
+    private fun repoWithTests(prefix: String): Path {
+        val repo = GitCliFixture.createRepo(Files.createTempDirectory(prefix))
+        GitCliFixture.run(listOf("git", "add", "-A"), repo)
+        GitCliFixture.run(listOf("git", "commit", "-m", "чистое дерево"), repo)
+
+        val gradlew = repo.resolve("gradlew")
+        gradlew.writeText(TEST_SCRIPT)
+        assertTrue(gradlew.toFile().setExecutable(true), "бит запуска gradlew")
+        val test = repo.resolve("src/test/kotlin/dev/aide/SampleTest.kt")
+        test.parent.createDirectories()
+        test.writeText("package dev.aide\n\nclass SampleTest\n")
+
+        GitCliFixture.run(listOf("git", "add", "-A"), repo)
+        GitCliFixture.run(listOf("git", "commit", "-m", "проект с тестами"), repo)
+        return repo
+    }
+
+    /** Прогон из базы после остановки хоста: так проверяется, что отчёт записан, а не живёт в памяти. */
+    private fun storedRun(database: Path, run: AgentRun): AgentRun {
+        val store = DatabaseFactory.open(database)
+        return try {
+            assertNotNull(store.runs.load(run.id), "прогон обязан читаться из базы после остановки хоста")
+        } finally {
+            store.close()
+        }
     }
 
     private fun host(database: Path, model: LlmClient): EmbeddedHost = EmbeddedHost.open(
@@ -379,6 +455,23 @@ class ToolCallEndToEndTest {
         const val COMMAND_ARGUMENTS: String =
             """{"command":["sh","-c","echo $COMMAND_OUTPUT; echo изменено-командой > hello.txt"]}"""
         const val COMMAND_WRITTEN: String = "изменено-командой\n"
+
+        /**
+         * Заглушка `gradlew`: пишет красный отчёт и возвращает код 1.
+         *
+         * Настоящий Gradle в тестах не запускается (О-11): проверяется путь «детект проекта →
+         * команда → отчёт → разбор → клиент», а не сборка проекта. Отчёт красный, чтобы
+         * проверить и привязку падения к файлу теста.
+         */
+        const val TEST_SCRIPT: String = """#!/bin/sh
+mkdir -p build/test-results/test
+cat > build/test-results/test/TEST-dev.aide.SampleTest.xml <<'XML'
+<testsuite name="dev.aide.SampleTest" tests="1" failures="1">
+  <testcase name="падает" classname="dev.aide.SampleTest" time="0.01"><failure message="ожидалось"/></testcase>
+</testsuite>
+XML
+exit 1
+"""
         const val READ_FILE: String = "read_file"
         const val WRITE_FILE: String = "write_file"
         const val COMMIT_STEP: String = "commit_step"

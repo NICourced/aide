@@ -2,13 +2,14 @@ package dev.aide.tools
 
 import dev.aide.domain.RunId
 import dev.aide.domain.SnapshotRef
+import dev.aide.domain.TestReport
+import dev.aide.domain.TestState
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
 import dev.aide.tools.limits.HardLimitViolation
 import dev.aide.tools.permission.PermissionDecision
 import dev.aide.tools.permission.PermissionResolver
-import dev.aide.tools.permission.ToolKind
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.ToolCallRecorder
@@ -193,7 +194,11 @@ class ToolInvoker(
         }
 
     /**
-     * Вызов, которому разрешено выполняться; изменяющий обязан получить точку отката (T-1.8).
+     * Вызов, которому разрешено выполняться; изменяющий репозиторий обязан получить точку отката (T-1.8).
+     *
+     * Признак — [AgentTool.changesRepository], а не «пишущая ось прав»: тесты и линтер
+     * исполняются по оси записи (О-4), но файлов не меняют, и точка отката им не нужна.
+     * Иначе каждый прогон тестов ставил бы снапшот, вытесняя осмысленные (T-1.19).
      *
      * Нет коммита или ссылку не записать — изменения не будет: вернуть агенту отказ и
      * оставить репозиторий как был. Почему не «продолжить без снапшота»: чтение без точки
@@ -207,7 +212,7 @@ class ToolInvoker(
         arguments: JsonObject,
         context: ToolContext,
     ): Attempt =
-        if (definition.kind != ToolKind.WRITE) {
+        if (!definition.changesRepository) {
             execute(definition, arguments, context)
         } else {
             when (val snapshot = snapshots.beforeChange(runId)) {
@@ -236,6 +241,7 @@ class ToolInvoker(
         refused(
             "инструмент «${definition.name}» не уложился в лимит времени ${definition.timeoutMillis} мс",
             ToolOutcome.TIMEOUT,
+            testReport = timeoutReport(definition),
         )
     } catch (error: HardLimitViolation) {
         // Жёсткий предел — это отказ, а не сбой: инструмент не «сломался», ему не разрешено
@@ -251,9 +257,24 @@ class ToolInvoker(
     private fun parseArguments(arguments: String): JsonObject? =
         runCatching { Json.parseToJsonElement(arguments) }.getOrNull() as? JsonObject
 
-    private fun refused(text: String, outcome: ToolOutcome, requiredApproval: Boolean = false): Attempt =
-        Attempt(ToolResult(text = text, outcome = outcome), requiredApproval)
+    private fun refused(
+        text: String,
+        outcome: ToolOutcome,
+        requiredApproval: Boolean = false,
+        testReport: TestReport? = null,
+    ): Attempt = Attempt(ToolResult(text = text, outcome = outcome, testReport = testReport), requiredApproval)
 }
+
+/**
+ * Отчёт, который несёт исход таймаута (T-1.10).
+ *
+ * `TestState.TIMEOUT` иначе недостижим: инструмент на таймауте не успевает вернуть
+ * ничего, а состояние прогона пишется только из результата. Отчёт порождает тот
+ * инструмент, что объявил это ([AgentTool.producesTestReport]) — у остальных таймаут
+ * остаётся просто таймаутом, и выдумывать им отчёт незачем.
+ */
+private fun timeoutReport(definition: AgentTool): TestReport? =
+    if (definition.producesTestReport) TestReport(state = TestState.TIMEOUT) else null
 
 /** Исход попытки и то, спрашивали ли подтверждение: и то и другое едет в журнал. */
 private data class Attempt(val result: ToolResult, val requiredApproval: Boolean = false)

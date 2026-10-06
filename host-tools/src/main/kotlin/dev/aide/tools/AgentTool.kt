@@ -2,6 +2,7 @@ package dev.aide.tools
 
 import dev.aide.domain.Cost
 import dev.aide.domain.SnapshotRef
+import dev.aide.domain.TestReport
 import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
 import dev.aide.tools.permission.ToolKind
@@ -51,6 +52,31 @@ interface AgentTool {
 
     /** Ось прав: чтение или запись (FR-TOOLS-8). */
     val kind: ToolKind
+
+    /**
+     * Меняет ли вызов файлы репозитория (T-1.10).
+     *
+     * По умолчанию — «да, если инструмент пишущий»: этого достаточно для записи файла
+     * и терминала, где опасность и ось прав совпадают. Тесты и линтер объявляют
+     * `false` явно: они исполняются (ось прав — запись, О-4/NG7), но репозиторий не
+     * меняют — команда `test` пишет отчёт в `build/`, а это артефакт, не результат
+     * работы агента. Иначе прогон тестов порождал бы коммит шага и мог закоммитить
+     * артефакты сборки от имени агента, если `build/` не в `.gitignore`. По этому
+     * признаку движок решает, коммитить ли шаг, а точка вызова — ставить ли точку
+     * отката: незачем охранять то, что не меняется.
+     */
+    val changesRepository: Boolean get() = kind == ToolKind.WRITE
+
+    /**
+     * Порождает ли вызов отчёт тестов или линтера (T-1.10).
+     *
+     * По этому признаку точка вызова отмечает исход «не уложился в лимит» в отчёте:
+     * без него `TestState.TIMEOUT` недостижим — инструмент на таймауте не успевает
+     * вернуть ничего, а `RunStateWriter` пишет отчёт только из результата. `true`
+     * у `run_tests` и `run_lint`; у остальных инструментов отчёта нет, и выдумывать
+     * его на таймауте не нужно.
+     */
+    val producesTestReport: Boolean get() = false
 
     /**
      * Виден ли инструмент модели (T-1.11).
@@ -108,10 +134,19 @@ data class ToolResult(
      * У читающих вызовов здесь null: читать точку отката незачем.
      */
     val snapshotRef: SnapshotRef? = null,
+    /**
+     * Отчёт тестов или линтера, если вызов их запускал (T-1.10).
+     *
+     * Инструмент не знает `runId` и потому не пишет в прогон сам: отчёт едет результатом,
+     * а вкладывает его в прогон движок — единственный писатель состояния (О-8). У вызовов,
+     * которые ничего не запускали, здесь null.
+     */
+    val testReport: TestReport? = null,
 )
 
 /** Успешный результат: инструмент сделал то, о чём просили. */
-fun toolSuccess(text: String): ToolResult = ToolResult(text = text, outcome = ToolOutcome.SUCCESS)
+fun toolSuccess(text: String, testReport: TestReport? = null): ToolResult =
+    ToolResult(text = text, outcome = ToolOutcome.SUCCESS, testReport = testReport)
 
 /**
  * Отказ инструмента: модель должна понять, что пошло не так, и поправиться.
@@ -119,5 +154,6 @@ fun toolSuccess(text: String): ToolResult = ToolResult(text = text, outcome = To
  * `FAILURE`, а не `DENIED`: DENIED означает «запрещено» — настройкой прав или границей
  * воркспейса, и путать запрет с неудачей значило бы врать в журнале.
  */
-fun toolFailure(text: String): ToolResult = ToolResult(text = text, outcome = ToolOutcome.FAILURE)
+fun toolFailure(text: String, testReport: TestReport? = null): ToolResult =
+    ToolResult(text = text, outcome = ToolOutcome.FAILURE, testReport = testReport)
 

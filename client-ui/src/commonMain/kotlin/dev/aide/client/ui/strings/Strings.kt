@@ -143,6 +143,13 @@ import dev.aide.client.ui.resources.task_failure_stash_return_failed
 import dev.aide.client.ui.resources.task_failure_unauthorized
 import dev.aide.client.ui.resources.task_failure_unsupported
 import dev.aide.client.ui.resources.task_stash_pending
+import dev.aide.client.ui.resources.test_status_green
+import dev.aide.client.ui.resources.test_status_infra_error
+import dev.aide.client.ui.resources.test_status_none
+import dev.aide.client.ui.resources.test_status_red
+import dev.aide.client.ui.resources.test_status_red_truncated
+import dev.aide.client.ui.resources.test_status_skipped
+import dev.aide.client.ui.resources.test_status_timeout
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -297,6 +304,14 @@ object Strings {
     val taskFailureStashReturnFailed: StringResource = Res.string.task_failure_stash_return_failed
     val taskFailureStashFailed: StringResource = Res.string.task_failure_stash_failed
     val taskStashPending: StringResource = Res.string.task_stash_pending
+
+    val testStatusNone: StringResource = Res.string.test_status_none
+    val testStatusGreen: StringResource = Res.string.test_status_green
+    val testStatusRed: StringResource = Res.string.test_status_red
+    val testStatusRedTruncated: StringResource = Res.string.test_status_red_truncated
+    val testStatusTimeout: StringResource = Res.string.test_status_timeout
+    val testStatusInfraError: StringResource = Res.string.test_status_infra_error
+    val testStatusSkipped: StringResource = Res.string.test_status_skipped
 
     val connectionConnecting: StringResource = Res.string.connection_connecting
     val connectionReconnecting: StringResource = Res.string.connection_reconnecting

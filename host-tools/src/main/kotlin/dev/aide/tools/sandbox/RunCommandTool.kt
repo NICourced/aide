@@ -129,33 +129,6 @@ class RunCommandTool(
     }
 }
 
-/**
- * Окружение команды: только перечисленные переменные, а не унаследованный набор.
- *
- * Ключ провайдера живёт в переменных окружения хоста (T-1.58), и команда с наследуемым
- * окружением прочитала бы его через `env` — «урезанное окружение» стало бы фикцией.
- * Поэтому передаются только `PATH`, локаль и часовой пояс ([PASSED_NAMES]), а `HOME`
- * и `TMPDIR` указывают внутрь воркспейса: так команда не пишет во временный каталог
- * хоста и не читает домашние файлы пользователя.
- *
- * @param host источник переменных; по умолчанию — окружение процесса хоста.
- */
-internal fun commandEnvironment(root: Path, host: Map<String, String> = System.getenv()): Map<String, String> {
-    val environment = LinkedHashMap<String, String>()
-    PASSED_NAMES.forEach { name -> host[name]?.let { environment[name] = it } }
-    environment[HOME_NAME] = root.toString()
-    environment[TMPDIR_NAME] = root.toString()
-    return environment
-}
-
-/** Переменные, которые команде нужны, чтобы найти программу и говорить на одном языке. */
-private val PASSED_NAMES: List<String> = listOf("PATH", "LANG", "LC_ALL", "TZ")
-
-private const val HOME_NAME: String = "HOME"
-
-/** Имя каталога временных файлов: `java.io.tmpdir` читается как `TMPDIR` в Unix и `TEMP` в Windows. */
-private const val TMPDIR_NAME: String = "TMPDIR"
-
 /** Список команды из аргументов; элементы других типов — пустой список, отказ объяснит схема. */
 private fun JsonObject.stringArrayArgument(name: String): List<String> =
     (this[name] as? JsonArray)

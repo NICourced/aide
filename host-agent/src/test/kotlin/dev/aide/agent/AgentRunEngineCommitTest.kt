@@ -13,8 +13,10 @@ import dev.aide.domain.PlanStep
 import dev.aide.domain.RunState
 import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
+import dev.aide.domain.TestState
 import dev.aide.tools.CommitStepTool
 import dev.aide.tools.ports.StepCommit
+import dev.aide.tools.sandbox.RunTestsTool
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
@@ -22,6 +24,7 @@ import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Instant
@@ -212,6 +215,49 @@ class AgentRunEngineCommitTest {
             val refusal = llm.requests[1].messages.last { it.role == LlmRole.TOOL }
             assertTrue(refusal.content.contains("внутренн"), "модель обязана понять отказ: ${refusal.content}")
         }
+    }
+
+    @Test
+    fun `шаг с прогоном тестов не коммитится, а отчёт доходит до состояния прогона`() {
+        runBlocking {
+            gradlew()
+            val llm = ScriptedLlmClient(listOf(call(RunTestsTool.TOOL_NAME, "{}"), text("готово")))
+
+            run(llm, stored = writeAllowed)
+
+            assertTrue(
+                commits.calls.isEmpty(),
+                "прогон тестов не изменяет репозиторий: коммита шага после него быть не должно",
+            )
+            val report = assertNotNull(runs.all().single().testReport, "отчёт обязан попасть в прогон")
+            assertEquals(TestState.GREEN, report.state)
+            assertEquals(
+                ToolOutcome.SUCCESS,
+                journal.calls.single { it.tool == RunTestsTool.TOOL_NAME }.outcome,
+                "вызов тестов обязан попасть в журнал",
+            )
+            assertTrue(
+                sink.events.any { it.testReport != null },
+                "отчёт обязан уехать событием смены состояния прогона",
+            )
+        }
+    }
+
+    /** Исполняемая «обёртка Gradle», которая пишет зелёный отчёт: настоящий Gradle тестам не нужен. */
+    private fun gradlew() {
+        val script = """
+            #!/bin/sh
+            mkdir -p build/test-results/test
+            cat > build/test-results/test/TEST-dev.aide.SampleTest.xml <<'XML'
+            <testsuite name="dev.aide.SampleTest" tests="1" failures="0">
+              <testcase name="проходит" classname="dev.aide.SampleTest" time="0.01"/>
+            </testsuite>
+            XML
+            exit 0
+        """.trimIndent() + "\n"
+        val path = workspace.resolve("gradlew")
+        path.writeText(script)
+        assertTrue(path.toFile().setExecutable(true), "бит запуска gradlew")
     }
 
     /** Ответ модели с одним вызовом инструмента: так модель просит работу. */

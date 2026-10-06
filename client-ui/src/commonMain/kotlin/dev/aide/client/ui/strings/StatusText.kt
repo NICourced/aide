@@ -3,6 +3,7 @@ package dev.aide.client.ui.strings
 import dev.aide.domain.ModelFailureCode
 import dev.aide.domain.RunState
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.TestState
 import org.jetbrains.compose.resources.StringResource
 
 /**
@@ -84,3 +85,20 @@ private const val HOST_RESTART = "host_restart"
 private const val STASH_CONFLICT = "stash_conflict"
 private const val STASH_RETURN_FAILED = "stash_return_failed"
 private const val STASH_FAILED = "stash_failed"
+
+/**
+ * Текст строки статуса тестов из ресурсов (NFR-13).
+ *
+ * Строка одна и на экране агента, и (позже) в карточке пакета: состояния тестов — это
+ * тот же словарь кодов, и второй перевод разошёлся бы с первым. Отдельного текста для
+ * «отчёта ещё нет» заводится значение [TestState.NOT_RUN] — так отсутствие прогона
+ * показывается явно, а не пустотой.
+ */
+fun testStateResource(state: TestState): StringResource = when (state) {
+    TestState.NOT_RUN -> Strings.testStatusNone
+    TestState.GREEN -> Strings.testStatusGreen
+    TestState.RED -> Strings.testStatusRed
+    TestState.TIMEOUT -> Strings.testStatusTimeout
+    TestState.INFRA_ERROR -> Strings.testStatusInfraError
+    TestState.SKIPPED -> Strings.testStatusSkipped
+}

@@ -21,9 +21,13 @@ import dev.aide.client.ui.strings.Strings
 import dev.aide.client.ui.strings.runStateResource
 import dev.aide.client.ui.strings.taskFailureResource
 import dev.aide.client.ui.strings.taskStatusResource
+import dev.aide.client.ui.strings.testStateResource
 import dev.aide.domain.AgentRun
 import dev.aide.domain.Task
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.TestReport
+import dev.aide.domain.TestState
+import dev.aide.domain.reportState
 
 /**
  * Экран агента (T-1.1): состояние прогона и задачи, постановка задачи.
@@ -49,6 +53,7 @@ fun AgentScreen(
     ) {
         Text(Strings.text(Strings.agentTitle), style = MaterialTheme.typography.titleLarge)
         RunStateLine(run = runs.lastOrNull())
+        TestStatusLine(report = runs.lastOrNull()?.testReport)
         TaskStatusLine(task = tasks.lastOrNull())
         if (requestFailed) {
             Text(
@@ -88,6 +93,21 @@ fun RunStateLine(run: AgentRun?, modifier: Modifier = Modifier) {
         Strings.text(runStateResource(run.state))
     }
     Text(text, modifier = modifier.testTag("run-state"), style = MaterialTheme.typography.bodyLarge)
+}
+
+/** Строка статуса тестов прогона: знает все значения `TestState` (T-1.10, NFR-13). */
+@Composable
+fun TestStatusLine(report: TestReport?, modifier: Modifier = Modifier) {
+    val state = report?.reportState() ?: TestState.NOT_RUN
+    val text = if (state == TestState.RED) {
+        // Обрезанный список падений не должен выглядеть исчерпывающим: число и пометка
+        // «показаны не все» берутся из признака обрезки, а не из размера усечённого списка.
+        val resource = if (report?.failuresTruncated == true) Strings.testStatusRedTruncated else Strings.testStatusRed
+        Strings.text(resource, report?.failures?.size ?: 0)
+    } else {
+        Strings.text(testStateResource(state))
+    }
+    Text(text, modifier = modifier.testTag("test-status"), style = MaterialTheme.typography.bodyMedium)
 }
 
 /** Строка задачи: статус, причина отказа и признак отложенных правок (T-1.1, T-1.59). */

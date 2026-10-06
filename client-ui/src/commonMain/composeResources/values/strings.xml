@@ -54,6 +54,13 @@
     <string name="task_failure_host_restart">Прогон прерван перезапуском хоста</string>
     <string name="task_failure_generic">Причина неизвестна, подробности — в журнале хоста</string>
     <string name="task_stash_pending">Правки отложены и ждут возврата</string>
+    <string name="test_status_none">Тесты не запускались</string>
+    <string name="test_status_green">Тесты прошли</string>
+    <string name="test_status_red">Упавших тестов: %1$d</string>
+    <string name="test_status_red_truncated">Упавших тестов: %1$d, показаны не все</string>
+    <string name="test_status_timeout">Тесты не уложились в лимит времени</string>
+    <string name="test_status_infra_error">Не удалось прогнать тесты</string>
+    <string name="test_status_skipped">Тестов в проекте нет</string>
     <string name="task_failure_stash_conflict">Возврат правок конфликтует с работой агента: правки сохранены и ждут разбора</string>
     <string name="task_failure_stash_return_failed">Не удалось вернуть отложенные правки: они сохранены</string>
     <string name="task_failure_stash_failed">Не удалось отложить правки перед прогоном</string>

@@ -13,6 +13,8 @@ import dev.aide.domain.StepStatus
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.TestReport
+import dev.aide.domain.merge
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.Instant
@@ -89,9 +91,28 @@ internal class RunStateWriter(
         return persist(run.copy(snapshots = run.snapshots + addition), emit = false)
     }
 
+    /**
+     * Вкладывает разобранный отчёт тестов или линтера в прогон (T-1.10).
+     *
+     * Отчёт приносит результат вызова в [dev.aide.tools.ToolResult.testReport], а пишет
+     * его — по-прежнему единственный писатель состояния прогона (О-8): инструмент не
+     * знает `runId`, а движок знает. Части отчёта сливаются в домене: `run_tests`
+     * заменяет тестовую, `run_lint` — замечания, вместе они дают один отчёт прогона.
+     *
+     * Событие рассылается — в отличие от снапшота, который пользователю не показывают:
+     * строка статуса тестов обязана обновиться, как только тесты отработали, а не ждать
+     * следующей смены состояния. Слияние идёт под тем же замком, что и запись (О-8).
+     */
+    suspend fun testReport(run: AgentRun, report: TestReport?): AgentRun {
+        val update = report ?: return run
+        return persist(run.copy(testReport = run.testReport?.merge(update) ?: update))
+    }
+
     /** Завершает прогон успешно; задача уходит в очередь ревью. */
     suspend fun finish(run: AgentRun): AgentRun {
-        completeTask(run.taskId)
+        // Отметка задачи здесь, а не отдельным методом: вызывается она только отсюда,
+        // а лишний метод перешагнул бы предел числа функций на класс (детект).
+        tasks.load(run.taskId)?.let { persistTask(it.copy(status = TaskStatus.REVIEW, failureReason = null)) }
         return persist(run.copy(state = RunState.FINISHED, finishedAt = clock()))
     }
 
@@ -111,11 +132,6 @@ internal class RunStateWriter(
                 interruptReason = RunInterruptReason.USER_STOP,
             ),
         )
-    }
-
-    /** Задача дошла до конца прогона и ждёт ревью. */
-    suspend fun completeTask(taskId: TaskId) {
-        tasks.load(taskId)?.let { persistTask(it.copy(status = TaskStatus.REVIEW, failureReason = null)) }
     }
 
     /** Прогон не довёл задачу до конца: ошибка, стоп или прерывание. */

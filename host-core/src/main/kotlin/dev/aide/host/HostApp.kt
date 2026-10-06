@@ -54,6 +54,8 @@ import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.StepCommits
 import dev.aide.tools.sandbox.RunCommandTool
+import dev.aide.tools.sandbox.RunLintTool
+import dev.aide.tools.sandbox.RunTestsTool
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.ProtocolVersion
 import io.ktor.client.HttpClient
@@ -265,7 +267,8 @@ object HostApp {
 }
 
 /**
- * Инструменты шага, как их собирает хост: чтение, запись, терминал и внутренняя фиксация (T-1.9, T-1.11).
+ * Инструменты шага, как их собирает хост: чтение, запись, терминал, тесты, линтер
+ * и внутренняя фиксация (T-1.9, T-1.10, T-1.11).
  *
  * Список вынесен из Koin-определения: `commit_step` требует порт фиксации, `run_command` —
  * предел сети, и в модуле они собирались бы вместе с остальным графом, удлиняя `module`
@@ -277,6 +280,8 @@ private fun hostTools(commits: StepCommits, network: NetworkPolicy): List<AgentT
     SearchTextTool,
     WriteFileTool,
     RunCommandTool(network),
+    RunTestsTool(),
+    RunLintTool(),
     CommitStepTool(commits),
 )
 
