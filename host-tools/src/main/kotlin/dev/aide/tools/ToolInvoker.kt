@@ -1,12 +1,16 @@
 package dev.aide.tools
 
 import dev.aide.domain.RunId
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
 import dev.aide.tools.limits.HardLimitViolation
 import dev.aide.tools.permission.PermissionDecision
 import dev.aide.tools.permission.PermissionResolver
+import dev.aide.tools.permission.ToolKind
+import dev.aide.tools.ports.ChangeSnapshot
+import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.ToolCallRecorder
 import dev.aide.tools.schema.ArgumentsSchema
 import java.util.UUID
@@ -37,11 +41,15 @@ private const val NANOS_PER_MILLI: Long = 1_000_000
  * не ломается. Модель видит отказ, объясняет его себе и пробует иначе.
  *
  * @param clock источник времени для отметки в журнале; подменяется в тестах.
+ * @param snapshots точка отката перед изменяющим вызовом (T-1.8): она здесь, а не
+ *   в инструменте, потому что без неё изменять нельзя — а изменять можно только
+ *   через эту точку вызова, и гарантию надо ставить там же, где права и журнал.
  */
 class ToolInvoker(
     private val registry: ToolRegistry,
     private val permissions: PermissionResolver,
     private val recorder: ToolCallRecorder,
+    private val snapshots: ChangeSnapshots,
     private val clock: () -> Instant = Clock.System::now,
 ) {
 
@@ -55,7 +63,7 @@ class ToolInvoker(
      */
     suspend fun invoke(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult {
         val startedNanos = System.nanoTime()
-        val attempt = attempt(tool, arguments, context)
+        val attempt = attempt(runId, tool, arguments, context)
         val elapsedMillis = (System.nanoTime() - startedNanos) / NANOS_PER_MILLI
         // Идентификатор вызова генерирует хост, а не берёт у провайдера: у того он
         // уникален только внутри диалога, а журнал — таблица на весь хост, и совпавший
@@ -84,30 +92,40 @@ class ToolInvoker(
      * потом права. Спрашивать разрешение на вызов с негодными аргументами значило бы
      * показывать пользователю диалог о том, чего модель не собиралась делать.
      */
-    private suspend fun attempt(tool: String, arguments: String, context: ToolContext): Attempt {
+    private suspend fun attempt(runId: RunId, tool: String, arguments: String, context: ToolContext): Attempt {
         val definition = registry.find(tool)
         val parsed = if (definition == null) null else parseArguments(arguments)
         return when {
             definition == null -> refused("инструмента «$tool» агент не знает", ToolOutcome.FAILURE)
             parsed == null -> refused("аргументы вызова «$tool» не являются JSON-объектом", ToolOutcome.FAILURE)
-            else -> decide(definition, parsed, context)
+            else -> decide(runId, definition, parsed, context)
         }
     }
 
     /** Решение по проверенному вызову: схема, затем права. */
-    private suspend fun decide(definition: AgentTool, arguments: JsonObject, context: ToolContext): Attempt {
+    private suspend fun decide(
+        runId: RunId,
+        definition: AgentTool,
+        arguments: JsonObject,
+        context: ToolContext,
+    ): Attempt {
         val complaint = ArgumentsSchema.check(definition.argumentsSchema, arguments)
         return if (complaint != null) {
             refused("${definition.name}: $complaint", ToolOutcome.FAILURE)
         } else {
-            permitted(definition, arguments, context)
+            permitted(runId, definition, arguments, context)
         }
     }
 
     /** Вызов, аргументы которого приняты; остаётся спросить права и выполнить. */
-    private suspend fun permitted(definition: AgentTool, arguments: JsonObject, context: ToolContext): Attempt =
+    private suspend fun permitted(
+        runId: RunId,
+        definition: AgentTool,
+        arguments: JsonObject,
+        context: ToolContext,
+    ): Attempt =
         when (val decision = permissions.resolve(definition.name, definition.kind, definition.declaredPermission)) {
-            PermissionDecision.Allow -> execute(definition, arguments, context)
+            PermissionDecision.Allow -> guarded(runId, definition, arguments, context)
 
             is PermissionDecision.Deny -> refused(
                 "вызов «${definition.name}» запрещён настройками (${decision.reason.name})",
@@ -122,6 +140,41 @@ class ToolInvoker(
                 ToolOutcome.DENIED,
                 requiredApproval = true,
             )
+        }
+
+    /**
+     * Вызов, которому разрешено выполняться; изменяющий обязан получить точку отката (T-1.8).
+     *
+     * Нет коммита или ссылку не записать — изменения не будет: вернуть агенту отказ и
+     * оставить репозиторий как был. Почему не «продолжить без снапшота»: чтение без точки
+     * отката ничего не стоит, а запись без неё теряет работу безвозвратно, и NFR-SAFE-2
+     * требует, чтобы точка была **до** изменения. Отказ при этом не исключение, а результат:
+     * прогон из-за него не ломается (О-9).
+     */
+    private suspend fun guarded(
+        runId: RunId,
+        definition: AgentTool,
+        arguments: JsonObject,
+        context: ToolContext,
+    ): Attempt =
+        if (definition.kind != ToolKind.WRITE) {
+            execute(definition, arguments, context)
+        } else {
+            when (val snapshot = snapshots.beforeChange(runId)) {
+                is ChangeSnapshot.Taken -> withSnapshot(execute(definition, arguments, context), snapshot.ref)
+
+                ChangeSnapshot.NoHead -> refused(
+                    "вызов «${definition.name}» не выполнен: в репозитории нет коммита, " +
+                        "а без точки отката менять файлы нельзя",
+                    ToolOutcome.DENIED,
+                )
+
+                is ChangeSnapshot.Failed -> refused(
+                    "вызов «${definition.name}» не выполнен: точку отката поставить не удалось " +
+                        "(${snapshot.reason})",
+                    ToolOutcome.DENIED,
+                )
+            }
         }
 
     /** Неудача инструмента или отказ: прогон от этого не ломается (решение 3, О-4). */
@@ -154,3 +207,15 @@ class ToolInvoker(
 
 /** Исход попытки и то, спрашивали ли подтверждение: и то и другое едет в журнал. */
 private data class Attempt(val result: ToolResult, val requiredApproval: Boolean = false)
+
+/**
+ * Тот же результат, но с точкой отката (T-1.8).
+ *
+ * Ссылка прикладывается ко всякому исходу выполненного изменяющего вызова, а не только
+ * к успеху: снапшот уже создан и обязан быть виден прогону, иначе вытеснение сочтёт его
+ * брошенным. Точка вызова остаётся единственным местом, знающим про снапшот, — инструмент
+ * о нём не подозревает.
+ */
+private fun withSnapshot(attempt: Attempt, ref: SnapshotRef): Attempt =
+    Attempt(attempt.result.copy(snapshotRef = ref), attempt.requiredApproval)
+

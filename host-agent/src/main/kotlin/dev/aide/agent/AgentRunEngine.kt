@@ -366,7 +366,13 @@ class AgentRunEngine(
             // Вызовы выполняются по порядку (map, а не параллельный запуск): инструменты
             // ходят на диск, и цена ошибки, когда порядок результатов перестаёт совпадать
             // с порядком вызовов в ответе модели, больше выигрыша от гонки трёх чтений.
-            val results = response.toolCalls.map { call -> LlmMessage.tool(call.id, tools.invoke(run.id, call).text) }
+            // Точку отката, которую поставил изменяющий вызов, дописывает писатель состояния
+            // (T-1.8): движок остаётся единственным, кто решает, что попадает в прогон.
+            val results = response.toolCalls.map { call ->
+                val result = tools.invoke(run.id, call)
+                current = writer.snapshot(current, result.snapshotRef)
+                LlmMessage.tool(call.id, result.text)
+            }
             messages = messages + LlmMessage.assistant(response.text, response.toolCalls) + results
         }
     }

@@ -107,6 +107,39 @@ class WorkspaceFileSystemTest {
         assertEquals("fun login() = Unit\n", fs.readFile("link-in.kt").text)
     }
 
+    /**
+     * Висячий симлинк наружу лексически выглядит «внутри корня»: цель отсутствует, поэтому
+     * ближайшим существующим родителем оказывается сам корень, а хвост приклеивается строкой.
+     * Если такую ссылку не отклонить, открытие файла по ней создаст цель **за** корнем —
+     * именно поэтому проверяются и чтение (`readFile`), и разрешение пути (`resolveInside`,
+     * через который идёт и запись).
+     */
+    @Test
+    fun `висячий симлинк наружу запрещён и на чтение, и для записи`() {
+        val outsideDir = Files.createTempDirectory("aide-dangling-out-")
+        val target = outsideDir.resolve("not-yet.txt")
+        try {
+            fixture.createEscapingSymlink("dangling", target)
+            assertFalse(Files.exists(target), "Цель обязана отсутствовать, иначе случай не висячий")
+
+            assertFailsWith<WorkspaceAccessException> { fs.resolveInside("dangling") }
+            val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("dangling") }
+            assertIs<ProtocolError.AccessDenied>(error.error)
+            assertFailsWith<WorkspaceAccessException> { fs.resolveInside("dangling/sub.txt") }
+        } finally {
+            outsideDir.toFile().deleteRecursively()
+        }
+    }
+
+    /** Висячий симлинк с целью внутри корня — тоже отказ: канонизировать его нечем, а писать «по ссылке» нельзя. */
+    @Test
+    fun `висячий симлинк с целью внутри корня тоже запрещён`() {
+        Files.createSymbolicLink(fixture.root.resolve("dangling-in"), fixture.root.resolve("src/auth/Later.kt"))
+        assertFalse(Files.exists(fixture.root.resolve("src/auth/Later.kt")))
+
+        assertFailsWith<WorkspaceAccessException> { fs.resolveInside("dangling-in") }
+    }
+
     @Test
     fun `отсутствующий файл даёт notFound, а не ошибку доступа`() {
         val error = assertFailsWith<WorkspaceAccessException> { fs.readFile("src/auth/NoSuchFile.kt") }

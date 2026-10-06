@@ -75,8 +75,14 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
      * Приводит путь к каноническому виду и убеждается, что он внутри корня воркспейса.
      *
      * Проверка идёт по реальному пути на диске ([Path.toRealPath]), поэтому оба
-     * обхода — `..` в строке и симлинк наружу — отсекаются одинаково. Для
-     * несуществующих файлов канонизируется ближайший существующий родитель.
+     * обхода — `..` в строке и симлинк наружу — отсекаются одинаково.
+     *
+     * Для несуществующего пути канонизируется ближайший существующий родитель, а хвост
+     * приклеивается к нему. Лексически приклеить хвост можно только тогда, когда в нём
+     * нет симлинков: симлинк, чья цель отсутствует (висячий), остаётся «внутри» по строке,
+     * но открытие файла по нему создало бы цель **за** корнем. Поэтому симлинк в хвосте —
+     * отказ ([canonicalizeMissing]). Симлинк с существующей целью при этом разрешён, если
+     * цель внутри корня: такой путь уже покрыт [Path.toRealPath], и он остаётся рабочим.
      */
     internal fun resolveInside(relativePath: String): Path {
         if (relativePath.isBlank()) {
@@ -160,8 +166,11 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
 
     /**
      * Канонизирует несуществующий путь по ближайшему существующему родителю.
-     * Хвост считается лексически от того же родителя, поэтому симлинк в середине
-     * пути не подменяет собою корень.
+     *
+     * Хвост от родителя до пути приклеивается лексически — это законно, пока в нём нет
+     * симлинков. Симлинк с существующей целью сам был бы ближайшим существующим
+     * родителем (или его частью), поэтому в хвосте остаются только висячие: их и
+     * отклоняет [denySymlinkInTail].
      */
     private fun canonicalizeMissing(relativePath: String, raw: Path): Path {
         val absolute = raw.toAbsolutePath().normalize()
@@ -173,7 +182,27 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
         } catch (error: IOException) {
             denied(relativePath, "не удалось определить путь: ${error.message}")
         }
-        return canonicalParent.resolve(existing.relativize(absolute))
+        val tail = existing.relativize(absolute)
+        denySymlinkInTail(relativePath, existing, tail)
+        return canonicalParent.resolve(tail)
+    }
+
+    /**
+     * Отклоняет несуществующий хвост, проходящий через симлинк.
+     *
+     * Такой симлинк висячий (цель отсутствует), и лексическая канонизация вернула бы путь
+     * «внутри корня», хотя ядро при открытии пошло бы по ссылке и создало файл за корнем.
+     * Существующая цель сюда не попадает: она сделала бы свой компонент ближайшим
+     * существующим родителем.
+     */
+    private fun denySymlinkInTail(relativePath: String, existing: Path, tail: Path) {
+        var current = existing
+        for (component in tail) {
+            current = current.resolve(component)
+            if (Files.isSymbolicLink(current)) {
+                denied(relativePath, "симлинк «$current» ведёт в никуда: цель отсутствует")
+            }
+        }
     }
 
     companion object {

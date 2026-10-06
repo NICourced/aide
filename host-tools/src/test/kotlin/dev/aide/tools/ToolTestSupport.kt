@@ -1,10 +1,14 @@
 package dev.aide.tools
 
+import dev.aide.domain.RunId
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolPermission
 import dev.aide.tools.limits.HardLimitViolation
 import dev.aide.tools.permission.DenyReason
 import dev.aide.tools.permission.PermissionResolver
+import dev.aide.tools.ports.ChangeSnapshot
+import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.ToolCallRecorder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -55,21 +59,43 @@ class ToolsWorkspace : AutoCloseable {
 /**
  * Граница воркспейса для тестов инструментов.
  *
- * Отклоняет путь вне корня — иначе проверка отказа за пределами воркспейса проходила бы
- * и без границы. Канонизация симлинков у настоящей реализации сложнее (`toRealPath`,
- * см. `WorkspaceBoundaryAdapterTest` в host-core); здесь проверяется, что инструмент
- * ходит через порт и получает отказ, а не то, как устроена канонизация.
+ * Повторяет поведение настоящей границы (`WorkspaceFileSystem` в host-core): существующий
+ * путь канонизируется ([java.nio.file.Path.toRealPath]), несуществующий — по ближайшему
+ * существующему родителю, а висячий симлинк в хвосте отклоняется. Иначе проверки «отказ за
+ * пределами воркспейса» и «запись через висячий симлинк» проходили бы и без границы вовсе.
  */
 class TestToolContext(override val root: Path) : ToolContext {
 
     override fun resolveInside(path: String): Path {
         if (path.isBlank()) throw HardLimitViolation(DenyReason.PATH_NOT_ALLOWED, "пустой путь")
         val raw = Path.of(path)
-        val resolved = (if (raw.isAbsolute) raw else root.resolve(path)).normalize()
-        if (!resolved.startsWith(root)) {
+        val resolved = if (raw.isAbsolute) raw else root.resolve(path)
+        val canonical = canonical(resolved)
+        if (!canonical.startsWith(root)) {
             throw HardLimitViolation(DenyReason.PATH_NOT_ALLOWED, "вне корня воркспейса: $path")
         }
-        return resolved
+        return canonical
+    }
+
+    /**
+     * Канонический путь: ближайший существующий предок приводится к реальному, хвост
+     * приклеивается к нему. Хвост, проходящий через висячий симлинк, — отказ: лексически
+     * он выглядит внутри корня, а ядро по ссылке создало бы файл за корнем.
+     */
+    private fun canonical(resolved: Path): Path {
+        val absolute = resolved.toAbsolutePath().normalize()
+        val existing = generateSequence(absolute) { it.parent }.firstOrNull { Files.exists(it) }
+            ?: return absolute
+        val real = runCatching { existing.toRealPath() }.getOrElse { existing.normalize() }
+        val tail = existing.relativize(absolute)
+        var current = existing
+        for (component in tail) {
+            current = current.resolve(component)
+            if (Files.isSymbolicLink(current)) {
+                throw HardLimitViolation(DenyReason.PATH_NOT_ALLOWED, "симлинк ведёт в никуда: $current")
+            }
+        }
+        return real.resolve(tail)
     }
 }
 
@@ -88,6 +114,38 @@ fun argumentsOf(vararg pairs: Pair<String, String>): JsonObject = JsonObject(
     pairs.associate { (name, value) -> name to JsonPrimitive(value) },
 )
 
+/** Ссылка точки отката в тестах: по ней видно, что снапшот из результата дошёл до вызова. */
+const val TEST_SNAPSHOT_REF: String = "refs/ai/snap/1758535200000-before-agent-step"
+
+/**
+ * Порт точки отката в тестах: считает вопросы и отвечает заданным исходом.
+ *
+ * По умолчанию точка есть: читающие вызовы её не спрашивают вовсе, а изменяющим она нужна,
+ * чтобы дойти до инструмента. Исход меняет тест — так проверяются пустой репозиторий и сбой.
+ */
+class FakeChangeSnapshots(
+    private var outcome: ChangeSnapshot = ChangeSnapshot.Taken(SnapshotRef(TEST_SNAPSHOT_REF)),
+) : ChangeSnapshots {
+
+    /** Сколько раз точка вызова спрашивала точку отката. */
+    var asked: Int = 0
+        private set
+
+    /** Прогоны, у которых спрашивали точку отката; по ним видно, что прогон доезжает до порта. */
+    val runs: MutableList<RunId> = mutableListOf()
+
+    /** Меняет ответ порта: так проверяются отказ и отсутствие коммита. */
+    fun answer(outcome: ChangeSnapshot) {
+        this.outcome = outcome
+    }
+
+    override suspend fun beforeChange(runId: RunId): ChangeSnapshot {
+        asked += 1
+        runs += runId
+        return outcome
+    }
+}
+
 /**
  * Точка вызова на настоящих правах и настоящем журнале.
  *
@@ -98,8 +156,10 @@ fun testInvoker(
     registry: ToolRegistry,
     recorder: ToolCallRecorder = RecordingToolCalls(),
     stored: (String) -> ToolPermission? = { null },
+    snapshots: ChangeSnapshots = FakeChangeSnapshots(),
 ): ToolInvoker = ToolInvoker(
     registry = registry,
     permissions = PermissionResolver(stored),
     recorder = recorder,
+    snapshots = snapshots,
 )

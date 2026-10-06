@@ -1,6 +1,7 @@
 package dev.aide.tools
 
 import dev.aide.domain.Cost
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
 import dev.aide.tools.permission.ToolKind
@@ -74,6 +75,16 @@ data class ToolResult(
     val outcome: ToolOutcome,
     /** Стоимость вызова; у чтения нулевая. */
     val cost: Cost = Cost(),
+    /**
+     * Точка отката, поставленная перед изменяющим вызовом (T-1.8).
+     *
+     * Ненулевая у любого **выполненного** изменяющего вызова — и успешного, и неуспешного
+     * по внутренней причине: снапшот ставится до выполнения и обязан попасть в
+     * `AgentRun.snapshots`, иначе вытеснение сочло бы его брошенным. Единственный
+     * потребитель ссылки — движок прогона; инструмент её пользователю не показывает.
+     * У читающих вызовов здесь null: читать точку отката незачем.
+     */
+    val snapshotRef: SnapshotRef? = null,
 )
 
 /** Успешный результат: инструмент сделал то, о чём просили. */

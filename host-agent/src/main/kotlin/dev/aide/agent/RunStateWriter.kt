@@ -8,6 +8,7 @@ import dev.aide.domain.AgentRun
 import dev.aide.domain.Cost
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunState
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.StepStatus
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
@@ -72,6 +73,20 @@ internal class RunStateWriter(
         lock.withLock { tasks.save(task) }
         events.taskStateChanged(task)
         return task
+    }
+
+    /**
+     * Дописывает точку отката из результата изменяющего вызова в прогон (T-1.8).
+     *
+     * Ссылку приносит точка вызова в [dev.aide.tools.ToolResult], а записывает её
+     * по-прежнему единственный писатель состояния прогона (О-8): иначе защита снапшотов
+     * незакрытой задачи (T-1.19) не увидела бы снапшот, поставленный перед записью.
+     * Повторная ссылка не пишется — одна точка отката на изменение HEAD (решение 4).
+     * Событие не рассылается: снапшот состояния прогона не меняет.
+     */
+    suspend fun snapshot(run: AgentRun, ref: SnapshotRef?): AgentRun {
+        val addition = ref?.takeIf { it !in run.snapshots } ?: return run
+        return persist(run.copy(snapshots = run.snapshots + addition), emit = false)
     }
 
     /** Завершает прогон успешно; задача уходит в очередь ревью. */

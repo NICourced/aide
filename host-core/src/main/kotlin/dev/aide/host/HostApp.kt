@@ -17,6 +17,7 @@ import dev.aide.agent.provider.SecretStore
 import dev.aide.agent.tools.StepTools
 import dev.aide.host.agent.AgentConfigHandler
 import dev.aide.host.agent.AgentRunHandler
+import dev.aide.host.agent.ChangeSnapshotGuard
 import dev.aide.host.agent.ClientMessageRouter
 import dev.aide.host.agent.ModelSecretHandler
 import dev.aide.host.agent.RunWorker
@@ -43,7 +44,9 @@ import dev.aide.tools.ToolRegistry
 import dev.aide.tools.file.FindFilesTool
 import dev.aide.tools.file.ReadFileTool
 import dev.aide.tools.file.SearchTextTool
+import dev.aide.tools.file.WriteFileTool
 import dev.aide.tools.permission.PermissionResolver
+import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.ProtocolVersion
 import io.ktor.client.HttpClient
@@ -126,6 +129,9 @@ object HostApp {
         // Koin разрешает по точному ключу типа (T-1.19). Защита «в использовании» берётся
         // из хранилища: какие снапшоты нужны незакрытым задачам, знает только хост.
         single<Snapshots> { TaskSnapshotGuard(workspaces = get(), store = get()) }
+        // Точка отката перед изменяющим вызовом (T-1.8): тот же воркспейс и та же защита
+        // «в использовании», но спрашивает её точка вызова, а не движок.
+        single<ChangeSnapshots> { ChangeSnapshotGuard(workspaces = get(), store = get()) }
         // Отложенные правки: реализация — поверх открытого воркспейса (T-1.59).
         single<WorkStash> { WorkStashGuard(workspaces = get(), sessions = get()) }
         single { StashRecovery(stashes = get(), store = get(), events = ServerRunEventSink(get())) }
@@ -133,7 +139,7 @@ object HostApp {
             // Реестр и точка вызова собираются из одного экземпляра реестра: определения
             // инструментов у модели и их выполнение обязаны быть про один и тот же набор,
             // иначе модель позвала бы инструмент, которого точка вызова не знает.
-            val registry = ToolRegistry(listOf(ReadFileTool, FindFilesTool, SearchTextTool))
+            val registry = ToolRegistry(listOf(ReadFileTool, FindFilesTool, SearchTextTool, WriteFileTool))
             StepTools.of(
                 registry = registry,
                 invoker = ToolInvoker(
@@ -141,6 +147,8 @@ object HostApp {
                     // Настройки прав — из хранилища хоста (§ 9): модуль инструментов их не знает.
                     permissions = PermissionResolver(get<HostStore>().permissions::load),
                     recorder = StoreToolCallRecorder(get<HostStore>().toolCalls),
+                    // Точка отката — тоже хостовое знание: инструмент о git не знает (T-1.8).
+                    snapshots = get(),
                 ),
                 context = WorkspaceToolContext(get()),
             )

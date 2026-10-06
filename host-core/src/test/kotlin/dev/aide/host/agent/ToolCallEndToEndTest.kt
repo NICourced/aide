@@ -15,14 +15,17 @@ import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.Permission
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunState
 import dev.aide.domain.StepStatus
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolOutcome
+import dev.aide.domain.ToolPermission
 import dev.aide.host.EmbeddedHost
 import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.git.GitCliFixture
+import dev.aide.tools.file.WriteFileTool
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import java.nio.file.Files
@@ -127,6 +130,61 @@ class ToolCallEndToEndTest {
         }
     }
 
+    @Test
+    fun `агент записывает файл, снапшот остаётся в репозитории, и вызов попадает в журнал`() {
+        runBlocking {
+            // Дерево делается чистым: иначе правки пользователя откладывались бы (T-1.59)
+            // и после прогона вернулись на свою ветку, унеся рабочее дерево с ветки задачи —
+            // и проверять запись было бы негде.
+            val repo = GitCliFixture.createRepo(Files.createTempDirectory("aide-write-repo"))
+            GitCliFixture.run(listOf("git", "add", "-A"), repo)
+            GitCliFixture.run(listOf("git", "commit", "-m", "чистое дерево"), repo)
+            repo.resolve("hello.txt").writeText(CONTENT)
+            GitCliFixture.run(listOf("git", "add", "hello.txt"), repo)
+            GitCliFixture.run(listOf("git", "commit", "-m", "файл для записи"), repo)
+
+            val database = Files.createTempFile("aide-write", ".db")
+            // Запись разрешена явно: у write_file объявленное умолчание — ASK, а диалога
+            // подтверждения (T-1.13) ещё нет, и без настройки вызов был бы отклонён.
+            val seed = DatabaseFactory.open(database)
+            try {
+                seed.permissions.save(ToolPermission(WriteFileTool.TOOL_NAME, Permission.ALLOW, Permission.ALLOW))
+            } finally {
+                seed.close()
+            }
+            val model = ToolCallingModel("write_file", """{"path":"hello.txt","content":"$WRITTEN"}""")
+            val host = host(database, model)
+            val run = try {
+                val client = openClient(host)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTask("Запиши файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                finish(client)
+            } finally {
+                host.close()
+            }
+
+            assertEquals(WRITTEN, repo.resolve("hello.txt").toFile().readText(), "агент обязан изменить файл")
+            val refs = GitCliFixture.snapshotRefs(repo)
+            // Две ссылки — старт прогона и изменение: задержка в модели (см. ToolCallingModel)
+            // гарантирует, что они приходятся на разные миллисекунды и не совпадают именем.
+            // Без записи ссылки движком здесь осталась бы одна — стартовая, — и проверка падала бы.
+            assertEquals(
+                2,
+                run.snapshots.size,
+                "прогон обязан помнить и стартовый снапшот, и точку отката изменяющего вызова",
+            )
+            assertTrue(
+                refs.containsAll(run.snapshots.map { it.value }),
+                "каждая ссылка прогона обязана существовать в репозитории: в git $refs, в прогоне ${run.snapshots}",
+            )
+
+            val recorded = journal(database, run)
+            assertEquals("write_file", recorded.tool)
+            assertEquals(ToolOutcome.SUCCESS, recorded.outcome)
+            assertTrue(recorded.arguments.contains("hello.txt"), recorded.arguments)
+        }
+    }
+
     private fun repoWithFile(name: String, content: String): Path {
         // Репозиторий с коммитом: ветка задачи создаётся от HEAD (T-1.18), а в репозитории
         // без коммитов ответвлять не от чего — прогон отказался бы до первого чтения.
@@ -193,11 +251,23 @@ class ToolCallEndToEndTest {
     private companion object {
 
         const val CONTENT: String = "привет из воркспейса"
+
+        /** Содержимое, которым агент перезаписывает файл: отличается от исходного, иначе записи не видно. */
+        const val WRITTEN: String = "изменено агентом"
         const val POLL_MILLIS: Long = 20
         const val CONNECT_TIMEOUT_MILLIS: Long = 10_000
         const val RUN_TIMEOUT_MILLIS: Long = 15_000
     }
 }
+
+/**
+ * Пауза модели перед ответом: разводит метки стартового снапшота и снапшота изменения.
+ *
+ * Оба считаются от часов хоста с точностью до миллисекунды; без паузы они могли бы попасть
+ * в одну, имена ссылок совпали бы, и сквозная проверка «ссылок две» стала бы неустойчивой.
+ * Пяти миллисекунд хватает с запасом.
+ */
+private const val MODEL_DELAY_MILLIS: Long = 5
 
 /**
  * Модель, просящая инструмент, а затем заканчивающая шаг.
@@ -211,6 +281,7 @@ private class ToolCallingModel(private val tool: String, private val arguments: 
     val requests: MutableList<LlmRequest> = CopyOnWriteArrayList()
 
     override suspend fun complete(request: LlmRequest): LlmResponse {
+        delay(MODEL_DELAY_MILLIS)
         requests += request
         return if (requests.size == 1) {
             LlmResponse.Text(
