@@ -9,6 +9,7 @@ import dev.aide.host.git.SnapshotOutcome
 import dev.aide.host.git.StashOutcome
 import dev.aide.host.git.StashRepository
 import dev.aide.host.git.StashReturnOutcome
+import dev.aide.host.git.StepCommitOutcome
 import dev.aide.host.git.TaskBranchOutcome
 import dev.aide.host.git.TaskBranchRefusal
 import dev.aide.host.server.ClientMessageHandler
@@ -176,6 +177,9 @@ class TaskBranchGuardTest {
             asked = branch
             return outcome
         }
+
+        override fun commitStep(branch: String, message: String): StepCommitOutcome =
+            StepCommitOutcome.NothingToCommit
 
         override fun createSnapshot(ref: String): SnapshotOutcome = SnapshotOutcome.NoHead
 

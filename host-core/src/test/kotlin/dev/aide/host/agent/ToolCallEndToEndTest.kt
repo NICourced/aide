@@ -94,7 +94,7 @@ class ToolCallEndToEndTest {
             assertEquals(CALL_ID, result.toolCallId, "результат обязан ссылаться на вызов модели")
             assertTrue(result.content.contains(CONTENT), "модель обязана получить содержимое файла: ${result.content}")
 
-            val recorded = journal(database, run)
+            val recorded = journal(database, run, READ_FILE)
             assertEquals("read_file", recorded.tool)
             assertEquals(ToolOutcome.SUCCESS, recorded.outcome)
             assertTrue(recorded.arguments.contains("hello.txt"), recorded.arguments)
@@ -125,7 +125,7 @@ class ToolCallEndToEndTest {
             val result = assertNotNull(model.requests[1].messages.lastOrNull { it.role == LlmRole.TOOL })
             assertTrue(result.content.contains("PATH_NOT_ALLOWED"), "отказ обязан быть виден модели: ${result.content}")
 
-            val recorded = journal(database, run)
+            val recorded = journal(database, run, READ_FILE)
             assertEquals(ToolOutcome.DENIED, recorded.outcome, "отказ по границе обязан остаться в журнале")
         }
     }
@@ -133,25 +133,10 @@ class ToolCallEndToEndTest {
     @Test
     fun `агент записывает файл, снапшот остаётся в репозитории, и вызов попадает в журнал`() {
         runBlocking {
-            // Дерево делается чистым: иначе правки пользователя откладывались бы (T-1.59)
-            // и после прогона вернулись на свою ветку, унеся рабочее дерево с ветки задачи —
-            // и проверять запись было бы негде.
-            val repo = GitCliFixture.createRepo(Files.createTempDirectory("aide-write-repo"))
-            GitCliFixture.run(listOf("git", "add", "-A"), repo)
-            GitCliFixture.run(listOf("git", "commit", "-m", "чистое дерево"), repo)
-            repo.resolve("hello.txt").writeText(CONTENT)
-            GitCliFixture.run(listOf("git", "add", "hello.txt"), repo)
-            GitCliFixture.run(listOf("git", "commit", "-m", "файл для записи"), repo)
+            val repo = cleanRepoWithFile("aide-write-repo", "hello.txt", CONTENT)
 
             val database = Files.createTempFile("aide-write", ".db")
-            // Запись разрешена явно: у write_file объявленное умолчание — ASK, а диалога
-            // подтверждения (T-1.13) ещё нет, и без настройки вызов был бы отклонён.
-            val seed = DatabaseFactory.open(database)
-            try {
-                seed.permissions.save(ToolPermission(WriteFileTool.TOOL_NAME, Permission.ALLOW, Permission.ALLOW))
-            } finally {
-                seed.close()
-            }
+            allowWrite(database)
             val model = ToolCallingModel("write_file", """{"path":"hello.txt","content":"$WRITTEN"}""")
             val host = host(database, model)
             val run = try {
@@ -178,12 +163,75 @@ class ToolCallEndToEndTest {
                 "каждая ссылка прогона обязана существовать в репозитории: в git $refs, в прогоне ${run.snapshots}",
             )
 
-            val recorded = journal(database, run)
+            val recorded = journal(database, run, WRITE_FILE)
             assertEquals("write_file", recorded.tool)
             assertEquals(ToolOutcome.SUCCESS, recorded.outcome)
             assertTrue(recorded.arguments.contains("hello.txt"), recorded.arguments)
         }
     }
+
+    @Test
+    fun `изменяющий шаг даёт коммит агента в ветке задачи, и фиксация попадает в журнал`() {
+        runBlocking {
+            val repo = cleanRepoWithFile("aide-commit-repo", "hello.txt", CONTENT)
+
+            val database = Files.createTempFile("aide-commit", ".db")
+            allowWrite(database)
+            val model = ToolCallingModel("write_file", """{"path":"hello.txt","content":"$WRITTEN"}""")
+            val host = host(database, model)
+            val run = try {
+                val client = openClient(host)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTask("Запиши файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                finish(client)
+            } finally {
+                host.close()
+            }
+
+            // Коммит обязан быть в ветке задачи, а не в текущей ветке человека (§ 8.3).
+            val branch = "ai/${run.taskId.value}"
+            val authors = gitLog(repo, "--format=%an <%ae>", branch)
+            val messages = gitLog(repo, "--format=%s", branch)
+            assertTrue(
+                "aide-agent <agent@aide.local>" in authors,
+                "коммит агента обязан отличаться от коммита человека по автору: $authors",
+            )
+            assertTrue(
+                "Шаг 1: прочитать файл" in messages,
+                "в сообщении обязан быть номер шага и его описание: $messages",
+            )
+
+            val recorded = journal(database, run, COMMIT_STEP)
+            assertEquals(ToolOutcome.SUCCESS, recorded.outcome, "фиксация шага обязана попасть в журнал (FR-AGENT-8)")
+        }
+    }
+
+    /** Ветка задачи на чистом дереве: иначе правки пользователя уехали бы в отложенные (T-1.59). */
+    private fun cleanRepoWithFile(prefix: String, name: String, content: String): Path {
+        val repo = GitCliFixture.createRepo(Files.createTempDirectory(prefix))
+        GitCliFixture.run(listOf("git", "add", "-A"), repo)
+        GitCliFixture.run(listOf("git", "commit", "-m", "чистое дерево"), repo)
+        repo.resolve(name).writeText(content)
+        GitCliFixture.run(listOf("git", "add", name), repo)
+        GitCliFixture.run(listOf("git", "commit", "-m", "файл для записи"), repo)
+        return repo
+    }
+
+    /** Разрешает запись в базе до старта хоста: без этого вызов упрётся в объявленное умолчание ASK. */
+    private fun allowWrite(database: Path) {
+        val seed = DatabaseFactory.open(database)
+        try {
+            seed.permissions.save(ToolPermission(WriteFileTool.TOOL_NAME, Permission.ALLOW, Permission.ALLOW))
+        } finally {
+            seed.close()
+        }
+    }
+
+    /** Значения поля `git log` для ветки [ref], от нового к старому. */
+    private fun gitLog(repo: Path, format: String, ref: String): List<String> =
+        GitCliFixture.run(listOf("git", "log", format, ref), repo).output
+            .lines()
+            .filter { it.isNotBlank() }
 
     private fun repoWithFile(name: String, content: String): Path {
         // Репозиторий с коммитом: ветка задачи создаётся от HEAD (T-1.18), а в репозитории
@@ -234,15 +282,17 @@ class ToolCallEndToEndTest {
     }
 
     /**
-     * Вызов из журнала: база открывается заново после остановки хоста.
+     * Вызов журнала по имени инструмента: база открывается заново после остановки хоста.
      *
      * Так проверяется именно запись: если бы вызов оставался в памяти, второго открытия
-     * базы он бы не пережил.
+     * базы он бы не пережил. Имя инструмента отбирает нужную запись: изменяющий шаг
+     * (T-1.11) дописывает в журнал ещё и фиксацию, и «единственная запись» её бы не
+     * отличала — проверка стала бы зависеть от числа внутренних вызовов.
      */
-    private fun journal(database: Path, run: AgentRun): ToolCall {
+    private fun journal(database: Path, run: AgentRun, tool: String): ToolCall {
         val store = DatabaseFactory.open(database)
         return try {
-            store.toolCalls.forRun(run.id).single()
+            store.toolCalls.forRun(run.id).single { it.tool == tool }
         } finally {
             store.close()
         }
@@ -254,6 +304,9 @@ class ToolCallEndToEndTest {
 
         /** Содержимое, которым агент перезаписывает файл: отличается от исходного, иначе записи не видно. */
         const val WRITTEN: String = "изменено агентом"
+        const val READ_FILE: String = "read_file"
+        const val WRITE_FILE: String = "write_file"
+        const val COMMIT_STEP: String = "commit_step"
         const val POLL_MILLIS: Long = 20
         const val CONNECT_TIMEOUT_MILLIS: Long = 10_000
         const val RUN_TIMEOUT_MILLIS: Long = 15_000

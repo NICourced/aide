@@ -12,6 +12,7 @@ import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.RenameDetector
 import org.eclipse.jgit.lib.Constants
 import org.eclipse.jgit.lib.ObjectId
+import org.eclipse.jgit.lib.PersonIdent
 import org.eclipse.jgit.lib.RefUpdate
 import org.eclipse.jgit.lib.Repository
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
@@ -36,6 +37,8 @@ class JGitRepository private constructor(
 
     private val snapshots = SnapshotOperation(repository)
 
+    private val stepCommits = StepCommitOperation(repository, git, ::changedFiles)
+
     override val workStash: StashRepository = StashOperation(repository, git)
 
     override fun currentBranch(): String = repository.branch ?: DETACHED_HEAD
@@ -47,7 +50,7 @@ class JGitRepository private constructor(
         val status = runCatching { git.status().call() }.getOrElse { error ->
             throw GitAccessException(ProtocolError.Internal("не удалось прочитать состояние git", error.message))
         }
-        val renamed = stagedRenames()
+        val renamed = stagedRenames(repository, git, headCommit().isNotEmpty())
         return buildList {
             status.added.filterNot { it in renamed.values }.forEach { add(ChangedFile(it, FileChangeKind.ADDED)) }
             status.untracked.forEach { add(ChangedFile(it, FileChangeKind.ADDED)) }
@@ -86,43 +89,19 @@ class JGitRepository private constructor(
 
     override fun ensureTaskBranch(branch: String): TaskBranchOutcome = taskBranches.ensure(branch)
 
+    override fun commitStep(branch: String, message: String): StepCommitOutcome = stepCommits.commit(branch, message)
+
     override fun createSnapshot(ref: String): SnapshotOutcome = snapshots.create(ref)
 
     override fun snapshotRefs(): List<String> = snapshots.refs()
 
     override fun deleteSnapshots(refs: List<String>) = snapshots.delete(refs)
 
-    /**
-     * Переименования, уже зафиксированные в индексе.
-     *
-     * `git status` показывает переименование только между HEAD и индексом: переименование
-     * в рабочем каталоге он отдаёт как удаление старого файла и новый файл вне индекса.
-     * Поэтому сопоставление идёт по разнице HEAD → индекс, а не по рабочему дереву,
-     * иначе результат разошёлся бы с `git status` на незакоммиченном `mv`.
-     */
-    private fun stagedRenames(): Map<String, String> {
-        if (headCommit().isEmpty()) return emptyMap()
-        return runCatching {
-            val entries = git.diff().setCached(true).call()
-            val detector = RenameDetector(repository)
-            // Порог сходства как у git по умолчанию, иначе переименования с правкой
-            // содержимого распознавались бы реже, чем их показывает `git status`.
-            detector.renameScore = GIT_RENAME_SCORE
-            detector.addAll(entries)
-            detector.compute()
-                .filter { it.changeType == DiffEntry.ChangeType.RENAME }
-                .associate { it.oldPath to it.newPath }
-        }.getOrElse { error ->
-            throw GitAccessException(ProtocolError.Internal("не удалось сопоставить переименования", error.message))
-        }
-    }
-
     companion object {
         private const val HEAD = "HEAD"
         private const val GIT_DIR = ".git"
         private const val SHORT_HASH_LENGTH = 7
         private const val MILLIS_PER_SECOND = 1_000L
-        private const val GIT_RENAME_SCORE = 50
         private const val DETACHED_HEAD = "HEAD"
 
         /** Открывает репозиторий по пути к рабочему каталогу. */
@@ -140,6 +119,35 @@ class JGitRepository private constructor(
             }.getOrElse { notAGitRepository(workTree) }
             return JGitRepository(repository, Git(repository))
         }
+    }
+}
+
+/** Порог сходства переименований: как у git по умолчанию, иначе разбор разошёлся бы с `git status`. */
+private const val GIT_RENAME_SCORE = 50
+
+/**
+ * Переименования, уже зафиксированные в индексе.
+ *
+ * `git status` показывает переименование только между HEAD и индексом: переименование
+ * в рабочем каталоге он отдаёт как удаление старого файла и новый файл вне индекса.
+ * Поэтому сопоставление идёт по разнице HEAD → индекс, а не по рабочему дереву,
+ * иначе результат разошёлся бы с `git status` на незакоммиченном `mv`.
+ *
+ * Вынесена из [JGitRepository] на уровень файла: у класса уже десять методов, а порог
+ * `TooManyFunctions` включается на одиннадцати — а коммит шага (T-1.11) добавил свой.
+ */
+private fun stagedRenames(repository: Repository, git: Git, hasHead: Boolean): Map<String, String> {
+    if (!hasHead) return emptyMap()
+    return runCatching {
+        val entries = git.diff().setCached(true).call()
+        val detector = RenameDetector(repository)
+        detector.renameScore = GIT_RENAME_SCORE
+        detector.addAll(entries)
+        detector.compute()
+            .filter { it.changeType == DiffEntry.ChangeType.RENAME }
+            .associate { it.oldPath to it.newPath }
+    }.getOrElse { error ->
+        throw GitAccessException(ProtocolError.Internal("не удалось сопоставить переименования", error.message))
     }
 }
 
@@ -217,6 +225,63 @@ private class TaskBranchOperation(private val repository: Repository, private va
 
     /** Есть ли куда записать ссылку: создание ветки пишет в каталог `.git`. */
     private fun isWritable(): Boolean = repository.directory?.let { Files.isWritable(it.toPath()) } == true
+}
+
+/**
+ * Коммит изменяющего шага агента (T-1.11).
+ *
+ * Отдельный класс от [TaskBranchOperation] и [SnapshotOperation]: это единственная
+ * операция, которая пишет объект в историю, и предпроверка у неё своя — текущая ветка
+ * обязана совпасть с той, куда собирались коммитить. Автор задаётся здесь постоянно:
+ * `user.name`/`user.email` описали бы человека, а не агента (инвариант 4, § 8.3).
+ *
+ * @param changedFiles перечисление изменений от [JGitRepository]: в индекс попадает
+ *   ровно то, что видит `status`, — `add -A` не уважает `.gitignore` (решение 8).
+ */
+private class StepCommitOperation(
+    private val repository: Repository,
+    private val git: Git,
+    private val changedFiles: () -> List<ChangedFile>,
+) {
+
+    private val logger = LoggerFactory.getLogger(StepCommitOperation::class.java)
+
+    /**
+     * Ставит в индекс изменения и создаёт коммит; отказ — значение, а не исключение.
+     *
+     * Порядок обязателен: сначала сверка ветки — дешёвая и защищает от «коммит уехал
+     * не туда», затем перечисление изменений, затем индекс и коммит. Удаления не
+     * поддержаны: инструмента удаления в этапе 1 нет, и ставить `add` для удалённого
+     * файла нечем (решение 8).
+     */
+    @Suppress("TooGenericExceptionCaught")
+    fun commit(branch: String, message: String): StepCommitOutcome = try {
+        if (repository.branch != branch) {
+            StepCommitOutcome.Refused(StepCommitRefusal.WRONG_BRANCH)
+        } else {
+            stageAndCommit(message)
+        }
+    } catch (cancel: CancellationException) {
+        // Отмена прогона проходит насквозь: коммит не «не удался», а не состоялся.
+        throw cancel
+    } catch (error: Exception) {
+        logger.warn("Коммит шага в ветке $branch не создан: ${error.message}", error)
+        StepCommitOutcome.Refused(StepCommitRefusal.GIT_FAILED)
+    }
+
+    /** Ставит изменённые и новые файлы в индекс и коммитит; пустой набор — коммитить нечего. */
+    private fun stageAndCommit(message: String): StepCommitOutcome {
+        val files = changedFiles().filter { it.changeKind != FileChangeKind.DELETED }
+        if (files.isEmpty()) return StepCommitOutcome.NothingToCommit
+        files.forEach { git.add().addFilepattern(it.path).call() }
+        val author = PersonIdent(AGENT_AUTHOR_NAME, AGENT_AUTHOR_EMAIL)
+        val commit = git.commit()
+            .setMessage(message)
+            .setAuthor(author)
+            .setCommitter(author)
+            .call()
+        return StepCommitOutcome.Committed(commit.name)
+    }
 }
 
 /**

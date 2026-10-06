@@ -90,7 +90,7 @@ class AgentRunEngineWriteTest {
                 run.snapshots,
                 "ссылка обязана попасть в прогон: по ней защита снапшотов отличает свои от вытесняемых",
             )
-            assertEquals(ToolOutcome.SUCCESS, journal.calls.single().outcome)
+            assertEquals(ToolOutcome.SUCCESS, journal.calls.single { it.tool == WRITE_FILE }.outcome)
         }
     }
 
@@ -119,7 +119,7 @@ class AgentRunEngineWriteTest {
                 "отказ не ломает прогон: он обязан дойти до конца",
             )
             assertEquals(0, snapshots.asked, "отказ по правам снапшот не ставит")
-            assertTrue(journal.calls.single().requiredApproval)
+            assertTrue(journal.calls.single { it.tool == WRITE_FILE }.requiredApproval)
         }
     }
 
@@ -143,7 +143,7 @@ class AgentRunEngineWriteTest {
 
             run(llm)
 
-            assertEquals(2, journal.calls.size, "обе записи обязаны выполниться")
+            assertEquals(2, journal.calls.count { it.tool == WRITE_FILE }, "обе записи обязаны выполниться")
             assertEquals("первый\n", workspace.resolve("a.txt").readText())
             assertEquals("второй\n", workspace.resolve("b.txt").readText())
             assertEquals(
@@ -192,6 +192,9 @@ class AgentRunEngineWriteTest {
 
         const val CALL_ID: String = "call-1"
         const val SECOND_CALL_ID: String = "call-2"
+
+        /** Имя записывающего инструмента: по нему вызов отличается от внутренней фиксации шага. */
+        const val WRITE_FILE: String = "write_file"
 
         const val APP_ARGUMENTS: String = """{"path":"src/App.kt","content":"новое\n"}"""
 

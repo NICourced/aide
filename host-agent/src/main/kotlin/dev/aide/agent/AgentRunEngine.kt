@@ -121,6 +121,7 @@ class AgentRunEngine(
     private val placement = TaskBranchPlacement(repositories.branches, writer)
     private val runSnapshots = RunSnapshots(repositories.snapshots, writer)
     private val workStash = TaskWorkStash(repositories.workStash, ports.tasks, writer)
+    private val stepCommits = StepCommitWriter(tools)
     private val controls = ConcurrentHashMap<RunId, RunControl>()
     private val pendingModes = ConcurrentHashMap<TaskId, AutonomyMode>()
 
@@ -354,13 +355,20 @@ class AgentRunEngine(
         var current = run
         var messages = StepPrompt.request(task, step, run.plan, tools.definitions).messages
         var turns = 0
+        // Шаг изменяющий, если в нём состоялся вызов инструмента с осью записи (решение 7):
+        // отклонённая запись ничего не меняет, и коммит после неё был бы пустым. Вид вызова
+        // решает реестр, а коммит ставится один на шаг — после того, как модель закончила.
+        var changing = false
         while (true) {
             val response = when (val answer = llm.complete(LlmRequest(messages, tools.definitions))) {
                 is LlmResponse.Text -> answer
                 is LlmResponse.Error -> throw LlmCallException(answer)
             }
             current = writer.accumulate(current, response)
-            if (response.toolCalls.isEmpty()) return writer.recordStep(current, step)
+            if (response.toolCalls.isEmpty()) {
+                if (changing) stepCommits.commit(run.id, task.branch, step)
+                return writer.recordStep(current, step)
+            }
             turns += 1
             if (turns > MAX_STEP_TURNS) throw StepToolLimitException(turns)
             // Вызовы выполняются по порядку (map, а не параллельный запуск): инструменты
@@ -371,6 +379,7 @@ class AgentRunEngine(
             val results = response.toolCalls.map { call ->
                 val result = tools.invoke(run.id, call)
                 current = writer.snapshot(current, result.snapshotRef)
+                if (tools.isChanging(call, result)) changing = true
                 LlmMessage.tool(call.id, result.text)
             }
             messages = messages + LlmMessage.assistant(response.text, response.toolCalls) + results

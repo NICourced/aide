@@ -23,6 +23,7 @@ import dev.aide.host.agent.ModelSecretHandler
 import dev.aide.host.agent.RunWorker
 import dev.aide.host.agent.ServerRunEventSink
 import dev.aide.host.agent.StashRecovery
+import dev.aide.host.agent.StepCommitGuard
 import dev.aide.host.agent.StoreRunRepository
 import dev.aide.host.agent.StoreTaskRepository
 import dev.aide.host.agent.StoreToolCallRecorder
@@ -39,14 +40,18 @@ import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.store.HostStore
 import dev.aide.host.workspace.OpenWorkspaces
 import dev.aide.host.workspace.WorkspaceToolContext
+import dev.aide.tools.AgentTool
+import dev.aide.tools.ToolContext
 import dev.aide.tools.ToolInvoker
 import dev.aide.tools.ToolRegistry
+import dev.aide.tools.CommitStepTool
 import dev.aide.tools.file.FindFilesTool
 import dev.aide.tools.file.ReadFileTool
 import dev.aide.tools.file.SearchTextTool
 import dev.aide.tools.file.WriteFileTool
 import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.ports.ChangeSnapshots
+import dev.aide.tools.ports.StepCommits
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.ProtocolVersion
 import io.ktor.client.HttpClient
@@ -134,25 +139,10 @@ object HostApp {
         single<ChangeSnapshots> { ChangeSnapshotGuard(workspaces = get(), store = get()) }
         // Отложенные правки: реализация — поверх открытого воркспейса (T-1.59).
         single<WorkStash> { WorkStashGuard(workspaces = get(), sessions = get()) }
+        // Фиксация шага (T-1.11): внутренний инструмент, порт разрешается по типу интерфейса.
+        single<StepCommits> { StepCommitGuard(workspaces = get()) }
         single { StashRecovery(stashes = get(), store = get(), events = ServerRunEventSink(get())) }
-        single {
-            // Реестр и точка вызова собираются из одного экземпляра реестра: определения
-            // инструментов у модели и их выполнение обязаны быть про один и тот же набор,
-            // иначе модель позвала бы инструмент, которого точка вызова не знает.
-            val registry = ToolRegistry(listOf(ReadFileTool, FindFilesTool, SearchTextTool, WriteFileTool))
-            StepTools.of(
-                registry = registry,
-                invoker = ToolInvoker(
-                    registry = registry,
-                    // Настройки прав — из хранилища хоста (§ 9): модуль инструментов их не знает.
-                    permissions = PermissionResolver(get<HostStore>().permissions::load),
-                    recorder = StoreToolCallRecorder(get<HostStore>().toolCalls),
-                    // Точка отката — тоже хостовое знание: инструмент о git не знает (T-1.8).
-                    snapshots = get(),
-                ),
-                context = WorkspaceToolContext(get()),
-            )
-        }
+        single { stepToolsOf(get(), get(), get(), WorkspaceToolContext(get())) }
         single {
             AgentRunEngine(
                 ports = RunPorts(
@@ -270,4 +260,45 @@ object HostApp {
             httpClient = httpClient,
         )
     }
+}
+
+/**
+ * Инструменты шага, как их собирает хост: чтение, запись и внутренняя фиксация (T-1.11).
+ *
+ * Список вынесен из Koin-определения: `commit_step` требует порт фиксации, и в модуле
+ * он собирался бы вместе с остальным графом, удлиняя `module` сверх порога `LongMethod`.
+ */
+private fun hostTools(commits: StepCommits): List<AgentTool> = listOf(
+    ReadFileTool,
+    FindFilesTool,
+    SearchTextTool,
+    WriteFileTool,
+    CommitStepTool(commits),
+)
+
+/**
+ * Инструменты шага и их единственная точка вызова — одной сборкой (T-1.7, T-1.11).
+ *
+ * Реестр и точка вызова берутся из одного экземпляра: определения у модели и выполнение
+ * обязаны быть про один набор, иначе модель позвала бы инструмент, которого точка вызова
+ * не знает. Настройки прав — из хранилища хоста (§ 9), точка отката — хостовое знание
+ * (T-1.8): модуль инструментов ни того, ни другого не знает.
+ */
+private fun stepToolsOf(
+    store: HostStore,
+    commits: StepCommits,
+    snapshots: ChangeSnapshots,
+    context: ToolContext,
+): StepTools {
+    val registry = ToolRegistry(hostTools(commits))
+    return StepTools.of(
+        registry = registry,
+        invoker = ToolInvoker(
+            registry = registry,
+            permissions = PermissionResolver(store.permissions::load),
+            recorder = StoreToolCallRecorder(store.toolCalls),
+            snapshots = snapshots,
+        ),
+        context = context,
+    )
 }

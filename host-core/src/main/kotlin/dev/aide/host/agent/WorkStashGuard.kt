@@ -11,6 +11,8 @@ import dev.aide.host.git.StashReturnOutcome
 import dev.aide.host.server.ClientSessions
 import dev.aide.host.workspace.OpenWorkspaces
 import dev.aide.protocol.HostEvent
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Метка отложенного в рабочем сообщении stash: по ней при разборе видно, чьи это правки. */
 private const val STASH_MESSAGE_PREFIX = "ai/"
@@ -41,19 +43,25 @@ class WorkStashGuard(
         val opened = workspaces.current() ?: return TaskStash.Refused(RunInterruptReason.NO_WORKSPACE)
         val ref = STASH_REF_PREFIX + taskId.value
         val stash = opened.git.workStash
-        return when (val outcome = stash.stashEdits(ref, STASH_MESSAGE_PREFIX + taskId.value)) {
-            is StashOutcome.Stashed -> TaskStash.Stashed(outcome.ref, outcome.branch)
-            StashOutcome.Nothing -> TaskStash.Nothing
-            StashOutcome.Refused -> TaskStash.Refused(RunInterruptReason.STASH_FAILED)
+        // Git-работа — на IO-диспетчере (долг T-1.18): откладывание двигает рабочее дерево
+        // и индекс, а корутина прогона не должна стоять на диске.
+        return withContext(Dispatchers.IO) {
+            when (val outcome = stash.stashEdits(ref, STASH_MESSAGE_PREFIX + taskId.value)) {
+                is StashOutcome.Stashed -> TaskStash.Stashed(outcome.ref, outcome.branch)
+                StashOutcome.Nothing -> TaskStash.Nothing
+                StashOutcome.Refused -> TaskStash.Refused(RunInterruptReason.STASH_FAILED)
+            }
         }
     }
 
     override suspend fun restore(ref: String, branch: String?): StashReturn {
         val opened = workspaces.current() ?: return StashReturn.Refused(RunInterruptReason.NO_WORKSPACE)
-        val outcome = when (opened.git.workStash.returnStashEdits(ref, branch)) {
-            StashReturnOutcome.Returned -> StashReturn.Returned
-            StashReturnOutcome.Conflict -> StashReturn.Conflict(RunInterruptReason.STASH_CONFLICT)
-            StashReturnOutcome.Refused -> StashReturn.Refused(RunInterruptReason.STASH_RETURN_FAILED)
+        val outcome = withContext(Dispatchers.IO) {
+            when (opened.git.workStash.returnStashEdits(ref, branch)) {
+                StashReturnOutcome.Returned -> StashReturn.Returned
+                StashReturnOutcome.Conflict -> StashReturn.Conflict(RunInterruptReason.STASH_CONFLICT)
+                StashReturnOutcome.Refused -> StashReturn.Refused(RunInterruptReason.STASH_RETURN_FAILED)
+            }
         }
         sessions.broadcast(HostEvent.WorkspaceChanged(opened.workspace.id))
         return outcome

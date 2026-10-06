@@ -6,6 +6,7 @@ import dev.aide.domain.SnapshotRef
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolPermission
 import dev.aide.tools.AgentTool
+import dev.aide.tools.CommitStepTool
 import dev.aide.tools.ToolContext
 import dev.aide.tools.ToolInvoker
 import dev.aide.tools.ToolRegistry
@@ -18,6 +19,8 @@ import dev.aide.tools.permission.DenyReason
 import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
+import dev.aide.tools.ports.StepCommit
+import dev.aide.tools.ports.StepCommits
 import dev.aide.tools.ports.ToolCallRecorder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -63,10 +66,10 @@ fun stepToolsIn(
     workspace: Path,
     recorder: ToolCallRecorder = RecordingToolCalls(),
     stored: (String) -> ToolPermission? = { null },
-    tools: List<AgentTool> = listOf(ReadFileTool, FindFilesTool, SearchTextTool, WriteFileTool),
+    commits: FakeStepCommits = FakeStepCommits(),
     snapshots: ChangeSnapshots = EngineChangeSnapshots(),
 ): StepTools {
-    val registry = ToolRegistry(tools)
+    val registry = ToolRegistry(defaultTools(commits))
     return StepTools.of(
         registry = registry,
         invoker = ToolInvoker(
@@ -77,6 +80,43 @@ fun stepToolsIn(
         ),
         context = TestToolContext(workspace),
     )
+}
+
+/**
+ * Реестр инструментов шага, как его собирает хост: чтение, запись и внутренняя фиксация.
+ *
+ * `commit_step` в наборе обязателен: движок зовёт его после изменяющего шага, и без него
+ * прогон записал бы в журнал «инструмента агент не знает» вместо коммита (T-1.11).
+ */
+private fun defaultTools(commits: StepCommits): List<AgentTool> =
+    listOf(ReadFileTool, FindFilesTool, SearchTextTool, WriteFileTool, CommitStepTool(commits))
+
+/**
+ * Порт фиксации шага в тестах движка: запоминает ветки и сообщения, с которыми его звали.
+ *
+ * По умолчанию отвечает «зафиксировано»: движку важен сам факт вызова и его аргументы,
+ * а исход отказа проверяется сменой ответа.
+ */
+class FakeStepCommits(
+    private var outcome: StepCommit = StepCommit.Committed(DEFAULT_HASH),
+) : StepCommits {
+
+    /** Вызовы порта в порядке обращений: ветка и сообщение. */
+    val calls: MutableList<Pair<String, String>> = mutableListOf()
+
+    /** Меняет ответ порта: так проверяется исход отказа. */
+    fun answer(outcome: StepCommit) {
+        this.outcome = outcome
+    }
+
+    override suspend fun commit(branch: String, message: String): StepCommit {
+        calls += branch to message
+        return outcome
+    }
+
+    private companion object {
+        const val DEFAULT_HASH: String = "agent-commit-hash"
+    }
 }
 
 /** Ссылка точки отката в тестах движка: по ней видно, что снапшот дошёл до `AgentRun.snapshots`. */

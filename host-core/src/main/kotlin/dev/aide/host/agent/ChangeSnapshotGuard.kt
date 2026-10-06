@@ -9,6 +9,8 @@ import dev.aide.host.store.HostStore
 import dev.aide.host.workspace.OpenWorkspaces
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 
@@ -54,9 +56,14 @@ class ChangeSnapshotGuard(
 
     override suspend fun beforeChange(runId: RunId): ChangeSnapshot {
         val opened = workspaces.current() ?: return ChangeSnapshot.Failed(RunInterruptReason.NO_WORKSPACE)
-        val head = opened.git.headCommit()
-        val cached = reusable(runId, opened.git, head)
-        return cached?.let { ChangeSnapshot.Taken(it) } ?: place(runId, head)
+        // Git-работа — на IO-диспетчере (долг T-1.18): чтение HEAD и запись ссылки
+        // блокируют поток, а корутина прогона не должна стоять на диске. Кэш тройки
+        // «прогон → HEAD → ссылка» трогается в одной корутине (О-8), поэтому гонки нет.
+        return withContext(Dispatchers.IO) {
+            val head = opened.git.headCommit()
+            val cached = reusable(runId, opened.git, head)
+            cached?.let { ChangeSnapshot.Taken(it) } ?: place(runId, head)
+        }
     }
 
     /** Ставит новый снапшот и запоминает тройку «прогон → HEAD → ссылка». */

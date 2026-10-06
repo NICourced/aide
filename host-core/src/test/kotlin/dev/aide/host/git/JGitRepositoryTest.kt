@@ -4,6 +4,7 @@ import dev.aide.domain.FileChangeKind
 import dev.aide.protocol.ProtocolError
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,6 +28,15 @@ private const val LABEL = "before-agent-step"
 
 /** Ссылка на отложенные правки пользователя из соглашения T-1.59. */
 private const val STASH_REF = "refs/ai/stash/t-1"
+
+/** Сообщение коммита шага: номер с единицы и описание (решение 6). */
+private const val STEP_MESSAGE = "Шаг 1: поправить вход"
+
+/** Автор-агент: личность, которой JGitRepository подписывает коммит шага (T-1.11). */
+private const val AGENT_AUTHOR = "aide-agent <agent@aide.local>"
+
+/** Автор фикстуры: с ним сверяется, что коммит шага подписан агентом, а не настройкой git. */
+private const val FIXTURE_AUTHOR = "Aide Test <test@aide.dev>"
 
 class JGitRepositoryTest {
 
@@ -532,6 +542,112 @@ class JGitRepositoryTest {
             assertEquals(StashReturnOutcome.Refused, repository.workStash.returnStashEdits(STASH_REF, "master"))
         }
     }
+
+    @Test
+    fun `коммит шага появляется в истории с автором-агентом и сообщением шага`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+
+        JGitRepository.open(root).use { repository ->
+            assertEquals(TaskBranchOutcome.Created("master"), repository.ensureTaskBranch(TASK_BRANCH))
+            val outcome = assertIs<StepCommitOutcome.Committed>(
+                repository.commitStep(TASK_BRANCH, STEP_MESSAGE),
+            )
+
+            val head = repository.commitLog(limit = LOG_LIMIT).first()
+            assertEquals(STEP_MESSAGE, head.message, "сообщение обязано нести номер шага и описание")
+            assertEquals(outcome.hash, head.hash)
+            assertEquals(head.hash, GitCliFixture.headHash(root), "коммит шага — новый HEAD ветки задачи")
+            // Автор задан агентом, а не `user.name`/`user.email` фикстуры: по автору
+            // коммит агента отличается от коммита человека (инвариант 4, § 8.3).
+            assertEquals(
+                listOf(AGENT_AUTHOR, FIXTURE_AUTHOR, FIXTURE_AUTHOR),
+                GitCliFixture.logField(root, "%an <%ae>", LOG_LIMIT),
+            )
+        }
+    }
+
+    @Test
+    fun `коммит шага включает правку существующего файла и новый файл`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+
+        JGitRepository.open(root).use { repository ->
+            repository.ensureTaskBranch(TASK_BRANCH)
+
+            assertIs<StepCommitOutcome.Committed>(repository.commitStep(TASK_BRANCH, STEP_MESSAGE))
+
+            assertEquals(
+                setOf("src/Login.kt", "src/New.kt"),
+                committedPaths(root),
+                "в коммит обязаны попасть и правка отслеживаемого файла, и новый файл",
+            )
+            assertTrue(repository.changedFiles().isEmpty(), "после коммита дерево чистое")
+        }
+    }
+
+    @Test
+    fun `файл из gitignore в коммит не попадает`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        // Игнорируемый файл: `git status` его не покажет, а слепой `add -A` — записал бы.
+        root.resolve(".gitignore").writeText("*.log\n")
+        root.resolve("debug.log").writeText("мусор\n")
+
+        JGitRepository.open(root).use { repository ->
+            repository.ensureTaskBranch(TASK_BRANCH)
+
+            assertIs<StepCommitOutcome.Committed>(repository.commitStep(TASK_BRANCH, STEP_MESSAGE))
+
+            assertTrue("debug.log" !in committedPaths(root), "игнорируемый файл в коммит не попадает")
+            assertEquals(
+                emptyList(),
+                GitCliFixture.run(listOf("git", "ls-files", "debug.log"), root).output.trim().lines()
+                    .filter { it.isNotBlank() },
+                "игнорируемый файл обязан остаться неотслеживаемым",
+            )
+        }
+    }
+
+    @Test
+    fun `чистое дерево — коммитить нечего, пустой коммит не создаётся`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        GitCliFixture.run(listOf("git", "add", "-A"), root)
+        GitCliFixture.run(listOf("git", "commit", "-m", "правки приняты"), root)
+
+        JGitRepository.open(root).use { repository ->
+            repository.ensureTaskBranch(TASK_BRANCH)
+
+            assertEquals(StepCommitOutcome.NothingToCommit, repository.commitStep(TASK_BRANCH, STEP_MESSAGE))
+            assertEquals(
+                listOf("правки приняты", "второй коммит", "первый коммит"),
+                repository.commitLog(limit = LOG_LIMIT).map { it.message },
+                "пустого коммита не появилось",
+            )
+        }
+    }
+
+    @Test
+    fun `коммит не в текущую ветку отказывает, а не уезжает в чужую`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+
+        JGitRepository.open(root).use { repository ->
+            // Мы остались на master: ветку задачи не обеспечивали, коммит туда не попадёт.
+            val outcome = assertIs<StepCommitOutcome.Refused>(repository.commitStep(TASK_BRANCH, STEP_MESSAGE))
+
+            assertEquals(StepCommitRefusal.WRONG_BRANCH, outcome.reason)
+            assertEquals("master", repository.currentBranch())
+            assertEquals(
+                listOf("второй коммит", "первый коммит"),
+                repository.commitLog(limit = LOG_LIMIT).map { it.message },
+                "чужая ветка не получила коммита",
+            )
+        }
+    }
+
+    /** Файлы, вошедшие в последний коммит, по версии git. */
+    private fun committedPaths(root: Path): Set<String> =
+        GitCliFixture.run(listOf("git", "show", "--format=", "--name-only", "HEAD"), root).output
+            .lines()
+            .filter { it.isNotBlank() }
+            .toSet()
 
     /** Изменения по данным JGit в том же виде, в каком их даёт разбор `git status`. */
     private fun actualFromJGit(repository: GitRepository): List<Pair<String, FileChangeKind>> =

@@ -5,6 +5,8 @@ import dev.aide.agent.ports.TaskSnapshot
 import dev.aide.domain.SnapshotTrigger
 import dev.aide.host.store.HostStore
 import dev.aide.host.workspace.OpenWorkspaces
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 
@@ -30,13 +32,17 @@ class TaskSnapshotGuard(
     private val placement = SnapshotPlacement(workspaces, store, clock)
 
     override suspend fun create(trigger: SnapshotTrigger): TaskSnapshot =
-        when (val placed = placement.place(trigger)) {
-            // Пустой репозиторий — не ошибка прогона: это решает порт, а не адаптер (решение 5).
-            SnapshotPlacement.Result.NoHead -> TaskSnapshot.NoHead
+        // Git-работа — на IO-диспетчере (долг T-1.18): запись ссылки блокирует поток,
+        // а корутина прогона не должна стоять на диске.
+        withContext(Dispatchers.IO) {
+            when (val placed = placement.place(trigger)) {
+                // Пустой репозиторий — не ошибка прогона: это решает порт, а не адаптер (решение 5).
+                SnapshotPlacement.Result.NoHead -> TaskSnapshot.NoHead
 
-            // Сбой записи — отказ, а не исключение: задача получает код причины (T-1.19).
-            is SnapshotPlacement.Result.Failed -> TaskSnapshot.Refused(placed.reason)
+                // Сбой записи — отказ, а не исключение: задача получает код причины (T-1.19).
+                is SnapshotPlacement.Result.Failed -> TaskSnapshot.Refused(placed.reason)
 
-            is SnapshotPlacement.Result.Created -> TaskSnapshot.Created(placed.ref)
+                is SnapshotPlacement.Result.Created -> TaskSnapshot.Created(placed.ref)
+            }
         }
 }

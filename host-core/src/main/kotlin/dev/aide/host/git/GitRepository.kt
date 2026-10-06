@@ -62,6 +62,20 @@ interface GitRepository : AutoCloseable {
     fun ensureTaskBranch(branch: String): TaskBranchOutcome
 
     /**
+     * Коммитит изменения в ветке [branch] сообщением [message] (T-1.11).
+     *
+     * Автор — постоянная личность агента ([AGENT_AUTHOR_NAME], [AGENT_AUTHOR_EMAIL]),
+     * а не `user.name`/`user.email`: этим выполняется инвариант 4 — коммит агента отличим
+     * от коммита человека (§ 8.3). Ставится в индекс только то, что показывает `status`
+     * ([changedFiles]), а не слепой `add -A`: тот не уважает `.gitignore`. Чистое дерево —
+     * [StepCommitOutcome.NothingToCommit], а не пустой коммит.
+     *
+     * Отказ возвращается результатом, а не исключением: «не та ветка» и «git отказал» —
+     * состояния репозитория, которые обязан объяснить движок, а не сбой чтения.
+     */
+    fun commitStep(branch: String, message: String): StepCommitOutcome
+
+    /**
      * Ставит снапшот: ссылку [ref] на текущий HEAD (T-1.19).
      *
      * Рабочее дерево, HEAD и история при этом не трогаются: снапшот — ссылка на уже
@@ -229,5 +243,51 @@ enum class TaskBranchRefusal {
     READ_ONLY,
 
     /** Git отказал в создании ветки или в переключении: правки мешают либо ссылка не пишется. */
+    GIT_FAILED,
+}
+
+/**
+ * Личность агента в истории git (T-1.11).
+ *
+ * Задана константой, а не взята из `user.name`/`user.email`: инвариант 4 требует, чтобы
+ * автора изменения было видно в истории, а настройки пользователя описывают человека,
+ * за которого коммитил бы агент. Коммиты человека остаются за его собственной личностью,
+ * и по автору эти два вида правок не смешиваются (§ 8.3).
+ */
+const val AGENT_AUTHOR_NAME: String = "aide-agent"
+
+/** Почта автора-агента: продолжение [AGENT_AUTHOR_NAME], вместе они образуют личность в git. */
+const val AGENT_AUTHOR_EMAIL: String = "agent@aide.local"
+
+/**
+ * Чем закончился коммит шага агента (T-1.11).
+ *
+ * В терминах git, без кодов прогона: git-слой не знает ни о задачах, ни о прогонах,
+ * а перевод причины в код отказа делает адаптер порта (`StepCommitGuard`).
+ */
+sealed interface StepCommitOutcome {
+
+    /** Коммит создан; [hash] — его полный хеш. */
+    data class Committed(val hash: String) : StepCommitOutcome
+
+    /** Изменений нет: пустой коммит не создаётся (NFR-SAFE-5). */
+    data object NothingToCommit : StepCommitOutcome
+
+    /** Коммит не создан; [reason] объясняет, почему именно. */
+    data class Refused(val reason: StepCommitRefusal) : StepCommitOutcome
+}
+
+/** Почему репозиторий не создал коммит шага. */
+enum class StepCommitRefusal {
+
+    /**
+     * Текущая ветка не та, в которую собирались коммитить.
+     *
+     * Защита от «коммит уехал не туда»: работу агента нельзя записать в чужую ветку,
+     * даже если переключение произошло не нами.
+     */
+    WRONG_BRANCH,
+
+    /** Git отказал: индекс не пишется, объект не создаётся, каталог недоступен. */
     GIT_FAILED,
 }

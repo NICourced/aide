@@ -9,6 +9,8 @@ import dev.aide.host.server.ClientSessions
 import dev.aide.host.workspace.OpenWorkspaces
 import dev.aide.host.workspace.OpenedWorkspace
 import dev.aide.protocol.HostEvent
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Порт ветки задачи поверх открытого воркспейса (T-1.18).
@@ -34,7 +36,10 @@ class TaskBranchGuard(
 
     override suspend fun ensure(branch: String): TaskBranch {
         val opened = workspaces.current() ?: return TaskBranch.Refused(RunInterruptReason.NO_WORKSPACE)
-        return when (val outcome = opened.git.ensureTaskBranch(branch)) {
+        // Git-работа — на IO-диспетчере (долг T-1.18): переключение ветки блокирует поток,
+        // а корутина прогона не должна стоять на диске.
+        val outcome = withContext(Dispatchers.IO) { opened.git.ensureTaskBranch(branch) }
+        return when (outcome) {
             is TaskBranchOutcome.Created -> announced(opened, TaskBranch.Created(outcome.base))
             TaskBranchOutcome.Existing -> announced(opened, TaskBranch.Existing)
             is TaskBranchOutcome.Refused -> TaskBranch.Refused(outcome.reason.code)

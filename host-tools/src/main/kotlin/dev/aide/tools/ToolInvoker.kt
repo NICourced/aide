@@ -56,14 +56,40 @@ class ToolInvoker(
     private val logger = LoggerFactory.getLogger(ToolInvoker::class.java)
 
     /**
-     * Вызывает инструмент и записывает вызов в журнал — с любым исходом.
+     * Вызывает инструмент, предложенный моделью, и пишет вызов в журнал — с любым исходом.
+     *
+     * Внутренний инструмент ([ToolVisibility.INTERNAL]) отсюда исполнить нельзя: он адресован
+     * движку, а не модели, и «не показывать определение» ещё не значит «нельзя позвать по
+     * имени» — движок исполняет его без прав и без снапшота, так что модельный путь обошёл бы
+     * и права, и «один коммит на шаг». Поэтому модельный путь отвечает отказом, и отказ
+     * остаётся в журнале: попытка вызова — такое же событие прозрачности (FR-AGENT-8).
      *
      * @param arguments аргументы строкой, как их прислала модель: формат у протоколов
      *   разный, и разбирает их здесь тот, кто проверяет их по схеме.
      */
-    suspend fun invoke(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult {
+    suspend fun invoke(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult =
+        journaled(runId, tool, arguments) { attempt(runId, tool, arguments, context, Origin.MODEL) }
+
+    /**
+     * Вызывает инструмент от имени хоста (T-1.11): так движок прогона зовёт `commit_step`.
+     *
+     * Внутренний инструмент исполняется здесь без прав и без точки отката (О-4): изменяющее
+     * действие уже одобрено, а снапшот принадлежит изменению и поставлен перед ним (T-1.8).
+     * Обычный инструмент, позванный этим путём, проходит общий порядок — права и снапшот
+     * не обходятся: облегчён вход только для внутренних, а не для любого, кого назовёт хост.
+     */
+    suspend fun invokeInternal(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult =
+        journaled(runId, tool, arguments) { attempt(runId, tool, arguments, context, Origin.INTERNAL) }
+
+    /** Замеряет длительность, выполняет попытку и записывает её в журнал — с любым исходом. */
+    private suspend fun journaled(
+        runId: RunId,
+        tool: String,
+        arguments: String,
+        body: suspend () -> Attempt,
+    ): ToolResult {
         val startedNanos = System.nanoTime()
-        val attempt = attempt(runId, tool, arguments, context)
+        val attempt = body()
         val elapsedMillis = (System.nanoTime() - startedNanos) / NANOS_PER_MILLI
         // Идентификатор вызова генерирует хост, а не берёт у провайдера: у того он
         // уникален только внутри диалога, а журнал — таблица на весь хост, и совпавший
@@ -92,28 +118,52 @@ class ToolInvoker(
      * потом права. Спрашивать разрешение на вызов с негодными аргументами значило бы
      * показывать пользователю диалог о том, чего модель не собиралась делать.
      */
-    private suspend fun attempt(runId: RunId, tool: String, arguments: String, context: ToolContext): Attempt {
+    private suspend fun attempt(
+        runId: RunId,
+        tool: String,
+        arguments: String,
+        context: ToolContext,
+        origin: Origin,
+    ): Attempt {
         val definition = registry.find(tool)
         val parsed = if (definition == null) null else parseArguments(arguments)
         return when {
             definition == null -> refused("инструмента «$tool» агент не знает", ToolOutcome.FAILURE)
             parsed == null -> refused("аргументы вызова «$tool» не являются JSON-объектом", ToolOutcome.FAILURE)
-            else -> decide(runId, definition, parsed, context)
+            else -> decide(runId, definition, parsed, context, origin)
         }
     }
 
-    /** Решение по проверенному вызову: схема, затем права. */
+    /**
+     * Решение по проверенному вызову: схема, затем права — кроме внутренних инструментов.
+     *
+     * Внутренние ([ToolVisibility.INTERNAL], T-1.11) не проходят ни права, ни точку отката.
+     * Причина: пользователь одобряет изменение (`write_file`), а не бухгалтерию хоста, и
+     * второй вопрос за то же действие — ровно то, что запрещает О-4 («подтверждение не
+     * дублируется»). Точка отката принадлежит изменению и уже поставлена перед записью
+     * (T-1.8), а ставить её второй раз значило бы вытеснять осмысленные снапшоты ради дублей.
+     *
+     * Облегчённый вход — только для вызова от имени хоста ([Origin.INTERNAL]): из модельного
+     * пути внутренний инструмент недоступен вовсе, иначе по имени `commit_step` модель
+     * обошла бы и права, и правило «один коммит на изменяющий шаг» (решение 1). Вызов при
+     * этом идёт через эту точку — ради журнала, таймаута и замера времени (О-3).
+     */
     private suspend fun decide(
         runId: RunId,
         definition: AgentTool,
         arguments: JsonObject,
         context: ToolContext,
+        origin: Origin,
     ): Attempt {
         val complaint = ArgumentsSchema.check(definition.argumentsSchema, arguments)
-        return if (complaint != null) {
-            refused("${definition.name}: $complaint", ToolOutcome.FAILURE)
-        } else {
-            permitted(runId, definition, arguments, context)
+        return when {
+            complaint != null -> refused("${definition.name}: $complaint", ToolOutcome.FAILURE)
+            definition.visibility == ToolVisibility.INTERNAL && origin == Origin.MODEL -> refused(
+                "инструмент «${definition.name}» внутренний: модель его вызывать не может",
+                ToolOutcome.FAILURE,
+            )
+            definition.visibility == ToolVisibility.INTERNAL -> execute(definition, arguments, context)
+            else -> permitted(runId, definition, arguments, context)
         }
     }
 
@@ -207,6 +257,15 @@ class ToolInvoker(
 
 /** Исход попытки и то, спрашивали ли подтверждение: и то и другое едет в журнал. */
 private data class Attempt(val result: ToolResult, val requiredApproval: Boolean = false)
+
+/**
+ * Кто просит вызов — модель или хост (T-1.11).
+ *
+ * Различие нужно ровно в одном месте: внутренний инструмент исполняется только по просьбе
+ * хоста. Сложи оба пути в один — и модель, назвав `commit_step`, обошла бы и права, и
+ * «один коммит на изменяющий шаг», потому что внутренний инструмент их не спрашивает.
+ */
+private enum class Origin { MODEL, INTERNAL }
 
 /**
  * Тот же результат, но с точкой отката (T-1.8).
