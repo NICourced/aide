@@ -1,7 +1,13 @@
 package dev.aide.client.state
 
+import dev.aide.domain.Cost
+import dev.aide.domain.RunId
+import dev.aide.domain.ToolCall
+import dev.aide.domain.ToolCallId
+import dev.aide.domain.ToolOutcome
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostEvent
+import dev.aide.protocol.ToolCallCursor
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -9,13 +15,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.datetime.Instant
 
 /**
  * Обновление сессии после открытия воркспейса проверяется на обоих порядках: ответ раньше
@@ -99,9 +109,59 @@ class HostClientTest {
         true
     } == true
 
+    @Test
+    fun `каждая страница журнала уходит с новым RequestId`() {
+        runBlocking {
+            val runId = RunId("r-1")
+
+            client.toolLogClient.toolCalls(runId)
+            client.toolLogClient.toolCalls(runId, ToolCallCursor(TOOL_CALL_AT, ToolCallId("tc-1")), limit = 50)
+
+            val pages = connection.takeRequests().filterIsInstance<ClientMessage.ToolCalls>()
+            assertEquals(2, pages.size, "оба запроса журнала обязаны дойти до хоста")
+            assertEquals(
+                2,
+                pages.map { it.requestId }.distinct().size,
+                "повтор с тем же RequestId хост принял бы за повтор и вернул прежнюю страницу",
+            )
+            assertEquals(ToolCallId("tc-1"), pages[1].cursor?.id, "курсор обязан уехать на хост")
+            assertEquals(50, pages[1].limit)
+        }
+    }
+
+    @Test
+    fun `живая запись журнала доходит до подписчика`() {
+        runBlocking {
+            val expected = toolCall()
+            val subscribed = CompletableDeferred<Unit>()
+            val received = async {
+                client.toolCallEvents.onSubscription { subscribed.complete(Unit) }.first()
+            }
+
+            subscribed.await()
+            connection.emit(HostEvent.ToolCallRecorded(expected))
+
+            assertEquals(expected, withTimeoutOrNull(WAIT_MILLIS) { received.await() })
+        }
+    }
+
+    private fun toolCall(): ToolCall = ToolCall(
+        id = ToolCallId("tc-1"),
+        runId = RunId("r-1"),
+        tool = "read_file",
+        arguments = """{"path":"src/App.kt"}""",
+        result = "содержимое",
+        outcome = ToolOutcome.SUCCESS,
+        durationMillis = 1,
+        cost = Cost(amountMicros = 0, known = true),
+        requiredApproval = false,
+        at = TOOL_CALL_AT,
+    )
+
     private companion object {
         const val REPO_PATH = "/projects/aide"
         const val WAIT_MILLIS = 5_000L
         const val POLL_MILLIS = 10L
+        val TOOL_CALL_AT: Instant = Instant.fromEpochMilliseconds(1_758_535_200_000)
     }
 }

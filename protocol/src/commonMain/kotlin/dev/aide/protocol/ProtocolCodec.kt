@@ -51,6 +51,8 @@ object ClientMessageType {
     const val SET_MODEL_SECRET = "setModelSecret"
     const val DELETE_MODEL_SECRET = "deleteModelSecret"
     const val MODEL_SECRETS = "modelSecrets"
+    const val TOOL_CALLS = "toolCalls"
+    const val TOOL_CALL_DETAIL = "toolCallDetail"
 }
 
 /** Имена типов сообщений хоста. */
@@ -70,6 +72,8 @@ object HostMessageType {
     const val MODEL_CHECK_RESULT = "modelCheckResult"
     const val MODEL_SECRET_CHANGED = "modelSecretChanged"
     const val MODEL_SECRETS_SNAPSHOT = "modelSecretsSnapshot"
+    const val TOOL_CALL_PAGE = "toolCallPage"
+    const val TOOL_CALL_CONTENT = "toolCallContent"
     const val EVENT = "event"
 }
 
@@ -106,6 +110,8 @@ object ProtocolCodec {
 
         is ClientMessage.SetModelSecret, is ClientMessage.DeleteModelSecret, is ClientMessage.ModelSecrets ->
             encodeModelSecrets(message)
+
+        is ClientMessage.ToolCalls, is ClientMessage.ToolCallDetail -> encodeToolLog(message)
     }
 
     /** Кодирует сообщение хоста; полнота таблицы гарантируется исчерпывающим `when`. */
@@ -120,6 +126,8 @@ object ProtocolCodec {
             encodeModelConfig(message)
 
         is HostMessage.ModelSecretChanged, is HostMessage.ModelSecretsSnapshot -> encodeModelSecrets(message)
+
+        is HostMessage.ToolCallPage, is HostMessage.ToolCallContent -> encodeToolLog(message)
     }
 
     fun decodeClientMessage(bytes: ByteArray): DecodeResult<ClientMessage> {
@@ -128,6 +136,7 @@ object ProtocolCodec {
             ?: decodeAgentClient(env)
             ?: decodeModelConfigClient(env)
             ?: decodeModelSecretsClient(env)
+            ?: decodeToolLogClient(env)
             ?: DecodeResult.Ignored(env.type, "неизвестный тип сообщения клиента")
     }
 
@@ -137,6 +146,7 @@ object ProtocolCodec {
             ?: decodeAgentHost(env)
             ?: decodeModelConfigHost(env)
             ?: decodeModelSecretsHost(env)
+            ?: decodeToolLogHost(env)
             ?: DecodeResult.Ignored(env.type, "неизвестный тип сообщения хоста")
     }
 
@@ -354,5 +364,43 @@ private fun decodeModelSecretsClient(env: WireEnvelope): DecodeResult<ClientMess
 private fun decodeModelSecretsHost(env: WireEnvelope): DecodeResult<HostMessage>? = when (env.type) {
     HostMessageType.MODEL_SECRET_CHANGED -> decode(env, HostMessage.ModelSecretChanged.serializer())
     HostMessageType.MODEL_SECRETS_SNAPSHOT -> decode(env, HostMessage.ModelSecretsSnapshot.serializer())
+    else -> null
+}
+
+// ——— Журнал вызовов инструментов: страницы и полное содержимое (T-1.3) ———
+//
+// Отдельная группа, а не строки в группе агента: у журнала свой повод меняться —
+// он единственные данные, которые листаются страницами и по которым нужен отдельный
+// запрос полного содержимого, когда страница несёт только превью.
+
+private fun encodeToolLog(message: ClientMessage): ByteArray = when (message) {
+    is ClientMessage.ToolCalls ->
+        envelope(ClientMessageType.TOOL_CALLS, ClientMessage.ToolCalls.serializer(), message)
+
+    is ClientMessage.ToolCallDetail ->
+        envelope(ClientMessageType.TOOL_CALL_DETAIL, ClientMessage.ToolCallDetail.serializer(), message)
+
+    else -> wrongGroup(message)
+}
+
+private fun encodeToolLog(message: HostMessage): ByteArray = when (message) {
+    is HostMessage.ToolCallPage ->
+        envelope(HostMessageType.TOOL_CALL_PAGE, HostMessage.ToolCallPage.serializer(), message)
+
+    is HostMessage.ToolCallContent ->
+        envelope(HostMessageType.TOOL_CALL_CONTENT, HostMessage.ToolCallContent.serializer(), message)
+
+    else -> wrongGroup(message)
+}
+
+private fun decodeToolLogClient(env: WireEnvelope): DecodeResult<ClientMessage>? = when (env.type) {
+    ClientMessageType.TOOL_CALLS -> decode(env, ClientMessage.ToolCalls.serializer())
+    ClientMessageType.TOOL_CALL_DETAIL -> decode(env, ClientMessage.ToolCallDetail.serializer())
+    else -> null
+}
+
+private fun decodeToolLogHost(env: WireEnvelope): DecodeResult<HostMessage>? = when (env.type) {
+    HostMessageType.TOOL_CALL_PAGE -> decode(env, HostMessage.ToolCallPage.serializer())
+    HostMessageType.TOOL_CALL_CONTENT -> decode(env, HostMessage.ToolCallContent.serializer())
     else -> null
 }

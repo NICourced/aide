@@ -35,6 +35,8 @@ import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ClientSessions
 import dev.aide.host.server.ProtocolServer
 import dev.aide.host.server.StageZeroHandler
+import dev.aide.host.server.ToolCallBroadcaster
+import dev.aide.host.server.ToolLogHandler
 import dev.aide.host.server.freeLoopbackPort
 import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.store.HostStore
@@ -53,6 +55,7 @@ import dev.aide.tools.limits.NetworkPolicy
 import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.StepCommits
+import dev.aide.host.server.ToolCallEvents
 import dev.aide.tools.sandbox.RunCommandTool
 import dev.aide.tools.sandbox.RunLintTool
 import dev.aide.tools.sandbox.RunTestsTool
@@ -68,6 +71,7 @@ import org.koin.core.KoinApplication
 import org.koin.core.module.Module
 import org.koin.core.qualifier.Qualifier
 import org.koin.core.qualifier.named
+import org.koin.dsl.bind
 import org.koin.dsl.module
 
 /**
@@ -123,6 +127,13 @@ object HostApp {
         single(versionQualifier) { ProtocolVersion.CURRENT }
         single { storage.databasePath?.let(DatabaseFactory::open) ?: DatabaseFactory.open() }
         single { ClientSessions() }
+        // Рассылка журнала (T-1.3): очередь живёт в графе, чтобы точка вызова инструментов
+        // публиковала событие, не дожидаясь отправки. Отдельная корутина рассылки
+        // запускается в open() тем же job'ом, что и воркер очереди.
+        // bind: точка вызова получает порт `ToolCallEvents`, а open() — реализацию, чтобы
+        // запустить рассылку. Koin разрешает по точному типу, и без bind одной из двух
+        // зависимостей не нашлось бы (T-1.18).
+        single { ToolCallBroadcaster(sessions = get()) } bind ToolCallEvents::class
         // Открытые воркспейсы — одна точка правды и для обработчика клиента, и для
         // инструментов агента: воркспейс открывает клиент, а читает его агент (T-1.7).
         single { OpenWorkspaces() }
@@ -146,7 +157,7 @@ object HostApp {
         // Фиксация шага (T-1.11): внутренний инструмент, порт разрешается по типу интерфейса.
         single<StepCommits> { StepCommitGuard(workspaces = get()) }
         single { StashRecovery(stashes = get(), store = get(), events = ServerRunEventSink(get())) }
-        single { stepToolsOf(get(), get(), get(), WorkspaceToolContext(get())) }
+        single { stepToolsOf(get(), get(), get(), WorkspaceToolContext(get()), get()) }
         single {
             AgentRunEngine(
                 ports = RunPorts(
@@ -180,12 +191,15 @@ object HostApp {
                 config = storage.config::load,
             )
         }
+        // Журнал вызовов: чтение страницами и полное содержимое (T-1.3).
+        single { ToolLogHandler(store = get<HostStore>().toolCalls) }
         single<ClientMessageHandler> {
             ClientMessageRouter(
                 stageZero = get<StageZeroHandler>(),
                 agent = get<AgentRunHandler>(),
                 modelConfig = get<AgentConfigHandler>(),
                 modelSecrets = get<ModelSecretHandler>(),
+                toolLog = get<ToolLogHandler>(),
             )
         }
         single {
@@ -251,7 +265,11 @@ object HostApp {
 
         val engine = graph.koin.get<AgentRunEngine>()
         val workerJob = SupervisorJob()
-        RunWorker(engine).start(CoroutineScope(workerJob + Dispatchers.Default))
+        val hostScope = CoroutineScope(workerJob + Dispatchers.Default)
+        RunWorker(engine).start(hostScope)
+        // Рассылка журнала (T-1.3) — на том же job'е, что и воркер: close() отменяет его,
+        // и корутина рассылки останавливается вместе с хостом.
+        graph.koin.get<ToolCallBroadcaster>().start(hostScope)
 
         val server = graph.koin.get<ProtocolServer>()
         server.start()
@@ -298,6 +316,7 @@ private fun stepToolsOf(
     commits: StepCommits,
     snapshots: ChangeSnapshots,
     context: ToolContext,
+    events: ToolCallEvents,
 ): StepTools {
     // Предел сети создаётся здесь, а не приходит из настроек: в этапе 1 список разрешённых
     // хостов задавать негде (интерфейс — этап 3), поэтому по умолчанию пуст и это отказ.
@@ -307,7 +326,7 @@ private fun stepToolsOf(
         invoker = ToolInvoker(
             registry = registry,
             permissions = PermissionResolver(store.permissions::load),
-            recorder = StoreToolCallRecorder(store.toolCalls),
+            recorder = StoreToolCallRecorder(store.toolCalls, events),
             snapshots = snapshots,
         ),
         context = context,

@@ -5,6 +5,7 @@ import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import dev.aide.host.store.db.HostDatabase
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class MigrationTest {
@@ -73,6 +74,38 @@ class MigrationTest {
         )
         assertEquals(2, database.taskQueries.count().executeAsOne())
         assertEquals(3, database.taskQueries.byId("task-new").executeAsOne().payload.size)
+
+        driver.close()
+    }
+
+    @Test
+    fun `миграция с версии 2 на версию 3 добавляет индекс журнала и сохраняет записи`() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+
+        // 1. Непустая база после первой миграции — это состояние версии 2.
+        StoreTestSupport.createLegacyDatabase(driver)
+        HostDatabase.Schema.migrate(driver, 1, 2, *arrayOf<AfterVersion>())
+        driver.execute(
+            null,
+            "INSERT INTO tool_call(id, run_id, tool, outcome, required_approval, duration_millis, at, payload) " +
+                "VALUES ('tc-2', 'r-1', 'fs.write', 'SUCCESS', 1, 42, 1758535260000, X'')",
+            0,
+        )
+        assertFalse(
+            StoreTestSupport.indexes(driver, "tool_call").contains("tool_call_run_at"),
+            "до миграции составного индекса быть не должно: ${StoreTestSupport.indexes(driver, "tool_call")}",
+        )
+
+        // 2. Миграция до версии 3.
+        HostDatabase.Schema.migrate(driver, 2, 3, *arrayOf<AfterVersion>())
+
+        // 3. Запись на месте, и появился составной индекс под страницы журнала.
+        val database = HostDatabase(driver)
+        assertEquals("fs.write", database.toolCallQueries.byId("tc-2").executeAsOne().tool)
+        assertTrue(
+            StoreTestSupport.indexes(driver, "tool_call").contains("tool_call_run_at"),
+            "версия 2 обязана добавить индекс (run_id, at, id): ${StoreTestSupport.indexes(driver, "tool_call")}",
+        )
 
         driver.close()
     }

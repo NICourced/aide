@@ -83,4 +83,19 @@ internal object StoreTestSupport {
         )
         return names
     }
+
+    /** Имена индексов таблицы: по ним видно, что миграция добавила составной индекс журнала. */
+    fun indexes(driver: SqlDriver, table: String): List<String> {
+        val names = mutableListOf<String>()
+        driver.executeQuery(
+            null,
+            "PRAGMA index_list($table)",
+            { cursor ->
+                while (cursor.next().value) names += cursor.getString(1).orEmpty()
+                QueryResult.Value(Unit)
+            },
+            0,
+        )
+        return names
+    }
 }

@@ -32,7 +32,7 @@ class DatabaseFactoryTest {
                 assertEquals(StoreFixtures.task, store.tasks.load(StoreFixtures.task.id))
             }
 
-            assertEquals(2L, userVersionOf(path))
+            assertEquals(3L, userVersionOf(path))
         } finally {
             directory.toFile().deleteRecursively()
         }
@@ -75,7 +75,7 @@ class DatabaseFactoryTest {
                 legacyDriver.close()
             }
 
-            // Открытие хоста после обновления: миграция 1 → 2 на непустой базе.
+            // Открытие хоста после обновления: миграция 1 → 3 (1 → 2 → 3) на непустой базе.
             DatabaseFactory.open(path).use { store ->
                 val task = assertNotNull(store.tasks.load(TaskId("t-legacy")))
                 assertEquals("Старая задача", task.title)
@@ -108,7 +108,7 @@ class DatabaseFactoryTest {
                 assertEquals(2L, store.tasks.count())
             }
 
-            assertEquals(2L, userVersionOf(path))
+            assertEquals(3L, userVersionOf(path))
         } finally {
             directory.toFile().deleteRecursively()
         }

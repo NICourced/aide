@@ -27,6 +27,7 @@ import dev.aide.client.state.HostConnection
 import dev.aide.client.state.HostSession
 import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.ui.screens.AgentScreen
+import dev.aide.client.ui.screens.CallLogScreen
 import dev.aide.client.ui.screens.ModelSettingsState
 import dev.aide.client.ui.screens.RepoScreen
 import dev.aide.client.ui.screens.SettingsScreen
@@ -35,11 +36,14 @@ import dev.aide.client.ui.strings.incompatibleMessage
 import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.client.ui.theme.AideTheme
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.RunId
+import dev.aide.domain.ToolCallId
+import dev.aide.protocol.ToolCallCursor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /** Куда приложение может перейти. Один экран — одна задача (FR-LAYOUT-5). */
-private enum class Destination { REPOSITORY, AGENT, SETTINGS }
+private enum class Destination { REPOSITORY, AGENT, CALL_LOG, SETTINGS }
 
 /**
  * Режим автономности по умолчанию для поставленной задачи.
@@ -75,6 +79,10 @@ fun App(
     // HostClient перезапрашивает дерево и файл сам, и их нужно отдать экрану.
     LaunchedEffect(client) { client.session.collect { state.onHostSession(it) } }
 
+    // Живые записи журнала приходят событием без запроса (T-1.3): без этой подписки
+    // вызов, сделанный агентом, не появился бы в логе до перезапроса страницы.
+    LaunchedEffect(client) { client.toolCallEvents.collect { state.toolCallLog.recorded(it) } }
+
     // Хост сообщил о завершении работы: показать «нет связи», не дожидаясь закрытия сокета.
     val hostShuttingDown by client.hostShuttingDown.collectAsState()
     LaunchedEffect(hostShuttingDown) { if (hostShuttingDown) state.onHostShuttingDown() }
@@ -109,6 +117,15 @@ fun App(
                         session = session,
                         client = client,
                         scope = coroutineScope,
+                        onOpenLog = { destination = Destination.CALL_LOG },
+                    )
+
+                    Destination.CALL_LOG -> CallLogDestination(
+                        state = state,
+                        client = client,
+                        runId = session.runs.lastOrNull()?.id,
+                        scope = coroutineScope,
+                        onBack = { destination = Destination.AGENT },
                     )
 
                     Destination.SETTINGS -> SettingsDestination(
@@ -155,7 +172,12 @@ fun App(
  * задачи показываются одинаково: оба означают, что хост не ответил.
  */
 @Composable
-private fun AgentDestination(session: HostSession, client: HostClient, scope: CoroutineScope) {
+private fun AgentDestination(
+    session: HostSession,
+    client: HostClient,
+    scope: CoroutineScope,
+    onOpenLog: () -> Unit,
+) {
     var requestFailed by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -163,8 +185,7 @@ private fun AgentDestination(session: HostSession, client: HostClient, scope: Co
     }
 
     AgentScreen(
-        runs = session.runs,
-        tasks = session.tasks,
+        session = session,
         requestFailed = requestFailed,
         onPostTask = { prompt ->
             // Compose-скоуп: запись в состояние идёт на главном диспетчере.
@@ -173,7 +194,71 @@ private fun AgentDestination(session: HostSession, client: HostClient, scope: Co
                 client.postTask(prompt, DEFAULT_AUTONOMY_MODE).onFailure { requestFailed = true }
             }
         },
+        onOpenLog = onOpenLog,
     )
+}
+
+/**
+ * Экран журнала вызовов прогона (T-1.3).
+ *
+ * При входе открывается журнал последнего прогона и грузится первая страница; старые
+ * записи догружаются по кнопке по курсору. Живые записи приходят в состояние подпиской
+ * в [App] и вставляются в начало без перезапроса страницы. Тап по строке раскрывает её:
+ * состояние переключает [ToolCallLogStore.toggle], а полное содержимое запрашивается
+ * здесь — состояние лога не знает про транспорт.
+ */
+@Composable
+private fun CallLogDestination(
+    state: AppStateStore,
+    client: HostClient,
+    runId: RunId?,
+    scope: CoroutineScope,
+    onBack: () -> Unit,
+) {
+    val log by state.toolCallLog.log.collectAsState()
+
+    LaunchedEffect(runId) {
+        if (runId != null) {
+            state.toolCallLog.open(runId)
+            loadToolCallPage(state, client, runId, cursor = null)
+        }
+    }
+
+    CallLogScreen(
+        log = log,
+        onLoadPage = {
+            if (runId != null) {
+                state.toolCallLog.loading()
+                scope.launch { loadToolCallPage(state, client, runId, cursor = log.cursor) }
+            }
+        },
+        onBack = onBack,
+        onToggleRow = { callId ->
+            // Запрос только при раскрытии: сворачивание не ходит на хост.
+            if (state.toolCallLog.toggle(callId)) {
+                scope.launch { loadToolCallDetail(state, client, callId) }
+            }
+        },
+    )
+}
+
+/** Загружает страницу журнала и кладёт её в состояние; ошибка переводит экран в состояние ошибки. */
+private suspend fun loadToolCallPage(
+    state: AppStateStore,
+    client: HostClient,
+    runId: RunId,
+    cursor: ToolCallCursor?,
+) {
+    client.toolLogClient.toolCalls(runId, cursor)
+        .onSuccess { page -> state.toolCallLog.page(page) }
+        .onFailure { state.toolCallLog.failed() }
+}
+
+/** Запрашивает полное содержимое раскрытой записи; ошибка видна у самой записи. */
+private suspend fun loadToolCallDetail(state: AppStateStore, client: HostClient, callId: ToolCallId) {
+    client.toolLogClient.toolCallDetail(callId)
+        .onSuccess { call -> state.toolCallLog.detailLoaded(call) }
+        .onFailure { state.toolCallLog.detailFailed() }
 }
 
 /**

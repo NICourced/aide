@@ -10,6 +10,8 @@ import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
+import dev.aide.domain.ToolCall
+import dev.aide.domain.ToolCallId
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -226,6 +228,42 @@ sealed interface ClientMessage {
         /** Идентификатор запроса. */
         override val requestId: RequestId,
     ) : ClientMessage, RequestIdCarrier
+
+    /**
+     * Запросить страницу журнала вызовов прогона (T-1.3, FR-TOOLS-15).
+     *
+     * Страницы, а не весь журнал: при 500 вызовах полный список не влез бы в кадр и
+     * заставил бы клиент строить полтысячи строк. [cursor] = null означает первую
+     * (самую новую) страницу; следующая запрашивается по курсору предыдущего ответа.
+     * [limit] = null берёт размер по умолчанию, больше максимума хост не отдаёт.
+     */
+    @Serializable
+    @SerialName("toolCalls")
+    data class ToolCalls(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Прогон, журнал которого листается. */
+        val runId: RunId,
+        /** Курсор предыдущей страницы; null — первая страница. */
+        val cursor: ToolCallCursor? = null,
+        /** Сколько записей просить; null — размер по умолчанию. */
+        val limit: Int? = null,
+    ) : ClientMessage, RequestIdCarrier
+
+    /**
+     * Запросить полное содержимое одного вызова (T-1.3).
+     *
+     * Отдельный запрос, потому что страница несёт только превью (см. [ToolCallSummary]):
+     * показывать мегабайты на каждую строку списка незачем, а раскрывают записи по одной.
+     */
+    @Serializable
+    @SerialName("toolCallDetail")
+    data class ToolCallDetail(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Вызов, полное содержимое которого нужно. */
+        val callId: ToolCallId,
+    ) : ClientMessage, RequestIdCarrier
 }
 
 /** Сообщение хоста клиенту. */
@@ -400,6 +438,38 @@ sealed interface HostMessage {
         override val requestId: RequestId,
         /** Состояние по идентификатору провайдера. */
         val statuses: Map<String, ModelSecretStatus>,
+    ) : HostMessage, RequestIdCarrier
+
+    /**
+     * Страница журнала вызовов прогона: ответ на [ClientMessage.ToolCalls] (T-1.3).
+     *
+     * [hasMore] приходит от хоста, а не выводится клиентом из размера страницы: на границе
+     * («всего ровно лимит») размер ничего не говорит, и клиент показал бы лишнюю кнопку
+     * «показать ещё» либо, наоборот, спрятал бы непустой хвост.
+     */
+    @Serializable
+    @SerialName("toolCallPage")
+    data class ToolCallPage(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Прогон, к которому относится страница. */
+        val runId: RunId,
+        /** Записи от новых к старым, не больше запрошенного лимита. */
+        val calls: List<ToolCallSummary>,
+        /** Курсор для следующей страницы; null, если это конец журнала. */
+        val nextCursor: ToolCallCursor? = null,
+        /** Есть ли записи старше отданных. */
+        val hasMore: Boolean,
+    ) : HostMessage, RequestIdCarrier
+
+    /** Полное содержимое одного вызова: ответ на [ClientMessage.ToolCallDetail] (T-1.3). */
+    @Serializable
+    @SerialName("toolCallContent")
+    data class ToolCallContent(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Запись журнала целиком. */
+        val call: ToolCall,
     ) : HostMessage, RequestIdCarrier
 
     /** Событие без запроса. */

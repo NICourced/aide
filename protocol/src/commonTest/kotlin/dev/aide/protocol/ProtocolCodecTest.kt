@@ -16,6 +16,9 @@ import dev.aide.domain.RunState
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.ToolCall
+import dev.aide.domain.ToolCallId
+import dev.aide.domain.ToolOutcome
 import kotlinx.datetime.Instant
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -31,6 +34,9 @@ class ProtocolCodecTest {
     private val workspaceId = WorkspaceId("ws-1")
     private val requestId = RequestId("req-1")
     private val sessionId = SessionId("s-1")
+
+    /** Момент вызова журнала: общий для курсора, записи и сводки. */
+    private val toolCallAt: Instant = Instant.fromEpochMilliseconds(1_758_535_200_000)
 
     private fun hostMessage(bytes: ByteArray): HostMessage =
         assertIs<DecodeResult.Message<HostMessage>>(ProtocolCodec.decodeHostMessage(bytes)).message
@@ -226,6 +232,9 @@ class ProtocolCodecTest {
             ClientMessage.SetModelSecret(requestId, "deepseek", "ключ"),
             ClientMessage.DeleteModelSecret(requestId, "deepseek"),
             ClientMessage.ModelSecrets(requestId),
+            ClientMessage.ToolCalls(requestId, RunId("r-1")),
+            ClientMessage.ToolCalls(requestId, RunId("r-1"), ToolCallCursor(toolCallAt, ToolCallId("tc-1")), 50),
+            ClientMessage.ToolCallDetail(requestId, ToolCallId("tc-1")),
         )
         messages.forEach { message ->
             assertEquals(message, clientMessage(ProtocolCodec.encode(message)))
@@ -282,7 +291,17 @@ class ProtocolCodecTest {
             HostMessage.Event(HostEvent.WorkspaceChanged(workspaceId)),
             HostMessage.Event(HostEvent.RunStateChanged(agentRun())),
             HostMessage.Event(HostEvent.TaskStateChanged(task())),
+            HostMessage.Event(HostEvent.ToolCallRecorded(toolCall())),
             HostMessage.Event(HostEvent.HostShuttingDown),
+            HostMessage.ToolCallPage(
+                requestId = requestId,
+                runId = RunId("r-1"),
+                calls = listOf(ToolCallSummary.of(toolCall())),
+                nextCursor = ToolCallCursor(toolCallAt, ToolCallId("tc-1")),
+                hasMore = true,
+            ),
+            HostMessage.ToolCallPage(requestId, RunId("r-1"), emptyList(), null, false),
+            HostMessage.ToolCallContent(requestId, toolCall()),
         )
         messages.forEach { message ->
             assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
@@ -346,6 +365,34 @@ class ProtocolCodecTest {
     private fun catalogEntry(): ProviderCatalogEntry {
         val config = agentConfig()
         return ProviderCatalogEntry(config.providers.first(), config.models)
+    }
+
+    /** Вызов журнала для round-trip: страница, полное содержимое и событие. */
+    private fun toolCall(): ToolCall = ToolCall(
+        id = ToolCallId("tc-1"),
+        runId = RunId("r-1"),
+        tool = "read_file",
+        arguments = """{"path":"src/App.kt"}""",
+        result = "содержимое",
+        outcome = ToolOutcome.SUCCESS,
+        durationMillis = 42,
+        cost = Cost(amountMicros = 0, known = true),
+        requiredApproval = false,
+        at = toolCallAt,
+    )
+
+    @Test
+    fun `нагрузка чужого типа для нового сообщения журнала пропускается`() {
+        // Имя типа известно, но нагрузка — приветствие: обязательных полей запроса журнала
+        // в ней нет, и разбор обязан вернуть Ignored, а не исключение (О-9).
+        val wrongPayload = envelope(
+            type = ClientMessageType.TOOL_CALLS,
+            serializer = ClientMessage.Hello.serializer(),
+            value = ClientMessage.Hello(ProtocolVersion.CURRENT),
+        )
+        val ignored = assertIs<DecodeResult.Ignored>(ProtocolCodec.decodeClientMessage(wrongPayload))
+        assertEquals(ClientMessageType.TOOL_CALLS, ignored.rawType)
+        assertTrue(ignored.reason.contains("полезная нагрузка не разобрана"))
     }
 
     @Test

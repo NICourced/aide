@@ -10,13 +10,15 @@ import dev.aide.protocol.HostMessage
  * Репозиторий, ФС и git и рантайм агента — разные поводы меняться, поэтому обработчики
  * разделены (О-1); маршрутизация живёт в одном месте и не размазана по сессиям.
  * Ключи провайдеров — отдельный обработчик от конфигурации (T-1.58): конфигурацию
- * правит человек в файле, а ключ живёт в хранилище платформы.
+ * правит человек в файле, а ключ живёт в хранилище платформы. Журнал вызовов (T-1.3) —
+ * тоже отдельный: он читается страницами, а не отвечает за задачи и прогоны.
  */
 class ClientMessageRouter(
     private val stageZero: ClientMessageHandler,
     private val agent: ClientMessageHandler,
     private val modelConfig: ClientMessageHandler,
     private val modelSecrets: ClientMessageHandler,
+    private val toolLog: ClientMessageHandler,
 ) : ClientMessageHandler {
 
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
@@ -26,6 +28,8 @@ class ClientMessageRouter(
 
         is ClientMessage.SetModelSecret, is ClientMessage.DeleteModelSecret, is ClientMessage.ModelSecrets ->
             modelSecrets.handle(message)
+
+        is ClientMessage.ToolCalls, is ClientMessage.ToolCallDetail -> toolLog.handle(message)
 
         else -> stageZero.handle(message)
     }

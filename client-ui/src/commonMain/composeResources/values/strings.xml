@@ -66,6 +66,27 @@
     <string name="task_failure_stash_failed">Не удалось отложить правки перед прогоном</string>
     <string name="agent_request_failed">Не удалось связаться с хостом: проверьте соединение</string>
 
+    <string name="call_log_title">Журнал вызовов</string>
+    <string name="agent_open_log">Логи</string>
+    <string name="call_log_empty">Вызовов пока нет</string>
+    <string name="call_log_no_run">Прогона пока нет — журнал пуст</string>
+    <string name="call_log_error">Не удалось загрузить журнал: хост не ответил</string>
+    <string name="call_log_load_older">Показать более старые</string>
+    <string name="call_log_arguments">Аргументы</string>
+    <string name="call_log_result">Результат</string>
+    <string name="call_log_no_result">Результата нет</string>
+    <string name="call_log_truncated">показано не всё</string>
+    <string name="call_log_approval">Требовал подтверждения</string>
+    <string name="call_log_summary">%1$s · %2$s · %3$s · %4$s</string>
+    <string name="call_log_detail_error">Не удалось загрузить вызов</string>
+    <string name="call_log_duration">%1$d мс</string>
+    <string name="call_log_cost">%1$d мк</string>
+    <string name="call_log_cost_unknown">цена неизвестна</string>
+    <string name="call_log_outcome_success">успех</string>
+    <string name="call_log_outcome_failure">ошибка</string>
+    <string name="call_log_outcome_denied">отказ</string>
+    <string name="call_log_outcome_timeout">таймаут</string>
+
     <string name="settings_title">Настройки</string>
     <string name="settings_repository_path">Путь к репозиторию</string>
     <string name="settings_repository_path_hint">Например, /projects/aide</string>

@@ -5,10 +5,30 @@ import dev.aide.client.ui.resources.Res
 import dev.aide.client.ui.resources.action_back
 import dev.aide.client.ui.resources.action_settings
 import dev.aide.client.ui.resources.agent_post_task
+import dev.aide.client.ui.resources.agent_open_log
 import dev.aide.client.ui.resources.agent_request_failed
 import dev.aide.client.ui.resources.agent_task_hint
 import dev.aide.client.ui.resources.agent_title
 import dev.aide.client.ui.resources.app_name
+import dev.aide.client.ui.resources.call_log_arguments
+import dev.aide.client.ui.resources.call_log_approval
+import dev.aide.client.ui.resources.call_log_cost
+import dev.aide.client.ui.resources.call_log_cost_unknown
+import dev.aide.client.ui.resources.call_log_detail_error
+import dev.aide.client.ui.resources.call_log_duration
+import dev.aide.client.ui.resources.call_log_empty
+import dev.aide.client.ui.resources.call_log_error
+import dev.aide.client.ui.resources.call_log_load_older
+import dev.aide.client.ui.resources.call_log_no_result
+import dev.aide.client.ui.resources.call_log_no_run
+import dev.aide.client.ui.resources.call_log_outcome_denied
+import dev.aide.client.ui.resources.call_log_outcome_failure
+import dev.aide.client.ui.resources.call_log_outcome_success
+import dev.aide.client.ui.resources.call_log_outcome_timeout
+import dev.aide.client.ui.resources.call_log_result
+import dev.aide.client.ui.resources.call_log_summary
+import dev.aide.client.ui.resources.call_log_title
+import dev.aide.client.ui.resources.call_log_truncated
 import dev.aide.client.ui.resources.connection_closed
 import dev.aide.client.ui.resources.connection_connecting
 import dev.aide.client.ui.resources.connection_incompatible_client_outdated
@@ -175,6 +195,7 @@ object Strings {
     val agentTitle: StringResource = Res.string.agent_title
     val agentTaskHint: StringResource = Res.string.agent_task_hint
     val agentPostTask: StringResource = Res.string.agent_post_task
+    val agentOpenLog: StringResource = Res.string.agent_open_log
     val runStateNone: StringResource = Res.string.run_state_none
     val runStatePlanned: StringResource = Res.string.run_state_planned
     val runStateRunning: StringResource = Res.string.run_state_running
@@ -197,6 +218,26 @@ object Strings {
     val taskFailureHostRestart: StringResource = Res.string.task_failure_host_restart
     val taskFailureGeneric: StringResource = Res.string.task_failure_generic
     val agentRequestFailed: StringResource = Res.string.agent_request_failed
+
+    val callLogTitle: StringResource = Res.string.call_log_title
+    val callLogEmpty: StringResource = Res.string.call_log_empty
+    val callLogNoRun: StringResource = Res.string.call_log_no_run
+    val callLogError: StringResource = Res.string.call_log_error
+    val callLogLoadOlder: StringResource = Res.string.call_log_load_older
+    val callLogArguments: StringResource = Res.string.call_log_arguments
+    val callLogResult: StringResource = Res.string.call_log_result
+    val callLogNoResult: StringResource = Res.string.call_log_no_result
+    val callLogTruncated: StringResource = Res.string.call_log_truncated
+    val callLogApproval: StringResource = Res.string.call_log_approval
+    val callLogSummary: StringResource = Res.string.call_log_summary
+    val callLogDetailError: StringResource = Res.string.call_log_detail_error
+    val callLogDuration: StringResource = Res.string.call_log_duration
+    val callLogCost: StringResource = Res.string.call_log_cost
+    val callLogCostUnknown: StringResource = Res.string.call_log_cost_unknown
+    val callLogOutcomeSuccess: StringResource = Res.string.call_log_outcome_success
+    val callLogOutcomeFailure: StringResource = Res.string.call_log_outcome_failure
+    val callLogOutcomeDenied: StringResource = Res.string.call_log_outcome_denied
+    val callLogOutcomeTimeout: StringResource = Res.string.call_log_outcome_timeout
 
     val stateLoadingTitle: StringResource = Res.string.state_loading_title
     val stateLoadingSkeleton: StringResource = Res.string.state_loading_skeleton

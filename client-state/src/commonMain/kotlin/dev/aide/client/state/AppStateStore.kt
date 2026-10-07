@@ -38,6 +38,15 @@ class AppStateStore {
     /** Путь выбранного файла; null, если файл не выбран. */
     val selectedFile: StateFlow<String?> = _selectedFile.asStateFlow()
 
+    /**
+     * Состояние журнала вызовов: страницы, курсор и живые записи (T-1.3).
+     *
+     * Отдельный объект, а не набор методов этого класса: у журнала своя пара «данные
+     * и переходы», и его присутствие здесь не должно растить [AppStateStore] до порога
+     * `TooManyFunctions`.
+     */
+    val toolCallLog: ToolCallLogStore = ToolCallLogStore()
+
     /** Последнее достоверное состояние связи; нужно, чтобы вернуться из [ScreenState.Offline]. */
     private var lastConnection: ConnectionState = ConnectionState.Idle
 
@@ -138,12 +147,14 @@ class AppStateStore {
             is ConnectionState.Reconnecting -> {
                 _treeState.value = _treeState.value.toOffline()
                 _fileState.value = _fileState.value.toOffline()
+                toolCallLog.offline()
             }
 
             is ConnectionState.Connected -> {
                 if (previous is ConnectionState.Reconnecting) {
                     _treeState.value = _treeState.value.fromOffline()
                     _fileState.value = _fileState.value.fromOffline()
+                    toolCallLog.online()
                 }
             }
 
@@ -161,6 +172,7 @@ class AppStateStore {
     fun onHostShuttingDown() {
         _treeState.value = _treeState.value.toOffline()
         _fileState.value = _fileState.value.toOffline()
+        toolCallLog.offline()
     }
 }
 

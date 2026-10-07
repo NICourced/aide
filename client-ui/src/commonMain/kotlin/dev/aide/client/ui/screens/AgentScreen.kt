@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import dev.aide.client.state.HostSession
 import dev.aide.client.ui.strings.Strings
 import dev.aide.client.ui.strings.runStateResource
 import dev.aide.client.ui.strings.taskFailureResource
@@ -37,14 +38,19 @@ import dev.aide.domain.reportState
  * прогона мало — отказ остался бы невидимым. [requestFailed] объединяет неудачную
  * постановку задачи и неудачный снимок состояния: оба означают «связи с хостом нет».
  * Кнопки паузы и стопа — задача T-1.4; поле с кнопкой заменит чат-ввод в T-1.40.
+ *
+ * Прогоны и задачи приходят снимком сессии, а не двумя списками: экран показывает одну
+ * и ту же сессию агента, и держать её разобранной по частям значило бы позволить им
+ * разойтись. Кнопка «Логи» ведёт в журнал вызовов (T-1.3): полноценные вкладки главного
+ * экрана — T-1.48.
  */
 @Composable
 fun AgentScreen(
-    runs: List<AgentRun>,
-    tasks: List<Task>,
+    session: HostSession,
     requestFailed: Boolean,
     onPostTask: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onOpenLog: () -> Unit = {},
 ) {
     var prompt by remember { mutableStateOf("") }
     Column(
@@ -52,9 +58,9 @@ fun AgentScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(Strings.text(Strings.agentTitle), style = MaterialTheme.typography.titleLarge)
-        RunStateLine(run = runs.lastOrNull())
-        TestStatusLine(report = runs.lastOrNull()?.testReport)
-        TaskStatusLine(task = tasks.lastOrNull())
+        RunStateLine(run = session.runs.lastOrNull())
+        TestStatusLine(report = session.runs.lastOrNull()?.testReport)
+        TaskStatusLine(task = session.tasks.lastOrNull())
         if (requestFailed) {
             Text(
                 Strings.text(Strings.agentRequestFailed),
@@ -62,6 +68,11 @@ fun AgentScreen(
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.testTag("agent-request-error"),
             )
+        }
+        // Вход в журнал вызовов прогона: полноценные вкладки главного экрана — T-1.48,
+        // здесь журнал открывается кнопкой с экрана агента (T-1.3).
+        Button(onClick = onOpenLog, modifier = Modifier.testTag("open-log")) {
+            Text(Strings.text(Strings.agentOpenLog))
         }
         OutlinedTextField(
             value = prompt,

@@ -11,6 +11,8 @@ CREATE TABLE tool_call (
 
 CREATE INDEX tool_call_run ON tool_call(run_id);
 CREATE INDEX tool_call_tool ON tool_call(tool);
+/** Составной индекс для страниц журнала (T-1.3): выборка прогона и порядок «новые сверху». */
+CREATE INDEX tool_call_run_at ON tool_call(run_id, at, id);
 
 insert:
 INSERT OR REPLACE INTO tool_call(id, run_id, tool, outcome, required_approval, duration_millis, at, payload)
@@ -28,3 +30,22 @@ SELECT * FROM tool_call WHERE run_id = ? AND tool = ? ORDER BY at;
 
 count:
 SELECT count(*) FROM tool_call;
+
+/** Первая страница журнала прогона: самые новые сверху (T-1.3). */
+firstPage:
+SELECT * FROM tool_call
+WHERE run_id = :runId
+ORDER BY at DESC, id DESC
+LIMIT :limit;
+
+/**
+ * Страница строго старше курсора — пары «время, идентификатор» (T-1.3).
+ *
+ * Пара, а не одно время: два вызова в одну миллисекунду сортировались бы между собой
+ * произвольно, и постраничный проход либо потерял бы один, либо зациклился на нём.
+ */
+pageBefore:
+SELECT * FROM tool_call
+WHERE run_id = :runId AND (at < :beforeAt OR (at = :beforeAt AND id < :beforeId))
+ORDER BY at DESC, id DESC
+LIMIT :limit;

@@ -145,11 +145,14 @@ class ToolInvokerTest {
     @Test
     fun `зависший инструмент прерывается по таймауту`() {
         val tool = SpyTool(timeoutMillis = TIMEOUT_MILLIS, work = { delay(HANG_MILLIS); toolSuccess("поздно") })
+        val (call, recorder) = invoker(tool)
 
-        val result = runBlocking { invoker(tool).first.invoke(runId, tool.name, ARGUMENTS, workspace.context) }
+        val result = runBlocking { call.invoke(runId, tool.name, ARGUMENTS, workspace.context) }
 
         assertEquals(ToolOutcome.TIMEOUT, result.outcome)
         assertEquals(1, tool.calls, "инструмент был вызван и был прерван, а не пропущен")
+        // FR-AGENT-8: журнал доступен всегда — таймаут тоже событие прозрачности, а не пропуск записи.
+        assertEquals(ToolOutcome.TIMEOUT, recorder.calls.single().outcome, "таймаут обязан остаться в журнале")
     }
 
     @Test

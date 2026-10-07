@@ -1,7 +1,14 @@
 package dev.aide.protocol
 
 import dev.aide.domain.AgentRun
+import dev.aide.domain.ApprovalDecision
+import dev.aide.domain.Cost
+import dev.aide.domain.RunId
 import dev.aide.domain.Task
+import dev.aide.domain.ToolCall
+import dev.aide.domain.ToolCallId
+import dev.aide.domain.ToolOutcome
+import kotlinx.datetime.Instant
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -76,6 +83,95 @@ enum class HostMode {
     REMOTE,
 }
 
+/**
+ * Превью аргументов и результата в сводке журнала (T-1.3).
+ *
+ * Аргументы и результаты вызовов доходят до 64 КиБ каждый (`read_file`, `run_command`),
+ * и страница из полусотни полных записей — это мегабайты в кадре, чего мобильному
+ * клиенту показывать не нужно. Полное содержимое отдаётся отдельным запросом, когда
+ * пользователь раскрывает вызов.
+ */
+const val TOOL_CALL_PREVIEW_CHARS: Int = 4_096
+
+/**
+ * Сводка записи журнала для страницы (T-1.3, FR-AGENT-9).
+ *
+ * Несёт поля записи и обрезанные превью аргументов и результата вместе с признаком
+ * обрезки — по нему видно, что показано не всё, и стоит запросить полное содержимое.
+ * Поля совпадают с [ToolCall], поэтому признак «требовал подтверждения» (FR-AGENT-9)
+ * виден уже в списке, без раскрытия записи.
+ */
+@Serializable
+data class ToolCallSummary(
+    /** Идентификатор вызова — по нему отсекаются дубли, пришедшие и событием, и страницей. */
+    val id: ToolCallId,
+    /** Прогон, которому принадлежит вызов. */
+    val runId: RunId,
+    /** Имя инструмента. */
+    val tool: String,
+    /** Чем закончился вызов. */
+    val outcome: ToolOutcome,
+    /** Длительность вызова в миллисекундах. */
+    val durationMillis: Long,
+    /** Стоимость вызова. */
+    val cost: Cost,
+    /** Требовал ли вызов подтверждения пользователя. */
+    val requiredApproval: Boolean,
+    /** Что ответил пользователь; null, если подтверждение не требовалось. */
+    val approval: ApprovalDecision? = null,
+    /** Момент завершения вызова; вместе с [id] задаёт курсор страницы. */
+    val at: Instant,
+    /** Начало аргументов вызова. */
+    val argumentsPreview: String,
+    /** true, если аргументы показаны не целиком. */
+    val argumentsTruncated: Boolean,
+    /** Начало результата; null, если результата нет. */
+    val resultPreview: String? = null,
+    /** true, если результат показан не целиком. */
+    val resultTruncated: Boolean = false,
+) {
+    companion object {
+        /**
+         * Строит сводку по полной записи — один раз для страницы и для живого события.
+         *
+         * Обрезка живёт здесь, а не на хосте и не на клиенте по отдельности: страницу
+         * собирает хост, а живое событие приходит полной записью и превращается в сводку
+         * уже на клиенте. Два независимых правила обрезки рано или поздно разошлись бы.
+         */
+        fun of(call: ToolCall): ToolCallSummary = ToolCallSummary(
+            id = call.id,
+            runId = call.runId,
+            tool = call.tool,
+            outcome = call.outcome,
+            durationMillis = call.durationMillis,
+            cost = call.cost,
+            requiredApproval = call.requiredApproval,
+            approval = call.approval,
+            at = call.at,
+            argumentsPreview = call.arguments.take(TOOL_CALL_PREVIEW_CHARS),
+            argumentsTruncated = call.arguments.length > TOOL_CALL_PREVIEW_CHARS,
+            resultPreview = call.result?.take(TOOL_CALL_PREVIEW_CHARS),
+            resultTruncated = (call.result?.length ?: 0) > TOOL_CALL_PREVIEW_CHARS,
+        )
+    }
+}
+
+/**
+ * Курсор страницы журнала: пара «время, идентификатор» последней отданной записи (T-1.3).
+ *
+ * Пара, а не одно время: два вызова могут завершиться в одну миллисекунду, и курсор по
+ * времени пропустил бы второй или зациклил страницу. `ORDER BY at DESC, id DESC` вместе
+ * с условием «строго старше пары» делает страницу стабильной и без `OFFSET`, который
+ * сдвигался бы при появлении новых записей сверху.
+ */
+@Serializable
+data class ToolCallCursor(
+    /** Время последней отданной записи. */
+    val at: Instant,
+    /** Идентификатор последней отданной записи. */
+    val id: ToolCallId,
+)
+
 /** Событие хоста, приходящее клиенту без запроса. */
 @Serializable
 sealed interface HostEvent {
@@ -114,6 +210,24 @@ sealed interface HostEvent {
     data class TaskStateChanged(
         /** Задача в новом статусе. */
         val task: Task,
+    ) : HostEvent
+
+    /**
+     * Вызов инструмента записан в журнал (T-1.3, FR-AGENT-8).
+     *
+     * Живое появление записи в логе доказывается событием, а не опросом: опрос чаще 500 мс
+     * расходовал бы батарею и трафик на пустых ответах. История для подключившегося позже
+     * клиента приходит страницами ([ClientMessage.ToolCalls]), а не воспроизведением событий.
+     *
+     * Несёт полную запись: превью для списка строит клиент тем же правилом, что и хост
+     * для страницы ([ToolCallSummary.of]). Потеря события ничего не значит — запись уже
+     * в базе, и следующий запрос страницы её вернёт.
+     */
+    @Serializable
+    @SerialName("toolCallRecorded")
+    data class ToolCallRecorded(
+        /** Записанный вызов целиком. */
+        val call: ToolCall,
     ) : HostEvent
 
     /** Хост завершает работу; клиенту нужно показать состояние «нет связи» (§ 6.1). */

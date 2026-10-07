@@ -7,6 +7,7 @@ import dev.aide.protocol.HostEvent
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.HostStatePayload
+import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.ProtocolVersion
 import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.TaskId
@@ -152,6 +153,12 @@ internal class FakeHostConnection : HostConnection {
         )
 
         is ClientMessage.ModelSecrets -> HostMessage.ModelSecretsSnapshot(message.requestId, emptyMap())
+
+        is ClientMessage.ToolCalls ->
+            HostMessage.ToolCallPage(message.requestId, message.runId, emptyList(), nextCursor = null, hasMore = false)
+
+        is ClientMessage.ToolCallDetail ->
+            HostMessage.Failure(message.requestId, ProtocolError.NotFound("вызов ${message.callId.value}"))
 
         else -> error("неожиданный запрос: ${message::class.simpleName}")
     }

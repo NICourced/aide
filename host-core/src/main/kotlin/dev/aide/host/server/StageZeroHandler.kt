@@ -70,51 +70,14 @@ class StageZeroHandler(
             )
         }
 
-        // Сообщения агента маршрутизируются в AgentRunHandler; сюда они не доходят,
-        // но `when` по запечатанному типу обязан их назвать.
-        is ClientMessage.PostTask -> HostMessage.Failure(
-            requestId = message.requestId,
-            error = ProtocolError.Internal("постановку задачи обрабатывает AgentRunHandler"),
-        )
-
-        is ClientMessage.AgentStatus -> HostMessage.Failure(
-            requestId = message.requestId,
-            error = ProtocolError.Internal("состояние агента обрабатывает AgentRunHandler"),
-        )
-
-        is ClientMessage.RunControl -> HostMessage.Failure(
-            requestId = message.requestId,
-            error = ProtocolError.Internal("управление прогоном обрабатывает AgentRunHandler"),
-        )
-
-        // Настройки моделей маршрутизируются в AgentConfigHandler; сюда они не доходят,
-        // но `when` по запечатанному типу обязан их назвать.
-        is ClientMessage.AgentConfigRequest -> HostMessage.Failure(
-            requestId = message.requestId,
-            error = ProtocolError.Internal("конфигурацию моделей обрабатывает AgentConfigHandler"),
-        )
-
-        is ClientMessage.SaveAgentConfig -> HostMessage.Failure(
-            requestId = message.requestId,
-            error = ProtocolError.Internal("сохранение конфигурации обрабатывает AgentConfigHandler"),
-        )
-
-        is ClientMessage.CheckModel -> HostMessage.Failure(
-            requestId = message.requestId,
-            error = ProtocolError.Internal("проверку модели обрабатывает AgentConfigHandler"),
-        )
-
-        // Ключи провайдеров маршрутизируются в ModelSecretHandler; сюда они не доходят,
-        // но `when` по запечатанному типу обязан их назвать.
-        is ClientMessage.SetModelSecret, is ClientMessage.DeleteModelSecret, is ClientMessage.ModelSecrets ->
-            HostMessage.Failure(
-                requestId = message.requestIdOrNull ?: RequestId("secrets"),
-                error = ProtocolError.Internal("ключи провайдеров обрабатывает ModelSecretHandler"),
-            )
-
-        is ClientMessage.Hello -> HostMessage.Failure(
-            requestId = RequestId("unexpected"),
-            error = ProtocolError.Internal("приветствие обрабатывает сессия, а не обработчик"),
+        // Сообщения остальных обработчиков (агент, модели, ключи, журнал, приветствие)
+        // маршрутизирует ClientMessageRouter, и сюда они не доходят. Перечислять их
+        // здесь ради исчерпывающего `when` значило бы держать функцию на пороге сложности
+        // линтера; роль страховки исполняет маршрутизатор — он называет каждую группу явно,
+        // и новый тип сообщения попадёт в свою группу, а не сюда.
+        else -> HostMessage.Failure(
+            requestId = message.requestIdOrNull ?: RequestId("stage-zero"),
+            error = ProtocolError.Internal("StageZeroHandler получил сообщение другого вида"),
         )
     }
 

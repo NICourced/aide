@@ -9,6 +9,7 @@ import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
+import dev.aide.domain.ToolCall
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreePayload
@@ -20,8 +21,11 @@ import dev.aide.protocol.RequestId
 import dev.aide.protocol.WorkspaceId
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -89,6 +93,18 @@ class HostClient(
     val hostShuttingDown: StateFlow<Boolean> = _hostShuttingDown.asStateFlow()
 
     /**
+     * Живые записи журнала вызовов (T-1.3).
+     *
+     * Событие хоста без запроса: клиент не спрашивал про этот вызов, но обязан показать его
+     * в логе сразу (не позже 500 мс). Состояние лога — отдельное от [HostSession] (страницы,
+     * курсор, «есть ещё»), поэтому записи уходят потоком, а не в снимок сессии.
+     */
+    private val _toolCallEvents = MutableSharedFlow<ToolCall>(extraBufferCapacity = TOOL_CALL_EVENT_BUFFER)
+
+    /** Записи журнала, приходящие событием; подписчик — состояние лога на клиенте. */
+    val toolCallEvents: SharedFlow<ToolCall> = _toolCallEvents.asSharedFlow()
+
+    /**
      * Выдача идентификаторов запросов. Запросы уходят из нескольких корутин одновременно,
      * и без замка `++sequence` теряет инкременты: два запроса получают один [RequestId],
      * ответ на первый достаётся второму, а первый вызывающий ждёт до таймаута. Хост при
@@ -151,6 +167,8 @@ class HostClient(
                     is HostEvent.RunStateChanged -> _session.update { it.withRun(event.run) }
 
                     is HostEvent.TaskStateChanged -> _session.update { it.withTask(event.task) }
+
+                    is HostEvent.ToolCallRecorded -> _toolCallEvents.emit(event.call)
 
                     HostEvent.HostShuttingDown -> _hostShuttingDown.value = true
                 }
@@ -272,6 +290,14 @@ class HostClient(
     val models: ModelConfigClient = ModelConfigClient(connection, requestIds::next, _session)
 
     /**
+     * Запросы журнала вызовов (T-1.3): страницы и полное содержимое.
+     *
+     * Отдельный объект по той же причине, что и [models]: держать запросы журнала здесь
+     * значило бы вывести класс доступа к хосту за порог `TooManyFunctions`.
+     */
+    val toolLogClient: ToolCallLogClient = ToolCallLogClient(connection, requestIds::next)
+
+    /**
      * Дозапрашивает состояние хоста, дерево и открытый файл.
      *
      * Нужно и после реконнекта, и по событию [HostEvent.WorkspaceChanged]: пока связи
@@ -289,6 +315,13 @@ class HostClient(
     companion object {
         /** Основание системы счисления для короткого префикса. */
         private const val HEX_RADIX = 16
+
+        /**
+         * Буфер живых записей журнала. Подписчик (состояние лога) есть всегда, пока открыт
+         * экран агента; запас нужен на всплеск вызовов, чтобы `emit` не подвешивал обработчик
+         * событий соединения.
+         */
+        private const val TOOL_CALL_EVENT_BUFFER = 64
 
         /**
          * Случайный префикс запуска клиента: делает идентификаторы запросов уникальными

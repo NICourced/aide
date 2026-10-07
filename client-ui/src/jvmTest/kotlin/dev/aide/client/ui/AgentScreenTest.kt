@@ -3,8 +3,11 @@ package dev.aide.client.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
+import dev.aide.client.state.HostSession
 import dev.aide.client.ui.screens.AgentScreen
 import dev.aide.client.ui.screens.TestStatusLine
 import dev.aide.domain.AgentRun
@@ -16,6 +19,7 @@ import dev.aide.domain.TestFailure
 import dev.aide.domain.TestReport
 import dev.aide.domain.TestState
 import kotlin.test.Test
+import kotlin.test.assertTrue
 import kotlinx.datetime.Instant
 
 /**
@@ -29,8 +33,7 @@ class AgentScreenTest {
 
     private fun screen(requestFailed: Boolean): @Composable () -> Unit = {
         AgentScreen(
-            runs = emptyList(),
-            tasks = emptyList(),
+            session = HostSession(runs = emptyList(), tasks = emptyList()),
             requestFailed = requestFailed,
             onPostTask = {},
         )
@@ -48,6 +51,23 @@ class AgentScreenTest {
         setContent(screen(requestFailed = false))
 
         onNodeWithText("Не удалось связаться с хостом: проверьте соединение").assertDoesNotExist()
+    }
+
+    @Test
+    fun `кнопка «Логи» зовёт открытие журнала`() = runComposeUiTest {
+        var opened = false
+        setContent {
+            AgentScreen(
+                session = HostSession(),
+                requestFailed = false,
+                onPostTask = {},
+                onOpenLog = { opened = true },
+            )
+        }
+
+        onNodeWithTag("open-log").performClick()
+
+        assertTrue(opened, "кнопка «Логи» обязана открывать журнал вызовов")
     }
 
     @Test
@@ -118,8 +138,7 @@ class AgentScreenTest {
     fun `экран агента показывает строку статуса тестов прогона`() = runComposeUiTest {
         setContent {
             AgentScreen(
-                runs = listOf(runWithTests(TestReport(state = TestState.GREEN))),
-                tasks = emptyList(),
+                session = HostSession(runs = listOf(runWithTests(TestReport(state = TestState.GREEN)))),
                 requestFailed = false,
                 onPostTask = {},
             )
