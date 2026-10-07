@@ -64,7 +64,7 @@ class AgentRunEngineCommitTest {
     ): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, sink),
         models = fixedModel(llm),
-        planner = RunPlanner { _, _ -> plan },
+        planner = RunPlanner { _, _, _ -> plan },
         tools = stepToolsIn(workspace, journal, stored, commits, snapshots = snapshots),
         repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
         clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -77,7 +77,7 @@ class AgentRunEngineCommitTest {
     ) {
         val engine = engine(llm, plan, stored)
         engine.postTask("Поправь файл", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
     }
 
     @Test

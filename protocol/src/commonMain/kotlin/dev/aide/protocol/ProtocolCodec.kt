@@ -45,6 +45,7 @@ object ClientMessageType {
     const val POST_TASK = "postTask"
     const val AGENT_STATUS = "agentStatus"
     const val RUN_CONTROL = "runControl"
+    const val PLAN_DECISION = "planDecision"
     const val AGENT_CONFIG_REQUEST = "agentConfigRequest"
     const val SAVE_AGENT_CONFIG = "saveAgentConfig"
     const val CHECK_MODEL = "checkModel"
@@ -67,6 +68,7 @@ object HostMessageType {
     const val TASK_POSTED = "taskPosted"
     const val AGENT_SNAPSHOT = "agentSnapshot"
     const val RUN_CONTROLLED = "runControlled"
+    const val PLAN_DECIDED = "planDecided"
     const val AGENT_CONFIG_SNAPSHOT = "agentConfigSnapshot"
     const val AGENT_CONFIG_SAVED = "agentConfigSaved"
     const val MODEL_CHECK_RESULT = "modelCheckResult"
@@ -103,7 +105,8 @@ object ProtocolCodec {
         is ClientMessage.Hello, is ClientMessage.OpenWorkspace, is ClientMessage.FileTree,
         is ClientMessage.FileContent, is ClientMessage.HostState -> encodeStageZero(message)
 
-        is ClientMessage.PostTask, is ClientMessage.AgentStatus, is ClientMessage.RunControl -> encodeAgent(message)
+        is ClientMessage.PostTask, is ClientMessage.AgentStatus, is ClientMessage.RunControl,
+        is ClientMessage.PlanDecision -> encodeAgent(message)
 
         is ClientMessage.AgentConfigRequest, is ClientMessage.SaveAgentConfig, is ClientMessage.CheckModel ->
             encodeModelConfig(message)
@@ -120,7 +123,8 @@ object ProtocolCodec {
         is HostMessage.State, is HostMessage.Failure, is HostMessage.Incompatible, is HostMessage.Event ->
             encodeStageZero(message)
 
-        is HostMessage.TaskPosted, is HostMessage.AgentSnapshot, is HostMessage.RunControlled -> encodeAgent(message)
+        is HostMessage.TaskPosted, is HostMessage.AgentSnapshot, is HostMessage.RunControlled,
+        is HostMessage.PlanDecided -> encodeAgent(message)
 
         is HostMessage.AgentConfigSnapshot, is HostMessage.AgentConfigSaved, is HostMessage.ModelCheckResult ->
             encodeModelConfig(message)
@@ -248,6 +252,9 @@ private fun encodeAgent(message: ClientMessage): ByteArray = when (message) {
     is ClientMessage.RunControl ->
         envelope(ClientMessageType.RUN_CONTROL, ClientMessage.RunControl.serializer(), message)
 
+    is ClientMessage.PlanDecision ->
+        envelope(ClientMessageType.PLAN_DECISION, ClientMessage.PlanDecision.serializer(), message)
+
     else -> wrongGroup(message)
 }
 
@@ -261,6 +268,9 @@ private fun encodeAgent(message: HostMessage): ByteArray = when (message) {
     is HostMessage.RunControlled ->
         envelope(HostMessageType.RUN_CONTROLLED, HostMessage.RunControlled.serializer(), message)
 
+    is HostMessage.PlanDecided ->
+        envelope(HostMessageType.PLAN_DECIDED, HostMessage.PlanDecided.serializer(), message)
+
     else -> wrongGroup(message)
 }
 
@@ -268,6 +278,7 @@ private fun decodeAgentClient(env: WireEnvelope): DecodeResult<ClientMessage>? =
     ClientMessageType.POST_TASK -> decode(env, ClientMessage.PostTask.serializer())
     ClientMessageType.AGENT_STATUS -> decode(env, ClientMessage.AgentStatus.serializer())
     ClientMessageType.RUN_CONTROL -> decode(env, ClientMessage.RunControl.serializer())
+    ClientMessageType.PLAN_DECISION -> decode(env, ClientMessage.PlanDecision.serializer())
     else -> null
 }
 
@@ -275,6 +286,7 @@ private fun decodeAgentHost(env: WireEnvelope): DecodeResult<HostMessage>? = whe
     HostMessageType.TASK_POSTED -> decode(env, HostMessage.TaskPosted.serializer())
     HostMessageType.AGENT_SNAPSHOT -> decode(env, HostMessage.AgentSnapshot.serializer())
     HostMessageType.RUN_CONTROLLED -> decode(env, HostMessage.RunControlled.serializer())
+    HostMessageType.PLAN_DECIDED -> decode(env, HostMessage.PlanDecided.serializer())
     else -> null
 }
 

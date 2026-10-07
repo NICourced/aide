@@ -26,6 +26,25 @@ enum class AutonomyMode {
     FULL_AUTO_WITH_CHECKPOINTS,
 }
 
+/**
+ * Требует ли режим подтверждения плана до начала работы (T-1.2, FR-AGENT-7).
+ *
+ * Функция в домене, а не в движке: ответ нужен и хосту (стоять ли на стоянке), и
+ * клиенту (показывать ли кнопки плана), поэтому правило обязано быть одно на двоих.
+ *
+ * Таблица прочитана по букве критерия задачи: «в режимах FR-AGENT-2..4 план требует
+ * подтверждения» — то есть во всех, кроме «только предлагать». Это осознанно расходится
+ * с FR-AGENT-4 («полный автомат работает без подтверждений»), и расхождение отмечено в
+ * плане как решение владельца: смена таблицы — правка одной строки здесь.
+ */
+fun planNeedsApproval(mode: AutonomyMode): Boolean = when (mode) {
+    AutonomyMode.SUGGEST_ONLY -> false
+    AutonomyMode.ASK_BEFORE_CHANGES,
+    AutonomyMode.AUTO_APPLY_SAFE,
+    AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+    -> true
+}
+
 /** Разрешение на использование инструмента (§ 10.1). */
 @Serializable
 enum class Permission {

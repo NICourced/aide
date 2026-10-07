@@ -36,6 +36,14 @@ class DomainRoundTripTest {
     }
 
     @Test
+    fun `решение по плану переживает round-trip обоими вариантами`() {
+        // Оба варианта — через тип интерфейса: по проводу едет именно он, и без
+        // дискриминатора «переделать» разбиралось бы как «подтвердить» (T-1.2).
+        assertEquals(PlanDecision.Approve, roundTrip<PlanDecision>(PlanDecision.Approve))
+        assertEquals(PlanDecision.Replan("уточни шаги"), roundTrip<PlanDecision>(PlanDecision.Replan("уточни шаги")))
+    }
+
+    @Test
     fun `ToolPermission переживает round-trip`() {
         assertEquals(DomainFixtures.toolPermission, roundTrip(DomainFixtures.toolPermission))
     }

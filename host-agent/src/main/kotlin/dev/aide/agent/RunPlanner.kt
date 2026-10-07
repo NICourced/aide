@@ -17,15 +17,20 @@ import dev.aide.domain.Task
  */
 fun interface RunPlanner {
 
-    /** Возвращает шаги плана в порядке выполнения. */
-    suspend fun plan(task: Task, llm: LlmClient): List<PlanStep>
+    /**
+     * Возвращает шаги плана в порядке выполнения.
+     *
+     * [comment] — уточнение пользователя при перепланировании; null при первом плане.
+     * Отдельный параметр, а не часть задачи: комментарий уходит своей репликой (T-1.2).
+     */
+    suspend fun plan(task: Task, llm: LlmClient, comment: String?): List<PlanStep>
 }
 
 /** Планирование через модель: запрос строит [PlannerPrompt], ответ разбирается им же. */
 class LlmRunPlanner : RunPlanner {
 
-    override suspend fun plan(task: Task, llm: LlmClient): List<PlanStep> =
-        when (val response = llm.complete(PlannerPrompt.request(task))) {
+    override suspend fun plan(task: Task, llm: LlmClient, comment: String?): List<PlanStep> =
+        when (val response = llm.complete(PlannerPrompt.request(task, comment))) {
             is LlmResponse.Text -> PlannerPrompt.parse(response.text)
             is LlmResponse.Error -> throw LlmCallException(response)
         }

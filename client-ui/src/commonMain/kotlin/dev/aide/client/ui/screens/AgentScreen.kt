@@ -19,19 +19,25 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.aide.client.state.HostSession
 import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.planStepStatusResource
 import dev.aide.client.ui.strings.runStateResource
 import dev.aide.client.ui.strings.taskFailureResource
 import dev.aide.client.ui.strings.taskStatusResource
 import dev.aide.client.ui.strings.testStateResource
 import dev.aide.domain.AgentRun
+import dev.aide.domain.PlanDecision
+import dev.aide.domain.PlanStep
+import dev.aide.domain.RunId
+import dev.aide.domain.RunState
 import dev.aide.domain.Task
 import dev.aide.domain.TaskStatus
 import dev.aide.domain.TestReport
 import dev.aide.domain.TestState
+import dev.aide.domain.planNeedsApproval
 import dev.aide.domain.reportState
 
 /**
- * Экран агента (T-1.1): состояние прогона и задачи, постановка задачи.
+ * Экран агента (T-1.1): состояние прогона и задачи, план, постановка задачи.
  *
  * Показываются оба статуса: задача бывает `QUEUED`, пока модель думает, и `FAILED`
  * ещё до появления прогона (например, провайдер не настроен), поэтому одной строки
@@ -42,15 +48,14 @@ import dev.aide.domain.reportState
  * Прогоны и задачи приходят снимком сессии, а не двумя списками: экран показывает одну
  * и ту же сессию агента, и держать её разобранной по частям значило бы позволить им
  * разойтись. Кнопка «Логи» ведёт в журнал вызовов (T-1.3): полноценные вкладки главного
- * экрана — T-1.48.
+ * экрана — T-1.48. Решение по плану (T-1.2) показывается, когда прогон ждёт его.
  */
 @Composable
 fun AgentScreen(
     session: HostSession,
     requestFailed: Boolean,
-    onPostTask: (String) -> Unit,
+    actions: AgentActions,
     modifier: Modifier = Modifier,
-    onOpenLog: () -> Unit = {},
 ) {
     var prompt by remember { mutableStateOf("") }
     Column(
@@ -61,6 +66,9 @@ fun AgentScreen(
         RunStateLine(run = session.runs.lastOrNull())
         TestStatusLine(report = session.runs.lastOrNull()?.testReport)
         TaskStatusLine(task = session.tasks.lastOrNull())
+        // План показывается до работы (T-1.2): список шагов со статусами, а в состоянии
+        // ожидания — кнопки решения. Пустой план или отсутствие прогона оставляют это место пустым.
+        PlanSection(run = session.runs.lastOrNull(), onDecidePlan = actions.decidePlan)
         if (requestFailed) {
             Text(
                 Strings.text(Strings.agentRequestFailed),
@@ -71,7 +79,7 @@ fun AgentScreen(
         }
         // Вход в журнал вызовов прогона: полноценные вкладки главного экрана — T-1.48,
         // здесь журнал открывается кнопкой с экрана агента (T-1.3).
-        Button(onClick = onOpenLog, modifier = Modifier.testTag("open-log")) {
+        Button(onClick = actions.openLog, modifier = Modifier.testTag("open-log")) {
             Text(Strings.text(Strings.agentOpenLog))
         }
         OutlinedTextField(
@@ -84,7 +92,7 @@ fun AgentScreen(
         Button(
             onClick = {
                 if (prompt.isNotBlank()) {
-                    onPostTask(prompt)
+                    actions.postTask(prompt)
                     prompt = ""
                 }
             },
@@ -143,5 +151,69 @@ fun TaskStatusLine(task: Task?, modifier: Modifier = Modifier) {
         if (task != null && task.stashRef != null) {
             Text(Strings.text(Strings.taskStashPending), style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+/**
+ * План прогона: шаги по порядку и их состояния (T-1.2, FR-AGENT-7).
+ *
+ * Кнопки решения показываются только в состоянии ожидания `PLANNED` и только в режимах,
+ * которые подтверждения требуют ([planNeedsApproval]): в «только предлагать» прогон не
+ * ждёт решения, и кнопки были бы обманом. Пустой план и отсутствие прогона не рисуют ничего.
+ */
+@Composable
+fun PlanSection(
+    run: AgentRun?,
+    onDecidePlan: (RunId, PlanDecision) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (run == null || run.plan.isEmpty()) return
+    Column(modifier = modifier.testTag("plan"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(Strings.text(Strings.agentPlanTitle), style = MaterialTheme.typography.titleMedium)
+        run.plan.forEach { step -> PlanStepLine(step) }
+        if (run.state == RunState.PLANNED && planNeedsApproval(run.mode)) {
+            PlanDecisionControls(runId = run.id, onDecidePlan = onDecidePlan)
+        }
+    }
+}
+
+/** Строка шага: номер, описание и состояние — состояние тоже из ресурсов (NFR-13). */
+@Composable
+private fun PlanStepLine(step: PlanStep) {
+    Text(
+        Strings.text(
+            Strings.planStepLine,
+            step.index + 1,
+            step.summary,
+            Strings.text(planStepStatusResource(step.status)),
+        ),
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.testTag("plan-step"),
+    )
+}
+
+/** Кнопки решения по плану: подтвердить и переделать с комментарием. */
+@Composable
+private fun PlanDecisionControls(
+    runId: RunId,
+    onDecidePlan: (RunId, PlanDecision) -> Unit,
+) {
+    var comment by remember { mutableStateOf("") }
+    OutlinedTextField(
+        value = comment,
+        onValueChange = { comment = it },
+        label = { Text(Strings.text(Strings.agentPlanCommentHint)) },
+        modifier = Modifier.fillMaxWidth().testTag("plan-comment"),
+    )
+    Button(onClick = { onDecidePlan(runId, PlanDecision.Approve) }, modifier = Modifier.testTag("approve-plan")) {
+        Text(Strings.text(Strings.agentPlanApprove))
+    }
+    // Перепланирование без комментария не отправляется: пустая реплика ничего не уточняет,
+    // а на хост ушёл бы вызов планировщика впустую (T-1.2).
+    Button(
+        onClick = { if (comment.isNotBlank()) onDecidePlan(runId, PlanDecision.Replan(comment)) },
+        modifier = Modifier.testTag("replan-plan"),
+    ) {
+        Text(Strings.text(Strings.agentPlanReplan))
     }
 }

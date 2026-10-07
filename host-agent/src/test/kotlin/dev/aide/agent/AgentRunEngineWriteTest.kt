@@ -62,7 +62,7 @@ class AgentRunEngineWriteTest {
     ): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, sink),
         models = fixedModel(llm),
-        planner = RunPlanner { _, _ -> plan("шаг") },
+        planner = RunPlanner { _, _, _ -> plan("шаг") },
         tools = stepToolsIn(workspace, journal, stored, snapshots = snapshots),
         repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
         clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -71,7 +71,7 @@ class AgentRunEngineWriteTest {
     private suspend fun run(llm: LlmClient, stored: (String) -> ToolPermission? = writeAllowed) {
         val engine = engine(llm, stored)
         engine.postTask("Поправь файл", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
     }
 
     @Test

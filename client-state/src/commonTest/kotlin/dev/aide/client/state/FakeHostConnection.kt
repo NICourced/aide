@@ -130,6 +130,8 @@ internal class FakeHostConnection : HostConnection {
 
         is ClientMessage.RunControl -> HostMessage.RunControlled(message.requestId, message.runId)
 
+        is ClientMessage.PlanDecision -> HostMessage.PlanDecided(message.requestId, message.runId)
+
         is ClientMessage.AgentConfigRequest -> HostMessage.AgentConfigSnapshot(
             requestId = message.requestId,
             config = dev.aide.domain.AgentConfig(),

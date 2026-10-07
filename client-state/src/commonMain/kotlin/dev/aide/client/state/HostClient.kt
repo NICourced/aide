@@ -4,6 +4,7 @@ import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.ModelSecretStatus
+import dev.aide.domain.PlanDecision
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
@@ -79,7 +80,7 @@ data class HostSession(
  *   случайный; в тестах задаётся явно.
  */
 class HostClient(
-    private val connection: HostConnection,
+    internal val connection: HostConnection,
     private val scope: CoroutineScope,
     requestIdPrefix: String = newRequestIdPrefix(),
 ) {
@@ -109,8 +110,12 @@ class HostClient(
      * и без замка `++sequence` теряет инкременты: два запроса получают один [RequestId],
      * ответ на первый достаётся второму, а первый вызывающий ждёт до таймаута. Хост при
      * этом считает второй запрос повтором и отдаёт чужой ответ.
+     *
+     * `internal`, а не `private`: решение по плану (T-1.2) живёт расширением в этом же файле,
+     * потому что одиннадцатый метод класса перешагнул бы предел `TooManyFunctions`, который
+     * проект ослаблять не разрешает.
      */
-    private val requestIds = RequestIdSequence(requestIdPrefix)
+    internal val requestIds = RequestIdSequence(requestIdPrefix)
 
     /**
      * Замок согласования первого обновления после открытия воркспейса.
@@ -357,6 +362,24 @@ private suspend fun <T> MutableStateFlow<HostSession>.call(
 
 /** Ошибка вызова хоста, несущая типизированную причину из протокола. */
 class HostCallException(val error: ProtocolError) : Exception(error.toString())
+
+/**
+ * Решение по показанному плану прогона (T-1.2): подтвердить или переделать с комментарием.
+ *
+ * Расширение, а не метод [HostClient]: одиннадцатый метод класса перешагнул бы предел
+ * `TooManyFunctions`, который проект ослаблять не разрешает, — по той же причине рядом
+ * живут отдельные объекты настроек моделей и журнала. Вызов на месте остаётся прежним:
+ * `client.decidePlan(…)`. Успешный ответ — только подтверждение приёма; новое состояние
+ * прогона приходит событием [HostEvent.RunStateChanged], как и у остальных переходов (О-8).
+ */
+suspend fun HostClient.decidePlan(runId: RunId, decision: PlanDecision): Result<Unit> {
+    val requestId = requestIds.next()
+    return when (val response = connection.request(ClientMessage.PlanDecision(requestId, runId, decision))) {
+        is HostMessage.PlanDecided -> Result.success(Unit)
+        is HostMessage.Failure -> Result.failure(HostCallException(response.error))
+        else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на решение по плану")))
+    }
+}
 
 /**
  * Выдача идентификаторов запросов под замком.

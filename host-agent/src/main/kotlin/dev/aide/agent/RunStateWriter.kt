@@ -124,9 +124,13 @@ internal class RunStateWriter(
 
     /** Останавливает прогон по команде пользователя; это не ошибка. */
     suspend fun stop(run: AgentRun): AgentRun {
-        failTask(run.taskId, RunInterruptReason.USER_STOP)
+        // Стоп ставится на последнюю записанную версию: пока прогон ждал подтверждения
+        // плана (T-1.2), план мог быть перепланирован, и копия из корутины перезаписала
+        // бы новый план старым. Если записи нет, остаётся переданный прогон.
+        val latest = runs.load(run.id) ?: run
+        failTask(latest.taskId, RunInterruptReason.USER_STOP)
         return persist(
-            run.copy(
+            latest.copy(
                 state = RunState.STOPPED,
                 finishedAt = clock(),
                 interruptReason = RunInterruptReason.USER_STOP,

@@ -138,6 +138,28 @@ sealed interface ClientMessage {
     ) : ClientMessage, RequestIdCarrier
 
     /**
+     * Решение по показанному плану прогона (T-1.2, FR-AGENT-7).
+     *
+     * Отдельная пара сообщений, а не расширение `RunControl`: команда — перечисление без
+     * полезной нагрузки, а «переделать» несёт комментарий, и поле, осмысленное для одного
+     * варианта из четырёх, сделало бы `RunControl` разнородным.
+     *
+     * Тип поля записан полностью (`dev.aide.domain.PlanDecision`), потому что вложенный
+     * класс с тем же именем перекрыл бы доменный в собственной области видимости — та же
+     * причина, по которой рядом живёт `AgentConfigRequest`, а не `AgentConfig`.
+     */
+    @Serializable
+    @SerialName("planDecision")
+    data class PlanDecision(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Прогон, план которого решается. */
+        val runId: RunId,
+        /** Подтвердить план или переделать его с комментарием. */
+        val decision: dev.aide.domain.PlanDecision,
+    ) : ClientMessage, RequestIdCarrier
+
+    /**
      * Запросить конфигурацию моделей и каталог заготовок (T-1.56).
      *
      * Имя с `Request` — не стилистика: класс `AgentConfig` живёт в домене, и вложенный
@@ -369,6 +391,16 @@ sealed interface HostMessage {
         /** Идентификатор запроса. */
         override val requestId: RequestId,
         /** Прогон, к которому отнесена команда. */
+        val runId: RunId,
+    ) : HostMessage, RequestIdCarrier
+
+    /** Решение по плану принято (T-1.2); само изменение состояния прогона придёт событием. */
+    @Serializable
+    @SerialName("planDecided")
+    data class PlanDecided(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Прогон, план которого решён. */
         val runId: RunId,
     ) : HostMessage, RequestIdCarrier
 

@@ -10,6 +10,7 @@ import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.ProviderProfile
 import dev.aide.domain.ProviderType
+import dev.aide.domain.PlanDecision
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
@@ -225,6 +226,8 @@ class ProtocolCodecTest {
             ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.PAUSE),
             ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.RESUME),
             ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.STOP),
+            ClientMessage.PlanDecision(requestId, RunId("r-1"), PlanDecision.Approve),
+            ClientMessage.PlanDecision(requestId, RunId("r-1"), PlanDecision.Replan("уточни шаги")),
             ClientMessage.AgentConfigRequest(requestId),
             ClientMessage.SaveAgentConfig(requestId, agentConfig()),
             ClientMessage.SaveAgentConfig(requestId, AgentConfig()),
@@ -277,6 +280,7 @@ class ProtocolCodecTest {
             HostMessage.TaskPosted(requestId, TaskId("t-1")),
             HostMessage.AgentSnapshot(requestId, listOf(agentRun()), listOf(task())),
             HostMessage.RunControlled(requestId, RunId("r-1")),
+            HostMessage.PlanDecided(requestId, RunId("r-1")),
             HostMessage.AgentConfigSnapshot(requestId, agentConfig(), listOf(catalogEntry())),
             HostMessage.AgentConfigSnapshot(requestId, AgentConfig(), emptyList()),
             HostMessage.AgentConfigSaved(requestId, agentConfig()),

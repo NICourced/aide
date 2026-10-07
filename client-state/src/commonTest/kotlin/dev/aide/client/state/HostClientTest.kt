@@ -1,7 +1,12 @@
 package dev.aide.client.state
 
+import dev.aide.domain.AgentRun
+import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
+import dev.aide.domain.PlanDecision
 import dev.aide.domain.RunId
+import dev.aide.domain.RunState
+import dev.aide.domain.TaskId
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
@@ -128,6 +133,51 @@ class HostClientTest {
             assertEquals(50, pages[1].limit)
         }
     }
+
+    @Test
+    fun `решение по плану уходит с новым RequestId`() {
+        runBlocking {
+            val runId = RunId("r-1")
+
+            client.decidePlan(runId, PlanDecision.Approve)
+            client.decidePlan(runId, PlanDecision.Replan("уточни шаги"))
+
+            val decisions = connection.takeRequests().filterIsInstance<ClientMessage.PlanDecision>()
+            assertEquals(2, decisions.size, "оба решения обязаны дойти до хоста")
+            assertEquals(
+                2,
+                decisions.map { it.requestId }.distinct().size,
+                "повтор с тем же RequestId хост принял бы за повтор и вернул прежний ответ",
+            )
+            assertEquals(PlanDecision.Approve, decisions[0].decision)
+            assertEquals(PlanDecision.Replan("уточни шаги"), decisions[1].decision, "комментарий обязан уехать целиком")
+        }
+    }
+
+    @Test
+    fun `смена состояния прогона событием обновляет сессию`() {
+        runBlocking {
+            // Состояние после решения приходит не ответом, а событием; экран живёт сессией.
+            val run = runFixture()
+            connection.emit(HostEvent.RunStateChanged(run))
+
+            val stored = withTimeoutOrNull(WAIT_MILLIS) {
+                while (client.session.value.runs.none { it.id == run.id }) delay(POLL_MILLIS)
+                client.session.value.runs.first { it.id == run.id }
+            }
+
+            assertEquals(run, stored, "прогон из события обязан попасть в сессию")
+        }
+    }
+
+    /** Прогон для проверки события: состояние и минимальные поля. */
+    private fun runFixture(): AgentRun = AgentRun(
+        id = RunId("r-1"),
+        taskId = TaskId("t-1"),
+        state = RunState.RUNNING,
+        mode = AutonomyMode.ASK_BEFORE_CHANGES,
+        startedAt = TOOL_CALL_AT,
+    )
 
     @Test
     fun `живая запись журнала доходит до подписчика`() {

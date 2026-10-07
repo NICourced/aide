@@ -84,7 +84,8 @@ class AnthropicProviderEndToEndTest {
             try {
                 val client = connect(host)
 
-                val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                val taskId = client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+                    .getOrThrow()
 
                 val finished = awaitRun(client) { it.state == RunState.FINISHED && it.taskId == taskId }
                 assertNotNull(finished, "прогон обязан дойти до завершения: ${client.session.value.runs}")

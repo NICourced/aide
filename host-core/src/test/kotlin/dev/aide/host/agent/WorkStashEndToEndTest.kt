@@ -70,7 +70,7 @@ class WorkStashEndToEndTest {
     private fun engine(llm: LlmClient = TextModel()): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, NoopSink),
         models = ModelProvider { Result.success(ConfiguredModel("test/scripted", llm)) },
-        planner = RunPlanner { _, _ ->
+        planner = RunPlanner { _, _, _ ->
             duringRun = Captured(
                 branch = git.currentBranch(),
                 porcelain = GitCliFixture.porcelainLines(fixture.root),
@@ -93,7 +93,7 @@ class WorkStashEndToEndTest {
             val engine = engine()
 
             engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-            assertTrue(engine.processNext())
+            assertTrue(engine.processNextApproving(runs))
 
             val task = tasks.all().single()
             // Во время прогона: дерево чистое, HEAD — в ветке задачи, правок человека нет.
@@ -128,7 +128,7 @@ class WorkStashEndToEndTest {
             val engine = engine(ThrowingModel())
 
             engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-            assertTrue(engine.processNext())
+            assertTrue(engine.processNextApproving(runs))
 
             assertEquals("master", git.currentBranch())
             assertEquals(listOf(" M src/Login.kt", "?? src/New.kt"), GitCliFixture.porcelainLines(fixture.root))

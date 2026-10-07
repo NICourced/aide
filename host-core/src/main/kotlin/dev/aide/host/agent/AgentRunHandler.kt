@@ -38,6 +38,8 @@ class AgentRunHandler(
 
         is ClientMessage.RunControl -> control(message)
 
+        is ClientMessage.PlanDecision -> decide(message)
+
         // «Чужое» сообщение сюда попадает только из-за ошибки маршрутизации; отвечаем
         // его же идентификатором, иначе клиент ждал бы ответа до таймаута.
         else -> HostMessage.Failure(
@@ -50,6 +52,14 @@ class AgentRunHandler(
     private fun control(message: ClientMessage.RunControl): HostMessage = try {
         engine.control(message.runId, message.command)
         HostMessage.RunControlled(message.requestId, message.runId)
+    } catch (error: UnknownRunException) {
+        HostMessage.Failure(message.requestId, ProtocolError.NotFound("прогон ${error.runId.value}"))
+    }
+
+    /** Решение по плану принято движком; смена состояния прогона придёт клиенту событием (T-1.2). */
+    private fun decide(message: ClientMessage.PlanDecision): HostMessage = try {
+        engine.decidePlan(message.runId, message.decision)
+        HostMessage.PlanDecided(message.requestId, message.runId)
     } catch (error: UnknownRunException) {
         HostMessage.Failure(message.requestId, ProtocolError.NotFound("прогон ${error.runId.value}"))
     }

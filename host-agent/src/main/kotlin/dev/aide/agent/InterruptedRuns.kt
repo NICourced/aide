@@ -5,6 +5,7 @@ import dev.aide.agent.ports.TaskRepository
 import dev.aide.domain.AgentRun
 import dev.aide.domain.RunState
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.planNeedsApproval
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 
@@ -13,6 +14,16 @@ object RunInterruptReason {
 
     /** Хост был перезапущен: прогон не продолжается с середины молча (T-1.1). */
     const val HOST_RESTART: String = "host_restart"
+
+    /**
+     * Прогон ждал подтверждения плана, когда хост перезапустился (T-1.2).
+     *
+     * Отдельный код, а не `host_restart`: возобновить стоянку нечем (воркер берёт только
+     * `QUEUED`, а прогон в `PLANNED` — живая корутина, которой после падения нет), но
+     * пользователю важно понять, что работа даже не начиналась, а не что она прервалась.
+     * План при этом сохраняется в базе.
+     */
+    const val PLAN_AWAITING_CONFIRMATION: String = "plan_awaiting_confirmation"
 
     /** Прогон остановил пользователь. */
     const val USER_STOP: String = "user_stop"
@@ -121,9 +132,14 @@ class InterruptedRuns(
 
     /** Помечает прерванными ровно незавершённые прогоны; возвращает их для лога. */
     fun markInterrupted(): List<AgentRun> {
-        val interrupted = runs.unfinished().map(::interrupt)
-        tasks.unfinished().forEach {
-            tasks.save(it.copy(status = TaskStatus.FAILED, failureReason = RunInterruptReason.HOST_RESTART))
+        val unfinished = runs.unfinished()
+        val interrupted = unfinished.map(::interrupt)
+        // Причина на задаче — от её прогона: ждавший плана прогон и работавший
+        // прерываются по-разному, и на задаче это тоже обязано быть видно (T-1.2).
+        val reasons = unfinished.associate { it.taskId to reasonOf(it) }
+        tasks.unfinished().forEach { task ->
+            val reason = reasons[task.id] ?: RunInterruptReason.HOST_RESTART
+            tasks.save(task.copy(status = TaskStatus.FAILED, failureReason = reason))
         }
         return interrupted
     }
@@ -131,6 +147,20 @@ class InterruptedRuns(
     private fun interrupt(run: AgentRun): AgentRun = run.copy(
         state = RunState.INTERRUPTED,
         finishedAt = clock(),
-        interruptReason = RunInterruptReason.HOST_RESTART,
+        interruptReason = reasonOf(run),
     ).also(runs::save)
+
+    /**
+     * Ждавший подтверждения плана прогон прерывается отдельным кодом, работавший — общим (T-1.2).
+     *
+     * Код «ждал плана» ставится только там, где шлюз действительно есть: в режиме без
+     * подтверждения (`SUGGEST_ONLY`) `PLANNED` — мгновение внутри прогона, и называть
+     * его ожиданием было бы неправдой.
+     */
+    private fun reasonOf(run: AgentRun): String =
+        if (run.state == RunState.PLANNED && planNeedsApproval(run.mode)) {
+            RunInterruptReason.PLAN_AWAITING_CONFIRMATION
+        } else {
+            RunInterruptReason.HOST_RESTART
+        }
 }

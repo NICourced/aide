@@ -1,5 +1,6 @@
 package dev.aide.desktop
 
+import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -58,6 +59,27 @@ class DesktopEndToEndTest {
         check(process.waitFor() == 0) { "Команда ${command.toList()} не выполнилась: $output" }
     }
 
+    /**
+     * Ждёт выполнения условия, отсчитывая срок по системным часам.
+     *
+     * Замена стандартного `waitUntil`: его срок идёт по виртуальным часам Compose, а без
+     * запрошенных кадров они не двигаются, и невыполненное условие крутит процессор вечно
+     * вместо падения (на этом тест зависал). Здесь срок реальный, поэтому регрессия даёт
+     * падение за отведённое время, а не зависание.
+     */
+    private fun ComposeUiTest.waitFor(timeoutMillis: Long = 15_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            waitForIdle()
+            if (condition()) return
+            // Композиция идёт на тестовом диспетчере, а события хоста — на своём:
+            // пауза даёт им дойти, `waitForIdle` затем пересобирает увиденное.
+            Thread.sleep(POLL_MILLIS)
+        }
+        waitForIdle()
+        check(condition()) { "Условие не выполнено за $timeoutMillis мс" }
+    }
+
     private fun fixture(): Path {
         val dir = Files.createTempDirectory("aide-e2e")
         run("git", "init", "-b", "master", dir = dir)
@@ -87,14 +109,14 @@ class DesktopEndToEndTest {
             connection.start()
             setContent { App(connection = connection, settings = settings, scope = scope) }
 
-            waitUntil(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
+            waitFor(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
             println("E2E: соединение установлено ${connection.state.value}")
 
             // Никаких действий в настройках: дерево и ветка должны появиться сами.
-            waitUntil(timeoutMillis = 15_000) {
+            waitFor(timeoutMillis = 15_000) {
                 onAllNodesWithText("Ветка: master").fetchSemanticsNodes().isNotEmpty()
             }
-            waitUntil(timeoutMillis = 15_000) {
+            waitFor(timeoutMillis = 15_000) {
                 onAllNodesWithTag("tree-row-src/Login.kt").fetchSemanticsNodes().isNotEmpty()
             }
 
@@ -104,7 +126,7 @@ class DesktopEndToEndTest {
             println("E2E: репозиторий открыт при запуске, дерево показано")
 
             onNodeWithTag("tree-row-src/Login.kt").performClick()
-            waitUntil(timeoutMillis = 15_000) {
+            waitFor(timeoutMillis = 15_000) {
                 onAllNodesWithText("Файл: src/Login.kt").fetchSemanticsNodes().isNotEmpty()
             }
             onNodeWithText("Файл: src/Login.kt").assertIsDisplayed()
@@ -112,7 +134,7 @@ class DesktopEndToEndTest {
             println("E2E: содержимое файла показано")
 
             host.close()
-            waitUntil(timeoutMillis = 20_000) {
+            waitFor(timeoutMillis = 20_000) {
                 onAllNodesWithText("Нет связи с хостом").fetchSemanticsNodes().isNotEmpty()
             }
             onNodeWithText("Нет связи с хостом").assertIsDisplayed()
@@ -149,34 +171,42 @@ class DesktopEndToEndTest {
         try {
             connection.start()
             setContent { App(connection = connection, settings = settings, scope = scope) }
-            waitUntil(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
-            waitUntil(timeoutMillis = 15_000) {
+            waitFor(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
+            waitFor(timeoutMillis = 15_000) {
                 onAllNodesWithText("Ветка: master").fetchSemanticsNodes().isNotEmpty()
             }
 
             onNodeWithText("Агент").performClick()
-            waitUntil(timeoutMillis = 15_000) {
+            waitFor(timeoutMillis = 15_000) {
                 onAllNodesWithTag("task-input").fetchSemanticsNodes().isNotEmpty()
             }
             onNodeWithTag("task-input").performTextInput("Почини сборку")
             onNodeWithTag("post-task").performClick()
 
+            // Стоянка плана (T-1.2): прогон показывает план и ждёт решения — до него
+            // работа не начинается. Сквозная проверка проходит шлюз нажатием, как человек.
+            waitFor(timeoutMillis = 20_000) {
+                onAllNodesWithTag("approve-plan").fetchSemanticsNodes().isNotEmpty()
+            }
+            onNodeWithText("План до начала работы").assertIsDisplayed()
+            onNodeWithTag("approve-plan").performClick()
+
             // Состояние приходит событием RunStateChanged; строка состояния обязана его показать.
-            waitUntil(timeoutMillis = 20_000) {
+            waitFor(timeoutMillis = 20_000) {
                 onAllNodesWithText("Завершён").fetchSemanticsNodes().isNotEmpty()
             }
             onNodeWithText("Завершён").assertIsDisplayed()
-            println("E2E: задача поставлена и прогон дошёл до завершения")
+            println("E2E: задача поставлена, план подтверждён и прогон дошёл до завершения")
 
-            // Шапка показывает ветку задачи: имя ветки знает только хост, поэтому оно
-            // читается из базы хоста, а не выводится тестом по соглашению (T-1.18).
+            // Ветка задачи проверяется как записанное состояние, а не как текст шапки:
+            // T-1.59 возвращает дерево на базовую ветку и рассылает событие, поэтому
+            // «Ветка: ai/<id>» в шапке живёт лишь мгновение прогона и ожидание его — гонка.
+            // Имя ветки знает только хост, поэтому читается из базы, а существование
+            // самой ссылки — из репозитория (T-1.18). То и другое детерминировано.
             val posted = taskFrom(database)
             assertEquals("ai/${posted.id.value}", posted.branch, "задаче записана ветка ai/<task-id>")
-            waitUntil(timeoutMillis = 20_000) {
-                onAllNodesWithText("Ветка: ${posted.branch}").fetchSemanticsNodes().isNotEmpty()
-            }
-            onNodeWithText("Ветка: ${posted.branch}").assertIsDisplayed()
-            println("E2E: шапка показывает ветку задачи ${posted.branch}")
+            run("git", "rev-parse", "--verify", "refs/heads/${posted.branch}", dir = repo)
+            println("E2E: задача шла в ветке ${posted.branch}, ссылка существует")
         } finally {
             runBlocking { connection.stop() }
             host.close()
@@ -196,13 +226,13 @@ class DesktopEndToEndTest {
         try {
             connection.start()
             setContent { App(connection = connection, settings = settings, scope = scope) }
-            waitUntil(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
+            waitFor(timeoutMillis = 15_000) { connection.state.value is ConnectionState.Connected }
 
             onNodeWithText("Настройки").performClick()
 
             // Каталог заготовок едет с хоста: без связи раздела с конфигурацией хоста
             // этих кнопок не было бы вовсе.
-            waitUntil(timeoutMillis = 15_000) {
+            waitFor(timeoutMillis = 15_000) {
                 onAllNodesWithTag("catalog-add-openai").fetchSemanticsNodes().isNotEmpty()
             }
             onNodeWithTag("model-key-note").performScrollTo().assertExists()
@@ -210,7 +240,7 @@ class DesktopEndToEndTest {
             onNodeWithTag("catalog-add-openai").performScrollTo().performClick()
 
             // Добавленная заготовка появилась в таблице провайдеров и сохранена на хосте.
-            waitUntil(timeoutMillis = 15_000) {
+            waitFor(timeoutMillis = 15_000) {
                 onAllNodesWithTag("provider-base-url-openai").fetchSemanticsNodes().isNotEmpty()
             }
             onNodeWithTag("provider-base-url-openai").performScrollTo().assertIsDisplayed()
@@ -234,7 +264,7 @@ class DesktopEndToEndTest {
             connection.start()
             setContent { App(connection = connection, settings = settings, scope = scope) }
 
-            waitUntil(timeoutMillis = 15_000) {
+            waitFor(timeoutMillis = 15_000) {
                 onAllNodesWithText("Репозиторий не выбран. Укажите путь к нему в настройках.")
                     .fetchSemanticsNodes().isNotEmpty()
             }
@@ -290,5 +320,8 @@ class DesktopEndToEndTest {
     private companion object {
         /** Алиас, под которым скриптованная модель попадает в прогон. */
         const val SCRIPTED_ALIAS = "test/scripted"
+
+        /** Пауза между проверками условия: даёт событиям хоста дойти до клиента. */
+        const val POLL_MILLIS = 20L
     }
 }

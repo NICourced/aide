@@ -20,11 +20,20 @@ import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.PlanDecision
+import dev.aide.domain.PlanStep
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlinx.datetime.Instant
 
@@ -197,11 +206,18 @@ class FakeWorkStash(
 }
 
 /** Прогон с заданным состоянием; незавершённые — без `finishedAt`. */
-fun testRun(id: String, state: RunState, finishedAt: Instant? = null): AgentRun = AgentRun(
+fun testRun(
+    id: String,
+    state: RunState,
+    finishedAt: Instant? = null,
+    plan: List<PlanStep> = emptyList(),
+    mode: AutonomyMode = AutonomyMode.ASK_BEFORE_CHANGES,
+): AgentRun = AgentRun(
     id = RunId(id),
     taskId = TaskId("t-$id"),
     state = state,
-    mode = AutonomyMode.ASK_BEFORE_CHANGES,
+    mode = mode,
+    plan = plan,
     startedAt = Instant.fromEpochMilliseconds(1),
     finishedAt = finishedAt,
 )
@@ -230,6 +246,92 @@ fun testTask(id: String, status: TaskStatus): Task = Task(
 
 /** Код отказа задачи, который ничего не значит: проверяется общий текст UI. */
 const val UNKNOWN_FAILURE_REASON: String = "совсем_неизвестная_причина"
+
+/** Сколько ждать появления стоящего прогона: короче шага планирования, длиннее переключения корутин. */
+private const val PLAN_POLL_MILLIS: Long = 2L
+
+/**
+ * Ждёт появления стоящего прогона, ничего не решая.
+ *
+ * Так проверяется сама стоянка: до решения работа не начинается, и у прогона есть время
+ * показать, что он действительно стоит, а не просто ещё не дошёл до работы.
+ */
+suspend fun awaitPlannedRun(runs: FakeRunRepository, runId: RunId? = null): AgentRun = withTimeout(5_000) {
+    var planned = runs.all().lastOrNull { it.state == RunState.PLANNED && (runId == null || it.id == runId) }
+    while (planned == null) {
+        delay(PLAN_POLL_MILLIS)
+        planned = runs.all().lastOrNull { it.state == RunState.PLANNED && (runId == null || it.id == runId) }
+    }
+    planned
+}
+
+/**
+ * Ждёт, пока у прогона появится план с ожидаемым первым описанием.
+ *
+ * Перепланирование записывается асинхронно, поэтому его результат — не то же самое, что
+ * отправленное решение: тест ждёт именно записанного плана, а не момента отправки (T-1.2).
+ */
+suspend fun awaitPlanSummary(runs: FakeRunRepository, runId: RunId, summary: String): AgentRun = withTimeout(5_000) {
+    var run = runs.all().firstOrNull { it.id == runId }
+    while (run?.plan?.firstOrNull()?.summary != summary) {
+        delay(PLAN_POLL_MILLIS)
+        run = runs.all().firstOrNull { it.id == runId }
+    }
+    requireNotNull(run)
+}
+
+/**
+ * Ждёт появления стоящего плана и отвечает на стоянку заданным решением (T-1.2).
+ *
+ * Возвращает прогон, которому отправлено решение. Стоянка — часть контракта: без решения
+ * работа не начинается, поэтому проверки, которым нужен ход прогона, проходят шлюз явно.
+ */
+suspend fun AgentRunEngine.awaitShownPlan(
+    runs: FakeRunRepository,
+    decision: PlanDecision = PlanDecision.Approve,
+): AgentRun = awaitPlannedRun(runs).also { decidePlan(it.id, decision) }
+
+/**
+ * Выполняет одну задачу очереди, подтверждая показанный план (T-1.2).
+ *
+ * Прежнее `processNext` без решения теперь останавливается на стоянке; там, где тесту
+ * важен ход работы, этот вызов проходит шлюз явно и сохраняет смысл проверки.
+ */
+suspend fun AgentRunEngine.processNextApproved(
+    runs: FakeRunRepository,
+    decision: PlanDecision = PlanDecision.Approve,
+): Boolean {
+    var processed = false
+    coroutineScope {
+        val worker = launch { processed = processNext() }
+        val approver = launch {
+            while (isActive) {
+                runs.all().lastOrNull { it.state == RunState.PLANNED }?.let { decidePlan(it.id, decision) }
+                delay(PLAN_POLL_MILLIS)
+            }
+        }
+        awaitCompletion(worker)
+        approver.cancel()
+    }
+    return processed
+}
+
+/**
+ * Дожидается корутины с ограничением по времени: регрессия даёт падение, а не зависание.
+ *
+ * Без ограничения `join()` навсегда оставил бы набор висеть (класс дефектов из AGENTS.md),
+ * поэтому по истечении срока корутина отменяется, а тест падает.
+ */
+suspend fun awaitCompletion(job: Job, timeoutMillis: Long = 5_000) {
+    val finished = withTimeoutOrNull(timeoutMillis) {
+        job.join()
+        true
+    }
+    if (finished == null) {
+        job.cancel()
+        throw AssertionError("Корутина не завершилась за $timeoutMillis мс")
+    }
+}
 
 /** Модель, падающая на первом вызове: проверяет предохранитель движка, а не код ошибки. */
 class ThrowingOnceModel : LlmClient {

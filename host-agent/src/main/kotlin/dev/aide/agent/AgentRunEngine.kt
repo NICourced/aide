@@ -16,6 +16,7 @@ import dev.aide.agent.provider.ModelUnavailableException
 import dev.aide.agent.tools.StepTools
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
@@ -48,7 +49,7 @@ private val DEFAULT_MODE = AutonomyMode.ASK_BEFORE_CHANGES
 private const val TITLE_LIMIT = 80
 
 /** Причина отмены прогона по команде пользователя. */
-private const val STOP_MESSAGE = "Прогон остановлен пользователем"
+internal const val STOP_MESSAGE = "Прогон остановлен пользователем"
 
 /**
  * Сколько витков «модель просит инструмент → инструмент отвечает» допускается в шаге.
@@ -122,6 +123,7 @@ class AgentRunEngine(
     private val runSnapshots = RunSnapshots(repositories.snapshots, writer)
     private val workStash = TaskWorkStash(repositories.workStash, ports.tasks, writer)
     private val stepCommits = StepCommitWriter(tools)
+    private val gate = PlanGate(planner, writer)
     private val controls = ConcurrentHashMap<RunId, RunControl>()
     private val pendingModes = ConcurrentHashMap<TaskId, AutonomyMode>()
 
@@ -184,7 +186,15 @@ class AgentRunEngine(
         // Режим снимается до планирования: при отказе планирования запись не должна
         // оставаться в памяти до конца жизни хоста.
         val mode = pendingModes.remove(task.id) ?: DEFAULT_MODE
-        val model = modelOrFail(task)
+        // Отказ выбрать модель — нормальное состояние: на чистой установке провайдер не
+        // настроен, у настроенного может не быть переменной окружения с ключом. Задача
+        // падает кодом причины, а не молчит, и прогона при этом ещё нет (`NOT_CONFIGURED`).
+        val model = models.current().getOrElse { error ->
+            val reason = reasonOf(error)
+            logger.warn("Задача ${task.id.value} не начала прогон ($reason): ${error.message}", error)
+            writer.failTask(task.id, reason)
+            null
+        }
         // Откладывать правки незачем, если прогон всё равно не начнётся: порядок «модель,
         // потом правки» не трогает репозиторий ради прогона, которого не будет.
         val stashed = if (model == null) null else workStash.beforeRun(running)
@@ -200,25 +210,21 @@ class AgentRunEngine(
         }
     }
 
-    /**
-     * Берёт модель для прогона; при отказе помечает задачу кодом причины, а не молчит.
-     *
-     * Отказ — нормальное состояние: на чистой установке провайдер не настроен, у настроенного
-     * может не быть переменной окружения с ключом. Задача падает тем же кодом, что и раньше
-     * (`NOT_CONFIGURED`), и пользователь видит причину в строке задачи.
-     */
-    private suspend fun modelOrFail(task: Task): ConfiguredModel? =
-        models.current().getOrElse { error ->
-            val reason = reasonOf(error)
-            logger.warn("Задача ${task.id.value} не начала прогон ($reason): ${error.message}", error)
-            writer.failTask(task.id, reason)
-            null
-        }
-
     /** Пауза, продолжение или стоп; неизвестный прогон — ошибка, а не молчание. */
     fun control(runId: RunId, command: RunCommand) {
         val control = controls[runId] ?: throw UnknownRunException(runId)
         control.request(command)
+    }
+
+    /**
+     * Решение по плану стоящего прогона (T-1.2); неизвестный прогон — ошибка, а не молчание.
+     *
+     * Решение кладётся в канал и дождётся стоянки: клиент может ответить раньше, чем
+     * корутина прогона дошла до ожидания, и терять его тогда было бы нечем объяснить.
+     */
+    fun decidePlan(runId: RunId, decision: PlanDecision) {
+        val control = controls[runId] ?: throw UnknownRunException(runId)
+        control.decide(decision)
     }
 
     /**
@@ -230,7 +236,7 @@ class AgentRunEngine(
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun planOrFail(task: Task, model: ConfiguredModel): List<PlanStep>? = try {
-        planner.plan(task, model.client)
+        planner.plan(task, model.client, comment = null)
     } catch (error: Exception) {
         currentCoroutineContext().ensureActive()
         val reason = reasonOf(error)
@@ -280,7 +286,12 @@ class AgentRunEngine(
     }
 
     /**
-     * Виток цикла: шаги, точки проверки, завершение.
+     * Виток цикла: стоянка плана, шаги, точки проверки, завершение.
+     *
+     * Стоянка плана идёт первой (T-1.2): до решения [RunState.PLANNED] не сменяется на
+     * [RunState.RUNNING], и работа не начинается. Ожидание — приостанавливающаяся операция,
+     * поэтому стоп (отмена job) её прерывает и прогон закрывается как `STOPPED`; пауза во
+     * время стоянки смысла не имеет и отбрасывается ([RunControl.discardPendingCommands]).
      *
      * Отмена пользователя отличается от отмены хоста флагом [RunControl.stopRequested]:
      * остановленный прогон финализируется как STOPPED, а отменённый хостом остаётся
@@ -288,9 +299,13 @@ class AgentRunEngine(
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun execute(task: Task, start: AgentRun, control: RunControl, llm: LlmClient) {
-        var current = writer.persist(start.copy(state = RunState.RUNNING))
+        var current = start
         try {
-            for (step in start.plan) {
+            // Стоянка плана (T-1.2): пока решения нет, работа не начинается. Перепланированный
+            // план шлюз уже записал и разослал, поэтому в `current` приходит актуальный.
+            current = gate.await(task, current, control, llm)
+            current = writer.persist(current.copy(state = RunState.RUNNING))
+            for (step in current.plan) {
                 current = checkpoint(current, control)
                 current = applyStep(task, current, step, llm)
                 current = checkpoint(current, control)

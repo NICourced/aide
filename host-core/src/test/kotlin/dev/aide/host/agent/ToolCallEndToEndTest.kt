@@ -85,7 +85,7 @@ class ToolCallEndToEndTest {
             val run = try {
                 val client = openClient(host)
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
-                client.postTask("Прочитай файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Прочитай файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 finish(client)
             } finally {
                 host.close()
@@ -121,7 +121,7 @@ class ToolCallEndToEndTest {
             val run = try {
                 val client = openClient(host)
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
-                client.postTask("Прочитай файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Прочитай файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 finish(client)
             } finally {
                 host.close()
@@ -147,7 +147,7 @@ class ToolCallEndToEndTest {
             val run = try {
                 val client = openClient(host)
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
-                client.postTask("Запиши файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Запиши файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 finish(client)
             } finally {
                 host.close()
@@ -187,7 +187,7 @@ class ToolCallEndToEndTest {
             val run = try {
                 val client = openClient(host)
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
-                client.postTask("Запиши файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Запиши файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 finish(client)
             } finally {
                 host.close()
@@ -223,7 +223,7 @@ class ToolCallEndToEndTest {
             val run = try {
                 val client = openClient(host)
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
-                client.postTask("Выполни команду", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Выполни команду", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 finish(client)
             } finally {
                 host.close()
@@ -262,7 +262,7 @@ class ToolCallEndToEndTest {
             val run = try {
                 val client = openClient(host)
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
-                client.postTask("Выполни команду", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Выполни команду", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 finish(client)
             } finally {
                 host.close()
@@ -288,7 +288,7 @@ class ToolCallEndToEndTest {
             val run = try {
                 val client = openClient(host)
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
-                client.postTask("Прогони тесты", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Прогони тесты", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 finish(client)
             } finally {
                 host.close()
@@ -395,7 +395,7 @@ class ToolCallEndToEndTest {
 
             override suspend fun check(alias: String): ModelCheckFailure? = ModelCheckFailure.Unsupported
         },
-        planner = RunPlanner { _, _ ->
+        planner = RunPlanner { _, _, _ ->
             listOf(PlanStep(index = 0, summary = "прочитать файл", status = StepStatus.PENDING))
         },
     )

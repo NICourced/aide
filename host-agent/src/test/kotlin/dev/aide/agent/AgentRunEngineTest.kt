@@ -12,6 +12,7 @@ import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelFailureCode
+import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
@@ -28,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.Instant
 
 /**
@@ -53,7 +55,7 @@ class AgentRunEngineTest {
         AgentRunEngine(
             ports = RunPorts(runs, tasks, sink),
             models = fixedModel(llm),
-            planner = RunPlanner { _, _ -> plan },
+            planner = RunPlanner { _, _, _ -> plan },
             tools = tools,
             repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
             clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -63,7 +65,7 @@ class AgentRunEngineTest {
     fun `прогон проходит planned, running и finished, и события совпадают с состояниями`() = runBlocking {
         val engine = engine(plan("раз", "два"))
         engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
 
         assertEquals(listOf(RunState.PLANNED, RunState.RUNNING, RunState.FINISHED), sink.states)
         assertEquals(
@@ -85,6 +87,7 @@ class AgentRunEngineTest {
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
 
         val worker = launch { engine.processNext() }
+        engine.awaitShownPlan(runs)
         llm.awaitCall(0)
         val runId = sink.events.first().id
         engine.control(runId, RunCommand.PAUSE)
@@ -96,7 +99,7 @@ class AgentRunEngineTest {
         assertEquals(StepStatus.PENDING, paused.plan[1].status, "шаг после паузы ещё не выполнялся")
 
         engine.control(runId, RunCommand.RESUME)
-        worker.join()
+        awaitCompletion(worker)
 
         assertEquals(RunState.FINISHED, runs.load(runId)?.state)
         assertEquals(2, llm.callCount, "шаг со статусом DONE не повторяется при продолжении")
@@ -110,6 +113,7 @@ class AgentRunEngineTest {
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
 
         val worker = launch { engine.processNext() }
+        engine.awaitShownPlan(runs)
         llm.awaitCall(0)
         val runId = sink.events.first().id
         engine.control(runId, RunCommand.PAUSE)
@@ -122,7 +126,7 @@ class AgentRunEngineTest {
         assertEquals(RunState.PAUSED, runs.load(runId)?.state, "повторная PAUSE не выводит прогон из PAUSED")
 
         engine.control(runId, RunCommand.RESUME)
-        worker.join()
+        awaitCompletion(worker)
         assertEquals(RunState.FINISHED, runs.load(runId)?.state)
         assertEquals(2, llm.callCount, "продолжение ровно с того же шага: шаг не повторялся")
     }
@@ -135,10 +139,11 @@ class AgentRunEngineTest {
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
 
         val worker = launch { engine.processNext() }
+        engine.awaitShownPlan(runs)
         llm.awaitCall(0)
         val runId = sink.events.first().id
         engine.control(runId, RunCommand.STOP)
-        worker.join()
+        awaitCompletion(worker)
 
         val run = assertNotNull(runs.load(runId))
         assertEquals(RunState.STOPPED, run.state, "остановленный прогон — STOPPED, а не FAILED")
@@ -154,7 +159,7 @@ class AgentRunEngineTest {
         val engine = engine(plan("раз"), llm)
 
         engine.postTask("первая", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
         val failed = runs.all().single()
         assertEquals(RunState.FAILED, failed.state)
         assertEquals(ModelFailureCode.UNAUTHORIZED, failed.interruptReason)
@@ -162,7 +167,7 @@ class AgentRunEngineTest {
         assertEquals(ModelFailureCode.UNAUTHORIZED, tasks.load(failed.taskId)?.failureReason)
 
         engine.postTask("вторая", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext(), "после ошибки очередь обязана продолжать работать")
+        assertTrue(engine.processNextApproved(runs), "после ошибки очередь обязана продолжать работать")
         assertEquals(RunState.FINISHED, runs.all().last().state)
     }
 
@@ -171,7 +176,7 @@ class AgentRunEngineTest {
         val engine = engine(plan("раз"), ThrowingOnceModel())
 
         engine.postTask("первая", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
         val failed = runs.all().single()
         assertEquals(RunState.FAILED, failed.state)
         assertEquals(
@@ -182,7 +187,7 @@ class AgentRunEngineTest {
         assertEquals(RunInterruptReason.UNEXPECTED, tasks.load(failed.taskId)?.failureReason)
 
         engine.postTask("вторая", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext(), "после падения транспорта очередь обязана продолжать работать")
+        assertTrue(engine.processNextApproved(runs), "после падения транспорта очередь обязана продолжать работать")
         assertEquals(RunState.FINISHED, runs.all().last().state)
     }
 
@@ -191,7 +196,7 @@ class AgentRunEngineTest {
         val engine = AgentRunEngine(
             ports = RunPorts(runs, tasks, sink),
             models = fixedModel(textModel()),
-            planner = RunPlanner { _, _ -> throw PlanFormatException("не план") },
+            planner = RunPlanner { _, _, _ -> throw PlanFormatException("не план") },
             tools = tools,
             repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
             clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -211,7 +216,7 @@ class AgentRunEngineTest {
         val engine = AgentRunEngine(
             ports = RunPorts(runs, tasks, ThrowingOnFinishSink(runs, tasks)),
             models = fixedModel(textModel()),
-            planner = RunPlanner { _, _ -> plan("раз") },
+            planner = RunPlanner { _, _, _ -> plan("раз") },
             tools = tools,
             repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
             clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -219,7 +224,10 @@ class AgentRunEngineTest {
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
 
         // Рассылка FINISHED падает; движок это пробрасывает, но запись уже сделана.
-        runCatching { engine.processNext() }
+        // План подтверждается явно: иначе прогон стоял бы на стоянке и до FINISHED не дошёл.
+        val worker = launch { runCatching { engine.processNext() } }
+        engine.awaitShownPlan(runs)
+        awaitCompletion(worker)
 
         val run = runs.all().single()
         assertEquals(RunState.FINISHED, run.state, "успешный прогон не подменяется отказом")
@@ -231,7 +239,7 @@ class AgentRunEngineTest {
         val engine = engine(plan("раз"), textModel())
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
 
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
 
         assertEquals("test/scripted", runs.all().single().modelAlias, "алиас обязан попасть в прогон (T-1.56)")
     }
@@ -243,7 +251,7 @@ class AgentRunEngineTest {
         val engine = AgentRunEngine(
             ports = RunPorts(runs, tasks, sink),
             models = failingModel(ModelCheckFailure.NotConfigured),
-            planner = RunPlanner { _, _ -> plan("раз") },
+            planner = RunPlanner { _, _, _ -> plan("раз") },
             tools = tools,
             repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
             clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -262,7 +270,7 @@ class AgentRunEngineTest {
         val engine = AgentRunEngine(
             ports = RunPorts(runs, tasks, sink),
             models = failingModel(ModelCheckFailure.MissingKey("DEEPSEEK_API_KEY")),
-            planner = RunPlanner { _, _ -> plan("раз") },
+            planner = RunPlanner { _, _, _ -> plan("раз") },
             tools = tools,
             repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
             clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -286,7 +294,7 @@ class AgentRunEngineTest {
         val engine = AgentRunEngine(
             ports = RunPorts(runs, tasks, sink),
             models = ModelProvider { Result.success(chosen) },
-            planner = RunPlanner { _, _ -> plan("раз", "два") },
+            planner = RunPlanner { _, _, _ -> plan("раз", "два") },
             tools = tools,
             repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
             clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -294,10 +302,11 @@ class AgentRunEngineTest {
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
 
         val worker = launch { engine.processNext() }
+        engine.awaitShownPlan(runs)
         started.awaitCall(0)
         // Пользователь сменил модель в настройках прямо во время прогона.
         chosen = ConfiguredModel("model/b", replacement)
-        worker.join()
+        awaitCompletion(worker)
 
         assertEquals(2, started.callCount, "оба шага идут моделью, которой прогон начался")
         assertEquals(0, replacement.callCount, "новая модель не подхватывается на середине прогона")
@@ -313,13 +322,14 @@ class AgentRunEngineTest {
         engine.postTask("вторая", AutonomyMode.ASK_BEFORE_CHANGES)
 
         val worker = launch { engine.processNext() }
+        engine.awaitShownPlan(runs)
         llm.awaitCall(0)
         val queued = tasks.unfinished().filter { it.status == TaskStatus.QUEUED }
         assertEquals(1, queued.size, "пока идёт первый прогон, вторая задача ждёт в очереди")
 
         gate.complete(Unit)
-        worker.join()
-        assertTrue(engine.processNext(), "вторая задача выполняется следом за первой")
+        awaitCompletion(worker)
+        assertTrue(engine.processNextApproved(runs), "вторая задача выполняется следом за первой")
         assertEquals(2, runs.all().size)
     }
 
@@ -327,7 +337,7 @@ class AgentRunEngineTest {
     fun `событие о смене состояния приходит после записи в базу`() = runBlocking {
         val engine = engine(plan("раз"))
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
 
         assertEquals(listOf(RunState.PLANNED, RunState.RUNNING, RunState.FINISHED), sink.states)
         sink.events.forEachIndexed { index, emitted ->
@@ -343,7 +353,7 @@ class AgentRunEngineTest {
     fun `событие о смене статуса задачи приходит после записи в базу`() = runBlocking {
         val engine = engine(plan("раз"))
         engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
 
         assertEquals(listOf(TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.REVIEW), sink.taskStates)
         sink.taskEvents.forEachIndexed { index, emitted ->
@@ -359,6 +369,156 @@ class AgentRunEngineTest {
     fun `неизвестный прогон не управляется молча`() {
         val engine = engine()
         assertFailsWith<UnknownRunException> { engine.control(RunId("нет-такого"), RunCommand.STOP) }
+    }
+
+    @Test
+    fun `без решения работа не начинается, а подтверждение её запускает`() = runBlocking {
+        val llm = ScriptedLlmClient(listOf(text("готово")))
+        val engine = engine(plan("шаг"), llm)
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        val worker = launch { engine.processNext() }
+        val planned = awaitPlannedRun(runs)
+        // Дать прогону время сделать хоть что-нибудь, если он собирался: без решения
+        // он обязан молчать — ни вызова модели, ни смены состояния.
+        delay(PAUSE_SETTLE_MILLIS)
+        assertEquals(0, llm.callCount, "до решения модель не спрашивают")
+        assertEquals(RunState.PLANNED, runs.load(planned.id)?.state, "прогон стоит в PLANNED")
+        assertTrue(
+            runs.load(planned.id)?.plan?.all { it.status == StepStatus.PENDING } == true,
+            "ни один шаг не начат до решения",
+        )
+
+        engine.decidePlan(planned.id, PlanDecision.Approve)
+        awaitCompletion(worker)
+
+        assertEquals(RunState.FINISHED, runs.load(planned.id)?.state, "подтверждение запускает работу")
+        assertEquals(1, llm.callCount)
+        // Решение переводит прогон в RUNNING: без этого перехода «работа идёт» было бы
+        // неотличимо от мгновенного завершения (T-1.2).
+        assertEquals(
+            listOf(RunState.PLANNED, RunState.RUNNING, RunState.FINISHED),
+            sink.states,
+            "после решения состояние обязано смениться на RUNNING",
+        )
+    }
+
+    @Test
+    fun `в режиме только предлагать стоянки нет и прогон идёт сразу`() = runBlocking {
+        val llm = ScriptedLlmClient(listOf(text("готово")))
+        val engine = engine(plan("шаг"), llm)
+        engine.postTask("Только предложи", AutonomyMode.SUGGEST_ONLY)
+
+        // Ограничение по времени, а не голый вызов: если стоянка появится в этом режиме,
+        // проверка обязана упасть, а не зависнуть.
+        val processed = withTimeoutOrNull(5_000) { engine.processNext() }
+        assertEquals(true, processed, "без стоянки прогон обязан завершиться в этом же вызове")
+        assertEquals(RunState.FINISHED, runs.all().single().state)
+        assertEquals(1, llm.callCount, "в этом режиме подтверждения не спрашивают")
+    }
+
+    @Test
+    fun `перепланирование с комментарием вызывает планировщик заново и снова ждёт`() = runBlocking {
+        val comments = mutableListOf<String?>()
+        val engine = AgentRunEngine(
+            ports = RunPorts(runs, tasks, sink),
+            models = fixedModel(textModel()),
+            planner = RunPlanner { _, _, comment ->
+                comments += comment
+                if (comment == null) plan("первоначальный") else plan("переделанный")
+            },
+            tools = tools,
+            repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
+            clock = { Instant.fromEpochMilliseconds(1_000) },
+        )
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        val worker = launch { engine.processNext() }
+        val planned = awaitPlannedRun(runs)
+        engine.decidePlan(planned.id, PlanDecision.Replan("разбей иначе"))
+
+        // Перепланированный план записывается и уходит событием, а прогон снова ждёт решения.
+        val replanned = awaitPlanSummary(runs, planned.id, "переделанный")
+        assertEquals(listOf(null, "разбей иначе"), comments, "комментарий уходит планировщику отдельным вызовом")
+        assertEquals(RunState.PLANNED, replanned.state, "после перепланирования стоянка прежняя")
+        assertTrue(
+            sink.events.any { it.plan.firstOrNull()?.summary == "переделанный" },
+            "новый план обязан уехать событием",
+        )
+
+        engine.decidePlan(planned.id, PlanDecision.Approve)
+        awaitCompletion(worker)
+
+        assertEquals(RunState.FINISHED, runs.load(planned.id)?.state)
+        assertEquals(2, comments.size, "третьего планирования без новой просьбы не было")
+    }
+
+    @Test
+    fun `стоп после перепланирования сохраняет новый план, а не первоначальный`() = runBlocking {
+        val engine = AgentRunEngine(
+            ports = RunPorts(runs, tasks, sink),
+            models = fixedModel(textModel()),
+            planner = RunPlanner { _, _, comment ->
+                if (comment == null) plan("первоначальный") else plan("переделанный")
+            },
+            tools = tools,
+            repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
+            clock = { Instant.fromEpochMilliseconds(1_000) },
+        )
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        val worker = launch { engine.processNext() }
+        val planned = awaitPlannedRun(runs)
+        engine.decidePlan(planned.id, PlanDecision.Replan("разбей иначе"))
+        awaitPlanSummary(runs, planned.id, "переделанный")
+
+        engine.control(planned.id, RunCommand.STOP)
+        awaitCompletion(worker)
+
+        val stopped = assertNotNull(runs.load(planned.id))
+        assertEquals(RunState.STOPPED, stopped.state)
+        // Стоп берёт последнюю записанную версию прогона: копия из корутины помнит
+        // первоначальный план, и без перечитывания остановка вернула бы его назад.
+        assertEquals(
+            listOf("переделанный"),
+            stopped.plan.map { it.summary },
+            "остановленный прогон обязан нести перепланированный план, а не прежний",
+        )
+    }
+
+    @Test
+    fun `стоп во время стоянки даёт stopped, а не failed`() = runBlocking {
+        val llm = ScriptedLlmClient(listOf(text("готово")))
+        val engine = engine(plan("шаг"), llm)
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        val worker = launch { engine.processNext() }
+        val planned = awaitPlannedRun(runs)
+        engine.control(planned.id, RunCommand.STOP)
+        awaitCompletion(worker)
+
+        val run = assertNotNull(runs.load(planned.id))
+        assertEquals(RunState.STOPPED, run.state, "ожидание решения прерывается стопом")
+        assertEquals(RunInterruptReason.USER_STOP, run.interruptReason)
+        assertEquals(0, llm.callCount, "работы в этом прогоне не было")
+    }
+
+    @Test
+    fun `пауза во время стоянки не оставляет прогон на паузе после подтверждения`() = runBlocking {
+        val llm = ScriptedLlmClient(listOf(text("готово")))
+        val engine = engine(plan("шаг"), llm)
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        val worker = launch { engine.processNext() }
+        val planned = awaitPlannedRun(runs)
+        // Пауза приходит, пока работа ещё не началась: смысла она не имеет и не должна
+        // всплыть после подтверждения — иначе прогон встал бы на паузу сразу после решения.
+        engine.control(planned.id, RunCommand.PAUSE)
+        engine.decidePlan(planned.id, PlanDecision.Approve)
+        awaitCompletion(worker)
+
+        assertEquals(RunState.FINISHED, runs.load(planned.id)?.state, "пауза во время стоянки отброшена (T-1.2)")
+        assertEquals(1, llm.callCount)
     }
 
     private suspend fun awaitState(runId: RunId, state: RunState) {

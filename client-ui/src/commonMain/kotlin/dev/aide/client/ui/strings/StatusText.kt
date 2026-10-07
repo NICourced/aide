@@ -2,6 +2,7 @@ package dev.aide.client.ui.strings
 
 import dev.aide.domain.ModelFailureCode
 import dev.aide.domain.RunState
+import dev.aide.domain.StepStatus
 import dev.aide.domain.TaskStatus
 import dev.aide.domain.TestState
 import org.jetbrains.compose.resources.StringResource
@@ -27,6 +28,19 @@ fun runStateResource(state: RunState): StringResource = when (state) {
     RunState.FAILED -> Strings.runStateFailed
     RunState.STOPPED -> Strings.runStateStopped
     RunState.INTERRUPTED -> Strings.runStateInterrupted
+}
+
+/**
+ * Текст состояния шага плана из ресурсов (T-1.2, NFR-13).
+ *
+ * Список плана показывает состояние каждого шага; функция обязана покрыть все значения
+ * [StepStatus], иначе шаг с новым состоянием остался бы без подписи.
+ */
+fun planStepStatusResource(status: StepStatus): StringResource = when (status) {
+    StepStatus.PENDING -> Strings.planStepPending
+    StepStatus.DONE -> Strings.planStepDone
+    StepStatus.FAILED -> Strings.planStepFailed
+    StepStatus.SKIPPED -> Strings.planStepSkipped
 }
 
 /**
@@ -71,6 +85,7 @@ fun taskFailureResource(reason: String?): StringResource = when (reason) {
  */
 private fun codedFailureResource(reason: String?): StringResource = when (reason) {
     PLAN_UNREADABLE -> Strings.taskFailurePlanUnreadable
+    PLAN_AWAITING_CONFIRMATION -> Strings.taskFailurePlanAwaitingConfirmation
     USER_STOP -> Strings.taskFailureUserStop
     HOST_RESTART -> Strings.taskFailureHostRestart
     STASH_CONFLICT -> Strings.taskFailureStashConflict
@@ -80,6 +95,9 @@ private fun codedFailureResource(reason: String?): StringResource = when (reason
 }
 
 private const val PLAN_UNREADABLE = "plan_unreadable"
+
+/** Код «ждал подтверждения плана, когда хост перезапустился» (T-1.2). */
+private const val PLAN_AWAITING_CONFIRMATION = "plan_awaiting_confirmation"
 private const val USER_STOP = "user_stop"
 private const val HOST_RESTART = "host_restart"
 private const val STASH_CONFLICT = "stash_conflict"

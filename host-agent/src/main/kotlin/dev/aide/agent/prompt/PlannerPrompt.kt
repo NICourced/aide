@@ -32,9 +32,20 @@ object PlannerPrompt {
     /** Обрамление JSON-ом в markdown: модель часто заворачивает ответ в ```json. */
     private val FENCE = Regex("```(?:json)?\\s*(.*?)```", RegexOption.DOT_MATCHES_ALL)
 
-    /** Строит запрос на планирование по поставленной задаче. */
-    fun request(task: Task): LlmRequest = LlmRequest(
-        messages = listOf(LlmMessage.system(SYSTEM_PROMPT), LlmMessage.user(task.prompt)),
+    /**
+     * Строит запрос на планирование по поставленной задаче.
+     *
+     * [comment] добавляется **отдельной репликой пользователя**, а не подклеивается в текст
+     * задачи: иначе история диалога врала бы о том, что просил человек, — исходная задача
+     * осталась бы с чужой правкой, а модель не отличила бы просьбу от уточнения (T-1.2).
+     * Без комментария запрос прежний: система плюс одна реплика с задачей.
+     */
+    fun request(task: Task, comment: String? = null): LlmRequest = LlmRequest(
+        messages = listOfNotNull(
+            LlmMessage.system(SYSTEM_PROMPT),
+            LlmMessage.user(task.prompt),
+            comment?.takeIf { it.isNotBlank() }?.let { LlmMessage.user(it) },
+        ),
     )
 
     /**

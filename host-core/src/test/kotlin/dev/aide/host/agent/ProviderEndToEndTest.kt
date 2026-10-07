@@ -95,7 +95,8 @@ class ProviderEndToEndTest {
             try {
                 val client = connect(host, "e2e")
 
-                val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                val taskId = client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+                    .getOrThrow()
 
                 val finished = awaitRun(client) { it.state == RunState.FINISHED && it.taskId == taskId }
                 assertNotNull(finished, "прогон обязан дойти до завершения: ${client.session.value.runs}")
@@ -270,7 +271,7 @@ class ProviderEndToEndTest {
                 val host = hostWithConfig(database)
                 try {
                     val client = connect(host, "no-leak")
-                    client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                    client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                     assertNotNull(awaitRun(client) { it.state == RunState.FINISHED })
                     client.models.check(ALIAS).getOrThrow()
                 } finally {

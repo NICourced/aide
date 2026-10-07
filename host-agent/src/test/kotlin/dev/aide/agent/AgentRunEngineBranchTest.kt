@@ -36,7 +36,7 @@ class AgentRunEngineBranchTest {
     private fun engine(plan: List<PlanStep> = plan("шаг")): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, sink),
         models = fixedModel(textModel()),
-        planner = RunPlanner { _, _ ->
+        planner = RunPlanner { _, _, _ ->
             order += PLAN
             plan
         },
@@ -54,7 +54,7 @@ class AgentRunEngineBranchTest {
 
     private suspend fun runTask(engine: AgentRunEngine): Task {
         engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext(), "задача обязана быть обработана")
+        assertTrue(engine.processNextApproved(runs), "задача обязана быть обработана")
         return tasks.all().single()
     }
 
@@ -113,7 +113,7 @@ class AgentRunEngineBranchTest {
             // а приёмка пакета (T-1.20) вливает работу именно в неё.
             branches.answer(TaskBranch.Existing)
             requeue(first)
-            assertTrue(engine.processNext())
+            assertTrue(engine.processNextApproved(runs))
             val second = tasks.all().single()
 
             assertEquals("master", second.baseBranch, "записанная база не переписывается вторым запуском")
@@ -134,7 +134,7 @@ class AgentRunEngineBranchTest {
             // начиналась, поэтому база остаётся прежней.
             branches.answer(TaskBranch.Created("release"))
             requeue(first)
-            assertTrue(engine.processNext())
+            assertTrue(engine.processNextApproved(runs))
 
             assertEquals("master", tasks.all().single().baseBranch)
         }

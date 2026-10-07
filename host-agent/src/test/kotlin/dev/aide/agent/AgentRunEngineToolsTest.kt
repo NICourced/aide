@@ -52,7 +52,7 @@ class AgentRunEngineToolsTest {
     private fun engine(llm: LlmClient, plan: List<PlanStep> = plan("шаг")): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, sink),
         models = fixedModel(llm),
-        planner = RunPlanner { _, _ -> plan },
+        planner = RunPlanner { _, _, _ -> plan },
         tools = stepToolsIn(workspace, journal),
         repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
         clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -61,7 +61,7 @@ class AgentRunEngineToolsTest {
     private suspend fun run(llm: LlmClient) {
         val engine = engine(llm)
         engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext())
+        assertTrue(engine.processNextApproved(runs))
     }
 
     @Test

@@ -22,6 +22,7 @@ import dev.aide.agent.ports.WorkStash
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
+import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
@@ -38,6 +39,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.datetime.Instant
@@ -58,6 +61,7 @@ class RunWorkerTest {
         val engine = engine(runs, tasks)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val job = RunWorker(engine).start(scope)
+        approvePlans(scope, engine, runs)
         try {
             tasks.failNextRunningSave = true
             engine.postTask("первая", AutonomyMode.ASK_BEFORE_CHANGES)
@@ -80,6 +84,7 @@ class RunWorkerTest {
         val engine = engine(runs, tasks)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val job = RunWorker(engine, initialRetryMillis = 10, maxRetryMillis = 50).start(scope)
+        approvePlans(scope, engine, runs)
         try {
             engine.postTask("задача", AutonomyMode.ASK_BEFORE_CHANGES)
             delay(OBSERVE_MILLIS)
@@ -99,7 +104,7 @@ class RunWorkerTest {
     private fun engine(runs: RunRepository, tasks: TaskRepository): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, NoopSink),
         models = ModelProvider { Result.success(ConfiguredModel("test/scripted", TextModel())) },
-        planner = RunPlanner { _, _ -> listOf(PlanStep(index = 0, summary = "шаг", status = StepStatus.PENDING)) },
+        planner = RunPlanner { _, _, _ -> listOf(PlanStep(index = 0, summary = "шаг", status = StepStatus.PENDING)) },
         tools = testStepTools(),
         // Ветка в этом тесте ни при чём: проверяется предохранитель воркера, а не T-1.18.
         // Снапшот тоже ни при чём: «коммитов нет» — самый дешёвый исход порта (T-1.19).
@@ -115,6 +120,22 @@ class RunWorkerTest {
         ),
         clock = { Instant.fromEpochMilliseconds(1) },
     )
+
+    /**
+     * Подтверждает каждый показанный план, пока воркер работает (T-1.2).
+     *
+     * Проверки здесь про предохранитель воркера, а не про стоянку плана: без подтверждения
+     * прогон стоял бы в `PLANNED`, и очередь до конца не дошла бы.
+     */
+    private fun approvePlans(scope: CoroutineScope, engine: AgentRunEngine, runs: MemoryRunRepository) {
+        scope.launch {
+            while (isActive) {
+                runs.all().lastOrNull { it.state == RunState.PLANNED }
+                    ?.let { engine.decidePlan(it.id, PlanDecision.Approve) }
+                delay(APPROVE_POLL_MILLIS)
+            }
+        }
+    }
 
     private class MemoryRunRepository : RunRepository {
         private val stored = LinkedHashMap<RunId, AgentRun>()
@@ -184,6 +205,9 @@ class RunWorkerTest {
     private companion object {
         /** Сколько наблюдать за воркером при постоянном отказе. */
         const val OBSERVE_MILLIS = 700L
+
+        /** Как часто подпрограмма-подтверждатель ищет показанный план. */
+        const val APPROVE_POLL_MILLIS = 5L
 
         /** Верхняя граница разумного числа попыток за это время; холостой цикл дал бы тысячи. */
         const val MAX_EXPECTED_ATTEMPTS = 100

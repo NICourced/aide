@@ -6,6 +6,10 @@ import dev.aide.client.ui.resources.action_back
 import dev.aide.client.ui.resources.action_settings
 import dev.aide.client.ui.resources.agent_post_task
 import dev.aide.client.ui.resources.agent_open_log
+import dev.aide.client.ui.resources.agent_plan_approve
+import dev.aide.client.ui.resources.agent_plan_comment_hint
+import dev.aide.client.ui.resources.agent_plan_replan
+import dev.aide.client.ui.resources.agent_plan_title
 import dev.aide.client.ui.resources.agent_request_failed
 import dev.aide.client.ui.resources.agent_task_hint
 import dev.aide.client.ui.resources.agent_title
@@ -35,6 +39,11 @@ import dev.aide.client.ui.resources.connection_incompatible_client_outdated
 import dev.aide.client.ui.resources.connection_incompatible_host_outdated
 import dev.aide.client.ui.resources.connection_incompatible_malformed
 import dev.aide.client.ui.resources.connection_reconnecting
+import dev.aide.client.ui.resources.plan_step_done
+import dev.aide.client.ui.resources.plan_step_failed
+import dev.aide.client.ui.resources.plan_step_line
+import dev.aide.client.ui.resources.plan_step_pending
+import dev.aide.client.ui.resources.plan_step_skipped
 import dev.aide.client.ui.resources.repo_file_title
 import dev.aide.client.ui.resources.repo_file_truncated
 import dev.aide.client.ui.resources.repo_header_branch
@@ -52,6 +61,7 @@ import dev.aide.client.ui.resources.run_state_stopped
 import dev.aide.client.ui.resources.task_failure_generic
 import dev.aide.client.ui.resources.task_failure_host_restart
 import dev.aide.client.ui.resources.task_failure_not_configured
+import dev.aide.client.ui.resources.task_failure_plan_awaiting_confirmation
 import dev.aide.client.ui.resources.task_failure_plan_unreadable
 import dev.aide.client.ui.resources.task_failure_user_stop
 import dev.aide.client.ui.resources.task_status_accepted
@@ -196,6 +206,15 @@ object Strings {
     val agentTaskHint: StringResource = Res.string.agent_task_hint
     val agentPostTask: StringResource = Res.string.agent_post_task
     val agentOpenLog: StringResource = Res.string.agent_open_log
+    val agentPlanTitle: StringResource = Res.string.agent_plan_title
+    val agentPlanApprove: StringResource = Res.string.agent_plan_approve
+    val agentPlanCommentHint: StringResource = Res.string.agent_plan_comment_hint
+    val agentPlanReplan: StringResource = Res.string.agent_plan_replan
+    val planStepLine: StringResource = Res.string.plan_step_line
+    val planStepPending: StringResource = Res.string.plan_step_pending
+    val planStepDone: StringResource = Res.string.plan_step_done
+    val planStepFailed: StringResource = Res.string.plan_step_failed
+    val planStepSkipped: StringResource = Res.string.plan_step_skipped
     val runStateNone: StringResource = Res.string.run_state_none
     val runStatePlanned: StringResource = Res.string.run_state_planned
     val runStateRunning: StringResource = Res.string.run_state_running
@@ -214,6 +233,7 @@ object Strings {
     val taskStatusFailed: StringResource = Res.string.task_status_failed
     val taskFailureNotConfigured: StringResource = Res.string.task_failure_not_configured
     val taskFailurePlanUnreadable: StringResource = Res.string.task_failure_plan_unreadable
+    val taskFailurePlanAwaitingConfirmation: StringResource = Res.string.task_failure_plan_awaiting_confirmation
     val taskFailureUserStop: StringResource = Res.string.task_failure_user_stop
     val taskFailureHostRestart: StringResource = Res.string.task_failure_host_restart
     val taskFailureGeneric: StringResource = Res.string.task_failure_generic

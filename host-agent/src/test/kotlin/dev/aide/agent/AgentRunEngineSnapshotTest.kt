@@ -33,7 +33,7 @@ class AgentRunEngineSnapshotTest {
     private fun engine(): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, sink),
         models = fixedModel(textModel()),
-        planner = RunPlanner { _, _ -> plan("шаг") },
+        planner = RunPlanner { _, _, _ -> plan("шаг") },
         tools = tools,
         repositories = RepositoryPorts(branchAlreadyExists, snapshots, noWorkStash),
         clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -45,7 +45,7 @@ class AgentRunEngineSnapshotTest {
             val engine = engine()
 
             engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-            assertTrue(engine.processNext())
+            assertTrue(engine.processNextApproved(runs))
 
             assertEquals(listOf(SnapshotTrigger.BEFORE_AGENT_STEP), snapshots.triggers, "снапшот ставится до шагов")
             val run = runs.all().single()
@@ -66,7 +66,7 @@ class AgentRunEngineSnapshotTest {
             val engine = engine()
 
             engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-            assertTrue(engine.processNext())
+            assertTrue(engine.processNextApproved(runs))
 
             val run = runs.all().single()
             assertTrue(run.snapshots.isEmpty(), "снапшота нет, и это видно: список пуст")
@@ -84,7 +84,7 @@ class AgentRunEngineSnapshotTest {
             val engine = engine()
 
             engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-            assertTrue(engine.processNext())
+            assertTrue(engine.processNextApproved(runs))
 
             val task = tasks.all().single()
             assertEquals(TaskStatus.FAILED, task.status)

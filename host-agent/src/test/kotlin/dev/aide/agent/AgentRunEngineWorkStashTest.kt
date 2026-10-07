@@ -46,7 +46,7 @@ class AgentRunEngineWorkStashTest {
         AgentRunEngine(
             ports = RunPorts(runs, tasks, sink),
             models = fixedModel(llm),
-            planner = RunPlanner { _, _ -> plan("шаг") },
+            planner = RunPlanner { _, _, _ -> plan("шаг") },
             tools = tools,
             repositories = RepositoryPorts(
                 branches = TaskBranches { branch ->
@@ -69,7 +69,7 @@ class AgentRunEngineWorkStashTest {
 
     private suspend fun runTask(engine: AgentRunEngine) {
         engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
-        assertTrue(engine.processNext(), "задача обязана быть обработана")
+        assertTrue(engine.processNextApproved(runs), "задача обязана быть обработана")
     }
 
     /** Возвраты, которых потребовал движок; пара «ссылка — ветка». */
@@ -146,6 +146,8 @@ class AgentRunEngineWorkStashTest {
             engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
 
             val worker = launch { engine.processNext() }
+            // Стоянка плана: стоп проверяется на идущем прогоне, поэтому план подтверждается явно.
+            engine.awaitShownPlan(runs)
             llm.awaitCall(0)
             engine.control(sink.events.first().id, RunCommand.STOP)
             worker.join()

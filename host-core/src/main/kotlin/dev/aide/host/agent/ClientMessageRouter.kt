@@ -22,7 +22,8 @@ class ClientMessageRouter(
 ) : ClientMessageHandler {
 
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
-        is ClientMessage.PostTask, is ClientMessage.AgentStatus, is ClientMessage.RunControl -> agent.handle(message)
+        is ClientMessage.PostTask, is ClientMessage.AgentStatus, is ClientMessage.RunControl,
+        is ClientMessage.PlanDecision -> agent.handle(message)
         is ClientMessage.AgentConfigRequest, is ClientMessage.SaveAgentConfig, is ClientMessage.CheckModel ->
             modelConfig.handle(message)
 

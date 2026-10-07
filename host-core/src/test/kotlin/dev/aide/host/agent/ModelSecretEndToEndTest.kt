@@ -105,7 +105,8 @@ class ModelSecretEndToEndTest {
                 assertTrue(client.models.setSecret(STUB_PROVIDER, STORE_KEY).isSuccess)
                 assertEquals(ModelSecretStatus.InStore, client.secretStatus(STUB_PROVIDER))
 
-                val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                val taskId = client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+                    .getOrThrow()
 
                 val finished = awaitRun(client) { it.state == RunState.FINISHED && it.taskId == taskId }
                 assertNotNull(finished, "прогон обязан дойти до завершения: ${client.session.value.runs}")
@@ -127,7 +128,7 @@ class ModelSecretEndToEndTest {
                 assertNotNull(fromEnv, "переменная $PRESENT_KEY_VARIABLE задана тестовой задачей")
 
                 client.models.setSecret(ENV_PROVIDER, STORE_KEY).getOrThrow()
-                client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 assertNotNull(awaitRun(client) { it.state == RunState.FINISHED })
 
                 assertEquals("Bearer $STORE_KEY", stub.authorization.get(), "хранилище обязано победить окружение")
@@ -213,7 +214,7 @@ class ModelSecretEndToEndTest {
                 try {
                     val client = connect(host, "no-leak")
                     client.models.setSecret(STUB_PROVIDER, LEAK_SECRET).getOrThrow()
-                    client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                    client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                     assertNotNull(awaitRun(client) { it.state == RunState.FINISHED })
                     assertEquals("Bearer $LEAK_SECRET", stub.authorization.get(), "секрет обязан дойти до провайдера")
                 } finally {
@@ -371,7 +372,7 @@ class ModelSecretEndToEndTest {
     private suspend fun assertRealRoundTrip(client: HostClient, providerId: String) {
         assertEquals(ModelSecretStatus.InStore, client.secretStatus(providerId))
 
-        client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+        client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
         assertNotNull(awaitRun(client) { it.state == RunState.FINISHED })
         assertEquals("Bearer $REAL_KEY", stub.authorization.get(), "ключ обязан прийти из системного хранилища")
 

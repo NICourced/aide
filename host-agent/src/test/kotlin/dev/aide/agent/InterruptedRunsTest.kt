@@ -1,7 +1,10 @@
 package dev.aide.agent
 
+import dev.aide.domain.AutonomyMode
+import dev.aide.domain.PlanStep
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
+import dev.aide.domain.StepStatus
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
 import kotlin.test.Test
@@ -22,7 +25,7 @@ class InterruptedRunsTest {
 
     @Test
     fun `прерываются ровно незавершённые прогоны`() {
-        runs.save(testRun("r-planned", RunState.PLANNED))
+        runs.save(testRun("r-planned", RunState.PLANNED, plan = listOf(PlanStep(0, "шаг", StepStatus.PENDING))))
         runs.save(testRun("r-running", RunState.RUNNING))
         runs.save(testRun("r-paused", RunState.PAUSED))
         runs.save(testRun("r-done", RunState.FINISHED, finishedAt = Instant.fromEpochMilliseconds(1)))
@@ -39,9 +42,40 @@ class InterruptedRunsTest {
             val stored = assertNotNull(runs.load(RunId(id)))
             assertEquals(RunState.INTERRUPTED, stored.state)
             assertEquals(finishedAt, stored.finishedAt, "у прерванного прогона есть время и причина")
-            assertEquals(RunInterruptReason.HOST_RESTART, stored.interruptReason)
+        }
+        assertEquals(
+            RunInterruptReason.PLAN_AWAITING_CONFIRMATION,
+            runs.load(RunId("r-planned"))?.interruptReason,
+            "ждавший плана прогон прерывается своим кодом: работу он ещё не начинал (T-1.2)",
+        )
+        listOf("r-running", "r-paused").forEach { id ->
+            assertEquals(RunInterruptReason.HOST_RESTART, runs.load(RunId(id))?.interruptReason)
         }
         assertEquals(RunState.FINISHED, runs.load(RunId("r-done"))?.state, "завершённый прогон не трогается")
+    }
+
+    @Test
+    fun `план ожидавшего прогона сохраняется, а не теряется при прерывании`() {
+        val plan = listOf(PlanStep(0, "разобрать", StepStatus.PENDING), PlanStep(1, "поправить", StepStatus.PENDING))
+        runs.save(testRun("r-planned", RunState.PLANNED, plan = plan))
+
+        InterruptedRuns(runs, tasks) { finishedAt }.markInterrupted()
+
+        assertEquals(plan, runs.load(RunId("r-planned"))?.plan, "план лежит в базе и прерыванием не стирается")
+    }
+
+    @Test
+    fun `в режиме без шлюза плановый прогон прерывается общим кодом, а не кодом ожидания`() {
+        // SUGGEST_ONLY: шлюза нет, PLANNED — мгновение прогона, а не ожидание решения.
+        runs.save(testRun("r-suggest", RunState.PLANNED, mode = AutonomyMode.SUGGEST_ONLY))
+
+        InterruptedRuns(runs, tasks) { finishedAt }.markInterrupted()
+
+        assertEquals(
+            RunInterruptReason.HOST_RESTART,
+            runs.load(RunId("r-suggest"))?.interruptReason,
+            "без шлюза ожидания плана не бывает — и код обязан быть общим",
+        )
     }
 
     @Test
@@ -58,5 +92,22 @@ class InterruptedRunsTest {
         assertEquals(TaskStatus.FAILED, tasks.load(TaskId("t-running"))?.status)
         assertEquals(TaskStatus.REVIEW, tasks.load(TaskId("t-review"))?.status, "задача на ревью не трогается")
         assertEquals(TaskStatus.FAILED, tasks.load(TaskId("t-failed"))?.status)
+    }
+
+    @Test
+    fun `задача ожидавшего плана прогона падает кодом ожидания, а работавшего — общим`() {
+        runs.save(testRun("waiting", RunState.PLANNED))
+        runs.save(testRun("working", RunState.RUNNING))
+        tasks.save(testTask("t-waiting", TaskStatus.RUNNING))
+        tasks.save(testTask("t-working", TaskStatus.RUNNING))
+
+        InterruptedRuns(runs, tasks) { finishedAt }.markInterrupted()
+
+        assertEquals(
+            RunInterruptReason.PLAN_AWAITING_CONFIRMATION,
+            tasks.load(TaskId("t-waiting"))?.failureReason,
+            "по коду на задаче видно, что работа даже не начиналась (T-1.2)",
+        )
+        assertEquals(RunInterruptReason.HOST_RESTART, tasks.load(TaskId("t-working"))?.failureReason)
     }
 }

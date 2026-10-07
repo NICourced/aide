@@ -4,15 +4,18 @@ import dev.aide.agent.RunPlanner
 import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
+import dev.aide.agent.llm.LlmToolCall
 import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.agent.provider.AgentModels
 import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.KtorHostConnection
+import dev.aide.client.state.decidePlan
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunState
@@ -29,6 +32,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -86,7 +90,8 @@ class AgentRunProtocolTest {
             awaitConnected(connection)
             openRepository(client)
 
-            val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+            val taskId = client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+                .getOrThrow()
 
             val finished = awaitRun(client) { it.state == RunState.FINISHED }
             assertNotNull(finished, "прогон обязан дойти до FINISHED, текущие: ${client.session.value.runs}")
@@ -120,6 +125,57 @@ class AgentRunProtocolTest {
     }
 
     @Test
+    fun `постановка, стоянка плана, решение и завершение проходят путь клиент — хост — событие`() {
+        // T-1.2: до решения прогон стоит в PLANNED и ничего не делает; после подтверждения
+        // идёт работа. Модель просит вызов инструмента — тогда «до решения вызовов нет»
+        // проверяет именно шлюз, а не отсутствие вызовов у модели как таковое.
+        runBlocking {
+            val model = ToolFirstModel()
+            val host = EmbeddedHost.open(
+                databasePath = tempDatabase(),
+                models = scripted(model),
+                planner = fixedPlanner(1),
+            )
+            try {
+                val (connection, client) = newClient(host, "plan")
+                client.start()
+                awaitConnected(connection)
+                openRepository(client)
+                client.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+
+                val planned = awaitRun(client) { it.state == RunState.PLANNED }
+                assertNotNull(planned, "прогон обязан показать план и встать на стоянку: ${client.session.value.runs}")
+                // Стоянка устойчива: за паузу прогон не сдвинулся и модель не была спрошена.
+                delay(STANDSTILL_SETTLE_MILLIS)
+                assertEquals(
+                    RunState.PLANNED,
+                    client.session.value.runs.firstOrNull { it.id == planned.id }?.state,
+                    "до решения прогон обязан оставаться в PLANNED",
+                )
+                assertEquals(0, model.calls.get(), "до решения модель не спрашивают")
+                val beforeDecision = client.toolLogClient.toolCalls(planned.id).getOrThrow()
+                assertTrue(beforeDecision.calls.isEmpty(), "до решения вызовов инструментов быть не должно")
+
+                client.decidePlan(planned.id, PlanDecision.Approve).getOrThrow()
+                assertNotNull(
+                    awaitRun(client) { it.id == planned.id && it.state == RunState.FINISHED },
+                    "после решения прогон обязан завершиться: ${client.session.value.runs}",
+                )
+                // После решения вызов действительно состоялся — иначе «до решения пусто»
+                // ничего не доказывало бы: у модели могло не быть вызовов вовсе.
+                assertTrue(model.calls.get() > 0, "после решения модель обязана быть спрошена")
+                val afterDecision = client.toolLogClient.toolCalls(planned.id).getOrThrow()
+                assertTrue(
+                    afterDecision.calls.any { it.tool == FIND_FILES },
+                    "после решения вызов инструмента обязан появиться в журнале: ${afterDecision.calls}",
+                )
+            } finally {
+                host.close()
+            }
+        }
+    }
+
+    @Test
     fun `пауза, продолжение и стоп проходят путь клиент — хост — событие`() {
         // Тело блочное: `= runBlocking { … assertNotNull(…) }` вернул бы AgentRun,
         // и JUnit 5 молча не запустил бы тест (класс дефекта из AGENTS.md).
@@ -135,7 +191,7 @@ class AgentRunProtocolTest {
                 client.start()
                 awaitConnected(connection)
                 openRepository(client)
-                client.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Почини", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
 
                 val running = awaitRun(client) { it.state == RunState.RUNNING }
                 assertNotNull(running, "прогон обязан дойти до RUNNING: ${client.session.value.runs}")
@@ -155,7 +211,7 @@ class AgentRunProtocolTest {
 
                 // Стоп на новом прогоне: модель снова не отвечает, стоп обязан прервать вызов.
                 model.block()
-                client.postTask("Ещё задача", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Ещё задача", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 val secondRun = awaitRun(client) { it.state == RunState.RUNNING && it.id != running.id }
                 assertNotNull(secondRun, "второй прогон обязан начаться: ${client.session.value.runs}")
 
@@ -182,7 +238,7 @@ class AgentRunProtocolTest {
             first.start()
             awaitConnected(firstConnection)
             openRepository(first)
-            first.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+            first.postTaskApprovingPlan("Почини", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
             assertNotNull(awaitRun(first) { it.state == RunState.FINISHED })
 
             // Второй клиент не видел ни одного события: состояние он получает запросом.
@@ -241,7 +297,7 @@ class AgentRunProtocolTest {
             client.start()
             awaitConnected(connection)
             openRepository(client)
-            client.postTask("долгая задача", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+            client.postTaskApprovingPlan("долгая задача", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
 
             val running = awaitRun(client) { it.state == RunState.RUNNING }
             assertNotNull(running, "прогон обязан дойти до RUNNING: ${client.session.value.runs}")
@@ -288,7 +344,8 @@ class AgentRunProtocolTest {
             assertEquals("master", awaitBranch(client, "master"), "состояние открытого репозитория доходит до клиента")
             val headBefore = headOfRepo()
 
-            val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+            val taskId = client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+                .getOrThrow()
             val taskBranch = "ai/${taskId.value}"
 
             // Модель ждёт разрешения, то есть прогон ещё идёт: ветка задачи видна в шапке
@@ -327,7 +384,8 @@ class AgentRunProtocolTest {
             client.start()
             awaitConnected(connection)
             openRepository(client)
-            val taskId = client.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+            val taskId = client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+                .getOrThrow()
             assertNotNull(awaitRun(client) { it.state == RunState.FINISHED })
             // T-1.59: после прогона дерево вернулось на базовую ветку, а ветка задачи осталась.
             assertEquals("master", awaitBranch(client, "master"))
@@ -417,7 +475,7 @@ class AgentRunProtocolTest {
             client.session.value.tasks.first(predicate)
         }
 
-    private fun fixedPlanner(stepCount: Int): RunPlanner = RunPlanner { _, _ ->
+    private fun fixedPlanner(stepCount: Int): RunPlanner = RunPlanner { _, _, _ ->
         List(stepCount) { index -> PlanStep(index = index, summary = "шаг $index", status = StepStatus.PENDING) }
     }
 
@@ -442,6 +500,27 @@ class AgentRunProtocolTest {
     private class TextModel : LlmClient {
         override suspend fun complete(request: LlmRequest): LlmResponse =
             LlmResponse.Text(text = "готово", cost = Cost(), elapsedMillis = 1)
+    }
+
+    /**
+     * Модель, просящая вызов инструмента, а затем завершающая шаг.
+     *
+     * Счётчик вызовов открыт тесту: по нему проверяется, что до решения модель не спрашивали.
+     */
+    private class ToolFirstModel : LlmClient {
+
+        /** Сколько раз модель спросили; до решения обязано оставаться нулём. */
+        val calls = AtomicInteger(0)
+
+        override suspend fun complete(request: LlmRequest): LlmResponse {
+            val index = calls.incrementAndGet()
+            return if (index == 1) {
+                val call = LlmToolCall(id = "plan-call", name = FIND_FILES, arguments = """{"mask":"*"}""")
+                LlmResponse.Text(text = "", cost = Cost(), elapsedMillis = 1, toolCalls = listOf(call))
+            } else {
+                LlmResponse.Text(text = "готово", cost = Cost(), elapsedMillis = 1)
+            }
+        }
     }
 
     /** Модель не отвечает никогда: прогон остаётся RUNNING до перезапуска хоста. */
@@ -473,3 +552,9 @@ class AgentRunProtocolTest {
         }
     }
 }
+
+/** Имя инструмента, которым модель просит работу в проверке стоянки плана (T-1.2). */
+private const val FIND_FILES: String = "find_files"
+
+/** Пауза, за которую стоянка обязана не сдвинуться: прогон не должен начать работу сам. */
+private const val STANDSTILL_SETTLE_MILLIS: Long = 200

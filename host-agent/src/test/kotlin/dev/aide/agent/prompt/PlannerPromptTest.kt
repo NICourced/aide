@@ -43,6 +43,9 @@ class PlannerPromptTest {
         val task = testTask("t-1", TaskStatus.QUEUED).copy(prompt = "Почини сборку")
         val request = PlannerPrompt.request(task)
 
+        // Без комментария запрос прежний: система и одна реплика с задачей (T-1.2).
+        assertEquals(2, request.messages.size, "лишних реплик у первого плана нет: ${request.messages}")
+
         // Системная часть — первая реплика диалога (T-1.7): у chat completions она едет
         // в общем списке, у Anthropic — отдельным полем, и место в списке задаёт её хост.
         assertEquals(LlmRole.SYSTEM, request.messages.first().role)
@@ -51,5 +54,26 @@ class PlannerPromptTest {
             request.messages.any { it.role == LlmRole.USER && it.content.contains("Почини сборку") },
             "постановка задачи обязана уехать моделью: ${request.messages}",
         )
+    }
+
+    @Test
+    fun `комментарий уезжает отдельной репликой, а не подклеивается в задачу`() {
+        val task = testTask("t-1", TaskStatus.QUEUED).copy(prompt = "Почини сборку")
+
+        val request = PlannerPrompt.request(task, "разбей на два шага")
+
+        assertEquals(3, request.messages.size, "система, задача и комментарий: ${request.messages}")
+        assertEquals("Почини сборку", request.messages[1].content, "исходная задача не переписана")
+        assertEquals(LlmRole.USER, request.messages[2].role)
+        assertEquals("разбей на два шага", request.messages[2].content)
+    }
+
+    @Test
+    fun `пустой и пробельный комментарий не добавляют реплику`() {
+        val task = testTask("t-1", TaskStatus.QUEUED).copy(prompt = "Почини сборку")
+
+        // Пустая реплика ничего не уточняет, и планировщик вызвался бы впустую (T-1.2).
+        assertEquals(2, PlannerPrompt.request(task, "").messages.size)
+        assertEquals(2, PlannerPrompt.request(task, "   ").messages.size)
     }
 }

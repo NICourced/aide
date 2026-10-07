@@ -6,19 +6,25 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.runComposeUiTest
 import dev.aide.client.state.HostSession
+import dev.aide.client.ui.screens.AgentActions
 import dev.aide.client.ui.screens.AgentScreen
 import dev.aide.client.ui.screens.TestStatusLine
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.PlanDecision
+import dev.aide.domain.PlanStep
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
+import dev.aide.domain.StepStatus
 import dev.aide.domain.TaskId
 import dev.aide.domain.TestFailure
 import dev.aide.domain.TestReport
 import dev.aide.domain.TestState
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.datetime.Instant
 
@@ -35,7 +41,7 @@ class AgentScreenTest {
         AgentScreen(
             session = HostSession(runs = emptyList(), tasks = emptyList()),
             requestFailed = requestFailed,
-            onPostTask = {},
+            actions = AgentActions(postTask = {}),
         )
     }
 
@@ -60,8 +66,7 @@ class AgentScreenTest {
             AgentScreen(
                 session = HostSession(),
                 requestFailed = false,
-                onPostTask = {},
-                onOpenLog = { opened = true },
+                actions = AgentActions(postTask = {}, openLog = { opened = true }),
             )
         }
 
@@ -140,12 +145,124 @@ class AgentScreenTest {
             AgentScreen(
                 session = HostSession(runs = listOf(runWithTests(TestReport(state = TestState.GREEN)))),
                 requestFailed = false,
-                onPostTask = {},
+                actions = AgentActions(postTask = {}),
             )
         }
 
         onNodeWithText("Тесты прошли").assertIsDisplayed()
     }
+
+    @Test
+    fun `план рисуется списком шагов со статусами`() = runComposeUiTest {
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.PLANNED))),
+                requestFailed = false,
+                actions = AgentActions(postTask = {}),
+            )
+        }
+
+        onNodeWithText("План до начала работы").assertIsDisplayed()
+        onNodeWithText("1. Прочитать файл (выполнен)").assertIsDisplayed()
+        onNodeWithText("2. Изменить функцию (ожидает)").assertIsDisplayed()
+    }
+
+    @Test
+    fun `подтверждение плана зовёт колбэк с идентификатором прогона`() = runComposeUiTest {
+        var approved: Pair<RunId, PlanDecision>? = null
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.PLANNED))),
+                requestFailed = false,
+                actions = AgentActions(
+                    postTask = {},
+                    decidePlan = { runId, decision -> approved = runId to decision },
+                ),
+            )
+        }
+
+        onNodeWithTag("approve-plan").performClick()
+
+        assertEquals(RunId("run-1") to PlanDecision.Approve, approved, "кнопка подтверждения отдаёт прогон и решение")
+    }
+
+    @Test
+    fun `переделать с комментарием зовёт колбэк с прогоном и решением`() = runComposeUiTest {
+        var replanned: Pair<RunId, PlanDecision>? = null
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.PLANNED))),
+                requestFailed = false,
+                actions = AgentActions(
+                    postTask = {},
+                    decidePlan = { runId, decision -> replanned = runId to decision },
+                ),
+            )
+        }
+
+        onNodeWithTag("plan-comment").performTextInput("разбей на два шага")
+        onNodeWithTag("replan-plan").performClick()
+
+        assertEquals(
+            RunId("run-1") to PlanDecision.Replan("разбей на два шага"),
+            replanned,
+            "комментарий обязан уехать решением о перепланировании",
+        )
+    }
+
+    @Test
+    fun `без ожидания кнопок решения нет`() = runComposeUiTest {
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.RUNNING))),
+                requestFailed = false,
+                actions = AgentActions(postTask = {}),
+            )
+        }
+
+        onNodeWithText("План до начала работы").assertIsDisplayed()
+        onNodeWithTag("approve-plan").assertDoesNotExist()
+        onNodeWithTag("replan-plan").assertDoesNotExist()
+    }
+
+    @Test
+    fun `в режиме только предлагать кнопок решения нет`() = runComposeUiTest {
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.PLANNED, AutonomyMode.SUGGEST_ONLY))),
+                requestFailed = false,
+                actions = AgentActions(postTask = {}),
+            )
+        }
+
+        onNodeWithTag("approve-plan").assertDoesNotExist()
+    }
+
+    @Test
+    fun `без плана раздел плана не рисуется`() = runComposeUiTest {
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(runWithTests(TestReport(state = TestState.GREEN)))),
+                requestFailed = false,
+                actions = AgentActions(postTask = {}),
+            )
+        }
+
+        onNodeWithText("План до начала работы").assertDoesNotExist()
+    }
+
+    /** Прогон с планом: список шагов и состояния; режим задаёт, ждут ли решения по плану. */
+    private fun planRun(state: RunState, mode: AutonomyMode = AutonomyMode.ASK_BEFORE_CHANGES): AgentRun = AgentRun(
+        id = RunId("run-1"),
+        taskId = TaskId("task-1"),
+        state = state,
+        mode = mode,
+        plan = listOf(
+            PlanStep(index = 0, summary = "Прочитать файл", status = StepStatus.DONE),
+            PlanStep(index = 1, summary = "Изменить функцию", status = StepStatus.PENDING),
+        ),
+        startedAt = Instant.fromEpochMilliseconds(1),
+    )
 
     /** Прогон с отчётом: так проверяется, что строка статуса тестов стоит и на экране агента. */
     private fun runWithTests(report: TestReport): AgentRun = AgentRun(

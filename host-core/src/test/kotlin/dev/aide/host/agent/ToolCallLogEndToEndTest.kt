@@ -78,7 +78,7 @@ class ToolCallLogEndToEndTest {
                 subscribed.await()
 
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
-                client.postTask("Прочитай файлы", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                client.postTaskApprovingPlan("Прочитай файлы", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
                 val finished = finish(client)
 
                 assertTrue(
@@ -156,7 +156,7 @@ class ToolCallLogEndToEndTest {
 
             override suspend fun check(alias: String): ModelCheckFailure? = ModelCheckFailure.Unsupported
         },
-        planner = RunPlanner { _, _ ->
+        planner = RunPlanner { _, _, _ ->
             listOf(PlanStep(index = 0, summary = "прочитать файлы", status = StepStatus.PENDING))
         },
     )

@@ -25,7 +25,9 @@ import dev.aide.client.state.HostCallException
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.HostConnection
 import dev.aide.client.state.HostSession
+import dev.aide.client.state.decidePlan
 import dev.aide.client.state.settings.SettingsStore
+import dev.aide.client.ui.screens.AgentActions
 import dev.aide.client.ui.screens.AgentScreen
 import dev.aide.client.ui.screens.CallLogScreen
 import dev.aide.client.ui.screens.ModelSettingsState
@@ -36,6 +38,7 @@ import dev.aide.client.ui.strings.incompatibleMessage
 import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.client.ui.theme.AideTheme
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.PlanDecision
 import dev.aide.domain.RunId
 import dev.aide.domain.ToolCallId
 import dev.aide.protocol.ToolCallCursor
@@ -187,14 +190,24 @@ private fun AgentDestination(
     AgentScreen(
         session = session,
         requestFailed = requestFailed,
-        onPostTask = { prompt ->
-            // Compose-скоуп: запись в состояние идёт на главном диспетчере.
-            scope.launch {
-                requestFailed = false
-                client.postTask(prompt, DEFAULT_AUTONOMY_MODE).onFailure { requestFailed = true }
-            }
-        },
-        onOpenLog = onOpenLog,
+        actions = AgentActions(
+            postTask = { prompt ->
+                // Compose-скоуп: запись в состояние идёт на главном диспетчере.
+                scope.launch {
+                    requestFailed = false
+                    client.postTask(prompt, DEFAULT_AUTONOMY_MODE).onFailure { requestFailed = true }
+                }
+            },
+            openLog = onOpenLog,
+            // Решение по плану (T-1.2): подтверждение или перепланирование с комментарием —
+            // тем же способом, что и постановка задачи.
+            decidePlan = { runId: RunId, decision: PlanDecision ->
+                scope.launch {
+                    requestFailed = false
+                    client.decidePlan(runId, decision).onFailure { requestFailed = true }
+                }
+            },
+        ),
     )
 }
 
