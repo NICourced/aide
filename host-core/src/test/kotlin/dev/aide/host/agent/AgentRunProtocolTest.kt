@@ -15,6 +15,7 @@ import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.Permission
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunCommand
@@ -22,8 +23,10 @@ import dev.aide.domain.RunState
 import dev.aide.domain.StepStatus
 import dev.aide.domain.Task
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.ToolPermission
 import dev.aide.host.EmbeddedHost
 import dev.aide.host.git.GitCliFixture
+import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.workspace.TempRepoFixture
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostMessage
@@ -33,9 +36,12 @@ import io.ktor.client.plugins.websocket.WebSockets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.io.path.createDirectories
+import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -223,6 +229,146 @@ class AgentRunProtocolTest {
             } finally {
                 host.close()
             }
+        }
+    }
+
+    /**
+     * T-1.4: стоп возвращает рабочее дерево к последнему снапшоту прогона **и** правки человека.
+     *
+     * Проверка сквозная, потому что критерий задачи наблюдаем только здесь: снапшот, `reset`,
+     * очистка неотслеживаемого, отложенные правки — это согласие движка, портов адаптеров и git.
+     * Дерево начинается грязным: правка отслеживаемого файла и новый файл человека откладываются
+     * на время прогона (T-1.59), и стоп обязан вернуть дерево к снапшоту **до** их возврата.
+     * Если порядок обратный, `reset --hard` снесёт уже возвращённые правки — тест это и ловит.
+     */
+    @Test
+    fun `стоп возвращает дерево к снапшоту и оставляет правки человека`() {
+        runBlocking {
+            // Фикстура оставляет изменённый `src/Login.kt` и неотслеживаемый `src/New.kt`.
+            val repo = GitCliFixture.createRepo(Files.createTempDirectory("aide-stop-dirty-repo"))
+            // `build/` игнорируется: файл в таком каталоге создала не работа агента и терять его нельзя.
+            repo.resolve(".gitignore").writeText("build/\n")
+            GitCliFixture.run(listOf("git", "add", ".gitignore"), repo)
+            GitCliFixture.run(listOf("git", "commit", "-m", "игнорируемое"), repo)
+            // Неотслеживаемый каталог человека с игнорируемым файлом внутри — ровно тот
+            // случай, где `git clean` уносил файл вместе с каталогом (T-1.4, решение 1).
+            repo.resolve("local").createDirectories()
+            repo.resolve("local/main.txt").writeText(HUMAN_FILE)
+            repo.resolve("local/build").createDirectories()
+            repo.resolve("local/build/art.bin").writeText(IGNORED_ARTEFACT)
+            val database = tempDatabase()
+            allowWrite(database)
+            val host = EmbeddedHost.open(
+                databasePath = database,
+                models = scripted(StopAfterWritesModel(listOf(FILE to WRITTEN))),
+                planner = fixedPlanner(1),
+            )
+            try {
+                val (connection, client) = newClient(host, "stop-dirty")
+                client.start()
+                awaitConnected(connection)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTaskApprovingPlan("Поправь файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+
+                val changed = withTimeoutOrNull(STOP_WAIT_MILLIS) {
+                    while (!Files.exists(repo.resolve(FILE))) delay(20)
+                    true
+                }
+                assertEquals(true, changed, "агент обязан успеть создать файл до стопа")
+
+                val running = awaitRun(client) { it.state == RunState.RUNNING }
+                assertNotNull(running, "прогон обязан идти: ${client.session.value.runs}")
+                client.controlRun(running.id, RunCommand.STOP).getOrThrow()
+                assertNotNull(
+                    awaitRun(client) { it.id == running.id && it.state == RunState.STOPPED },
+                    "стоп — событием",
+                )
+            } finally {
+                host.close()
+            }
+
+            assertFalse(Files.exists(repo.resolve(FILE)), "файл, созданный прогоном, убран")
+            assertEquals("master", GitCliFixture.currentBranch(repo), "дерево вернулось на ветку человека")
+            assertEquals(
+                // `local/` git показывает целиком: в каталоге есть и неотслеживаемый файл,
+                // и игнорируемый — но неотслеживаемым считается только первый.
+                listOf(" M src/Login.kt", "?? local/", "?? src/New.kt"),
+                GitCliFixture.porcelainLines(repo),
+                "дерево совпадает со снапшотом плюс возвращённые правки человека",
+            )
+            assertEquals(
+                "fun login() = \"token\"\n",
+                Files.readString(repo.resolve("src/Login.kt")),
+                "правка человека вернулась на свою ветку, а не потеряна вместе с деревом агента",
+            )
+            assertEquals(
+                IGNORED_ARTEFACT,
+                Files.readString(repo.resolve("local/build/art.bin")),
+                "игнорируемое внутри неотслеживаемого каталога человека уцелело",
+            )
+            assertEquals(HUMAN_FILE, Files.readString(repo.resolve("local/main.txt")), "файл человека вернулся")
+        }
+    }
+
+    /**
+     * T-1.4: стоп возвращает рабочее дерево к последнему снапшоту прогона.
+     *
+     * Проверка сквозная, потому что критерий задачи наблюдаем только здесь: снапшот, `reset`,
+     * очистка неотслеживаемого — это согласие движка, портов адаптеров и git. Правки человека
+     * сюда не подмешиваются: репозиторий начинается чистым, и тогда видно именно возврат дерева.
+     */
+    @Test
+    fun `стоп возвращает рабочее дерево к снапшоту прогона`() {
+        runBlocking {
+            val repo = cleanRepoWithFile()
+            val database = tempDatabase()
+            allowWrite(database)
+            val host = EmbeddedHost.open(
+                databasePath = database,
+                models = scripted(
+                    StopAfterWritesModel(listOf(FILE to WRITTEN, GENERATED to GENERATED_CONTENT)),
+                ),
+                planner = fixedPlanner(1),
+            )
+            try {
+                val (connection, client) = newClient(host, "stop-restore")
+                client.start()
+                awaitConnected(connection)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTaskApprovingPlan("Поправь файл", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+
+                // Ждём самой правки, а не состояния: возврат дерева проверяется на том, что
+                // агент успел изменить, — иначе проверка прошла бы и без восстановления.
+                val changed = withTimeoutOrNull(STOP_WAIT_MILLIS) {
+                    while (Files.readString(repo.resolve(FILE)) != WRITTEN || !Files.exists(repo.resolve(GENERATED))) {
+                        delay(20)
+                    }
+                    true
+                }
+                assertEquals(true, changed, "агент обязан успеть изменить файл и создать новый до стопа")
+
+                val running = awaitRun(client) { it.state == RunState.RUNNING }
+                assertNotNull(running, "прогон обязан идти: ${client.session.value.runs}")
+                client.controlRun(running.id, RunCommand.STOP).getOrThrow()
+                assertNotNull(
+                    awaitRun(client) { it.id == running.id && it.state == RunState.STOPPED },
+                    "стоп — событием",
+                )
+            } finally {
+                host.close()
+            }
+
+            assertEquals(
+                CONTENT,
+                Files.readString(repo.resolve(FILE)),
+                "правка агента откачена к снапшоту: репозиторий оставлен в его состоянии",
+            )
+            assertFalse(Files.exists(repo.resolve(GENERATED)), "файл, созданный прогоном, убран")
+            assertEquals(
+                emptyList(),
+                GitCliFixture.porcelainLines(repo),
+                "после стопа рабочее дерево совпадает со снапшотом",
+            )
         }
     }
 
@@ -496,10 +642,66 @@ class AgentRunProtocolTest {
 
     private fun tempDatabase(): Path = Files.createTempFile("aide-agent", ".db")
 
+    /**
+     * Репозиторий с закоммиченным файлом и чистым деревом.
+     *
+     * Чистое дерево здесь существенно: незакоммиченные правки фикстуры уехали бы в отложенные
+     * (T-1.59), и тогда проверялся бы их возврат, а не возврат дерева к снапшоту.
+     */
+    private fun cleanRepoWithFile(): Path {
+        val repo = GitCliFixture.createRepo(Files.createTempDirectory("aide-stop-repo"))
+        GitCliFixture.run(listOf("git", "add", "-A"), repo)
+        GitCliFixture.run(listOf("git", "commit", "-m", "чистое дерево"), repo)
+        repo.resolve(FILE).writeText(CONTENT)
+        GitCliFixture.run(listOf("git", "add", FILE), repo)
+        GitCliFixture.run(listOf("git", "commit", "-m", "файл для правки"), repo)
+        return repo
+    }
+
+    /** Разрешает запись в базе до старта хоста: без этого вызов упрётся в объявленное умолчание ASK. */
+    private fun allowWrite(database: Path) {
+        val seed = DatabaseFactory.open(database)
+        try {
+            seed.permissions.save(ToolPermission(WRITE_FILE, Permission.ALLOW, Permission.ALLOW))
+        } finally {
+            seed.close()
+        }
+    }
+
     /** Модель отвечает сразу: прогон доходит до завершения. */
     private class TextModel : LlmClient {
         override suspend fun complete(request: LlmRequest): LlmResponse =
             LlmResponse.Text(text = "готово", cost = Cost(), elapsedMillis = 1)
+    }
+
+    /**
+     * Модель, записывающая заданные файлы и затем замолкающая: так проверяется возврат дерева.
+     *
+     * Каждый вызов просит одну запись; когда записи кончились, модель не отвечает никогда.
+     * Именно на этом вызове прогон и застаёт стоп: работа агента уже сделана, а шаг ещё
+     * не завершён — ровно тот случай, ради которого нужна точка отката.
+     */
+    private class StopAfterWritesModel(private val writes: List<Pair<String, String>>) : LlmClient {
+
+        private val calls = AtomicInteger(0)
+
+        override suspend fun complete(request: LlmRequest): LlmResponse {
+            val index = calls.incrementAndGet()
+            if (index > writes.size) return awaitCancellation()
+            val (path, content) = writes[index - 1]
+            return LlmResponse.Text(
+                text = "",
+                cost = Cost(),
+                elapsedMillis = 1,
+                toolCalls = listOf(
+                    LlmToolCall(
+                        id = "stop-$index",
+                        name = WRITE_FILE,
+                        arguments = """{"path":"$path","content":"$content"}""",
+                    ),
+                ),
+            )
+        }
     }
 
     /**
@@ -555,6 +757,33 @@ class AgentRunProtocolTest {
 
 /** Имя инструмента, которым модель просит работу в проверке стоянки плана (T-1.2). */
 private const val FIND_FILES: String = "find_files"
+
+/** Инструмент правки файла: им модель меняет файл и создаёт новый в проверке стопа (T-1.4). */
+private const val WRITE_FILE: String = "write_file"
+
+/** Файл, который агент правит: снапшот прогона хранит его исходное содержимое (T-1.4). */
+private const val FILE: String = "hello.txt"
+
+/** Содержимое файла в снапшоте: к нему дерево обязано вернуться после стопа. */
+private const val CONTENT: String = "исходное содержимое\n"
+
+/** Содержимое, которым агент правит файл: отличается от исходного, иначе правки не видно. */
+private const val WRITTEN: String = "изменено агентом\n"
+
+/** Новый файл, созданный прогоном: после стопа его быть не должно. */
+private const val GENERATED: String = "src/Generated.kt"
+
+/** Содержимое нового файла прогона: по нему видно, что запись действительно состоялась. */
+private const val GENERATED_CONTENT: String = "class Generated"
+
+/** Неотслеживаемый файл человека: на время прогона он откладывается и обязан вернуться. */
+private const val HUMAN_FILE: String = "правка человека\n"
+
+/** Игнорируемый файл человека внутри неотслеживаемого каталога: его возврат дерева не трогает. */
+private const val IGNORED_ARTEFACT: String = "артефакт сборки\n"
+
+/** Сколько ждать правки агента до стопа: работа идёт через ws, базу и git. */
+private const val STOP_WAIT_MILLIS: Long = 10_000
 
 /** Пауза, за которую стоянка обязана не сдвинуться: прогон не должен начать работу сам. */
 private const val STANDSTILL_SETTLE_MILLIS: Long = 200

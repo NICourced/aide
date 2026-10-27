@@ -3,10 +3,13 @@ package dev.aide.host.git
 import dev.aide.domain.FileChangeKind
 import dev.aide.protocol.ProtocolError
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import kotlin.io.path.exists
 import kotlinx.coroutines.CancellationException
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.api.ResetCommand.ResetType
+import org.eclipse.jgit.api.Status
 import org.eclipse.jgit.api.errors.StashApplyFailureException
 import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.RenameDetector
@@ -22,9 +25,10 @@ import org.slf4j.LoggerFactory
  * Реализация чтения состояния git через JGit.
  *
  * Изменяющие операции вынесены в отдельные классы: постановка задачи в её ветку (T-1.18)
- * — в [TaskBranchOperation], снапшоты (T-1.19) — в [SnapshotOperation]. У чтения состояния
- * и у изменения репозитория разные поводы меняться, а коммиты шагов принесут свою операцию
- * (T-1.11).
+ * — в [TaskBranchOperation], снапшоты (T-1.19) — в [SnapshotOperation], отложенные правки
+ * (T-1.59) — в [StashOperation], возврат дерева к снапшоту (T-1.4) — в [RestoreOperation].
+ * У чтения состояния и у изменения репозитория разные поводы меняться, а коммиты шагов
+ * принесут свою операцию (T-1.11).
  */
 class JGitRepository private constructor(
     private val repository: Repository,
@@ -40,6 +44,8 @@ class JGitRepository private constructor(
     private val stepCommits = StepCommitOperation(repository, git, ::changedFiles)
 
     override val workStash: StashRepository = StashOperation(repository, git)
+
+    override val restore: RestoreRepository = RestoreOperation(repository, git)
 
     override fun currentBranch(): String = repository.branch ?: DETACHED_HEAD
 
@@ -492,6 +498,122 @@ private class StashOperation(private val repository: Repository, private val git
             status.conflicting,
             status.untracked,
         ).any { it.isNotEmpty() }
+    }
+}
+
+/**
+ * Возврат рабочего дерева к снапшоту (T-1.4).
+ *
+ * Отдельный класс от [StashOperation]: там сохраняется работа человека, здесь отменяется
+ * работа агента. Операция собирается из двух шагов, и у каждого свой смысл: `reset --hard`
+ * откатывает отслеживаемое и ставит ветку на снапшот, а неотслеживаемое убирается поштучно.
+ *
+ * `CleanCommand` здесь не используется намеренно: с `ignore = true` он не трогает
+ * игнорируемое по точному пути, но **каталог, внутри которого лежит только игнорируемое,
+ * удаляет целиком**. Для человека это потеря: `local/main.txt` рядом с `local/build/art.bin`
+ * выглядит как «агент убрал свой мусор», а исчезает `art.bin`, которого агент не создавал,
+ * и JGit при этом возвращает список удалённого — молчать о потере нечем.
+ *
+ * Поэтому удаляются ровно неотслеживаемые файлы из `Status.untracked` (JGit документирует
+ * их как «не игнорируемые и не в индексе»), а каталоги — только **ставшие пустыми** после
+ * удаления. Каталог, в котором остался игнорируемый файл, не трогается. Каталог из
+ * `untracked` (например, вложенный репозиторий) не удаляется: реальный `git clean -fd`
+ * без `-ff` его тоже сохраняет, а что внутри — не угадать; случай остаётся в журнале.
+ *
+ * `reset --hard` двигает и указатель текущей ветки: репозиторий действительно оказывается
+ * в состоянии снапшота, а не «в состоянии снапшота с лишними правками в дереве». Коммиты,
+ * сделанные **после** снапшота, остаются объектами в базе, но с ветки уходят — это названная
+ * плата решения владельца (T-1.4, решение 1).
+ */
+private class RestoreOperation(
+    private val repository: Repository,
+    private val git: Git,
+) : RestoreRepository {
+
+    private val logger = LoggerFactory.getLogger(RestoreOperation::class.java)
+
+    /** Приводит дерево и индекс к коммиту [ref]; отказ — значение, а не исключение. */
+    override fun restoreTo(ref: String): RestoreOutcome {
+        // Ссылка разбирается до операции: у несуществующей ссылки причина отказа своя,
+        // и `reset` по ней дал бы сбой, из которого её не видно.
+        val target = runCatching { repository.resolve(ref) }.getOrNull()
+            ?: return refused(ref, "ссылка не разбирается", null, RestoreRefusal.UNKNOWN_REF)
+        return attempt(ref, target)
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun attempt(ref: String, target: ObjectId): RestoreOutcome = try {
+        // По хешу, а не по имени ссылки: `reset --hard` принимает commit-ish, а разобранный
+        // коммит избавляет от второго разбора и от вопроса «что если ссылку переписали».
+        git.reset().setMode(ResetType.HARD).setRef(target.name).call()
+        // Статус читается после reset: файл, который снапшот вернул как отслеживаемый,
+        // неотслеживаемым уже не считается, и удалять его нельзя.
+        cleanUntracked(git.status().call())
+        RestoreOutcome.Restored
+    } catch (cancel: CancellationException) {
+        // Отмена — не «дерево не восстановлено»: остановленный прогон обязан остаться
+        // остановленным, а не превратиться в отказ восстановления.
+        throw cancel
+    } catch (error: Exception) {
+        refused(ref, error.message.orEmpty(), error, RestoreRefusal.GIT_FAILED)
+    }
+
+    /**
+     * Убирает неотслеживаемое, не трогая игнорируемое (T-1.4).
+     *
+     * Файлы удаляются поштучно: `Status.untracked` уже не содержит игнорируемых путей
+     * (их отсеивает `IndexDiff` по правилам `.gitignore`, включая вложенные и глобальные),
+     * поэтому фильтровать повторно нечего. Каталоги не удаляются списком: после удаления
+     * файлов вверх по их пути убираются только опустевшие каталоги, и каталог с оставшимся
+     * игнорируемым файлом остаётся.
+     */
+    private fun cleanUntracked(status: Status) {
+        status.untracked.forEach { relative ->
+            val path = repository.workTree.toPath().resolve(relative)
+            if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                // Каталог в `untracked` — это вложенный репозиторий или иная единица,
+                // которую git не перечисляет по файлам; `git clean -fd` без `-ff` её сохраняет.
+                logger.warn("Неотслеживаемый каталог оставлен: $relative")
+                return@forEach
+            }
+            Files.deleteIfExists(path)
+            pruneEmptyParents(path.parent)
+        }
+    }
+
+    /** Убирает опустевшие после удаления каталоги; непустой каталог — не наш. */
+    private fun pruneEmptyParents(start: Path?) {
+        var directory = start
+        while (directory != null && canPrune(directory)) {
+            Files.delete(directory)
+            directory = directory.parent
+        }
+    }
+
+    /** Можно ли убрать каталог: он внутри корня, это не корень и он пуст. */
+    private fun canPrune(directory: Path): Boolean {
+        val root = repository.workTree.toPath()
+        return directory != root && directory.startsWith(root) && isEmpty(directory)
+    }
+
+    /** Пуст ли каталог: символическая ссылка на каталог каталогом не считается. */
+    private fun isEmpty(directory: Path): Boolean =
+        Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS) &&
+            Files.newDirectoryStream(directory).use { !it.iterator().hasNext() }
+
+    /** Отказ восстановления: причина — в журнал, наружу — значение с причиной. */
+    private fun refused(
+        ref: String,
+        detail: String,
+        cause: Throwable?,
+        reason: RestoreRefusal,
+    ): RestoreOutcome {
+        if (cause == null) {
+            logger.warn("Дерево не возвращено к $ref: $detail")
+        } else {
+            logger.warn("Дерево не возвращено к $ref: $detail", cause)
+        }
+        return RestoreOutcome.Refused(reason)
     }
 }
 

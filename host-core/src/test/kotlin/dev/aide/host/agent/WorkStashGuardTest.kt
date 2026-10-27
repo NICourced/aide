@@ -7,6 +7,8 @@ import dev.aide.domain.TaskId
 import dev.aide.host.git.ChangedFile
 import dev.aide.host.git.CommitInfo
 import dev.aide.host.git.GitRepository
+import dev.aide.host.git.RestoreOutcome
+import dev.aide.host.git.RestoreRepository
 import dev.aide.host.git.SnapshotOutcome
 import dev.aide.host.git.StashOutcome
 import dev.aide.host.git.StashRepository
@@ -104,7 +106,7 @@ class WorkStashGuardTest {
             )
 
             outcomes.forEach { (git, expected) ->
-                val stub = StubGit(restore = git)
+                val stub = StubGit(restoreOutcome = git)
                 val workspaces = OpenWorkspaces().also { it.add(openedWith(stub)) }
                 try {
                     val guard = WorkStashGuard(workspaces, ClientSessions())
@@ -120,7 +122,7 @@ class WorkStashGuardTest {
     /** Репозиторий с заданными исходами правок: так проверяется перевод причин. */
     private class StubGit(
         private val stash: StashOutcome = StashOutcome.Nothing,
-        private val restore: StashReturnOutcome = StashReturnOutcome.Returned,
+        private val restoreOutcome: StashReturnOutcome = StashReturnOutcome.Returned,
     ) : GitRepository, StashRepository {
 
         var stashRef: String? = null
@@ -128,6 +130,8 @@ class WorkStashGuardTest {
         var returned: Pair<String, String?>? = null
 
         override val workStash: StashRepository get() = this
+
+        override val restore: RestoreRepository = RestoreRepository { RestoreOutcome.Restored }
 
         override fun currentBranch(): String = "master"
 
@@ -156,7 +160,7 @@ class WorkStashGuardTest {
 
         override fun returnStashEdits(ref: String, branch: String?): StashReturnOutcome {
             returned = ref to branch
-            return restore
+            return restoreOutcome
         }
 
         override fun close() = Unit

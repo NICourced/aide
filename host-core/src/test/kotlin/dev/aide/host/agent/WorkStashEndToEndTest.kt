@@ -83,6 +83,8 @@ class WorkStashEndToEndTest {
             branches = TaskBranchGuard(workspaces, sessions),
             snapshots = Snapshots { TaskSnapshot.NoHead },
             workStash = WorkStashGuard(workspaces, sessions),
+            // Возврат дерева — реальный адаптер: снапшота у прогона нет, он вернёт «нечего» (T-1.4).
+            restore = WorkspaceRestoreGuard(workspaces),
         ),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )

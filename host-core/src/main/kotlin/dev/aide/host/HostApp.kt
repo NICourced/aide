@@ -13,6 +13,7 @@ import dev.aide.agent.ports.RunPorts
 import dev.aide.agent.ports.Snapshots
 import dev.aide.agent.ports.TaskBranches
 import dev.aide.agent.ports.WorkStash
+import dev.aide.agent.ports.WorkspaceRestore
 import dev.aide.agent.provider.SecretStore
 import dev.aide.agent.tools.StepTools
 import dev.aide.host.agent.AgentConfigHandler
@@ -30,6 +31,7 @@ import dev.aide.host.agent.StoreToolCallRecorder
 import dev.aide.host.agent.TaskBranchGuard
 import dev.aide.host.agent.TaskSnapshotGuard
 import dev.aide.host.agent.WorkStashGuard
+import dev.aide.host.agent.WorkspaceRestoreGuard
 import dev.aide.host.config.AgentConfigStore
 import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ClientSessions
@@ -154,6 +156,9 @@ object HostApp {
         single<ChangeSnapshots> { ChangeSnapshotGuard(workspaces = get(), store = get()) }
         // Отложенные правки: реализация — поверх открытого воркспейса (T-1.59).
         single<WorkStash> { WorkStashGuard(workspaces = get(), sessions = get()) }
+        // Возврат дерева к снапшоту при остановке (T-1.4): тот же открытый воркспейс,
+        // что и у снапшотов; порт разрешается по типу интерфейса по той же причине.
+        single<WorkspaceRestore> { WorkspaceRestoreGuard(workspaces = get()) }
         // Фиксация шага (T-1.11): внутренний инструмент, порт разрешается по типу интерфейса.
         single<StepCommits> { StepCommitGuard(workspaces = get()) }
         single { StashRecovery(stashes = get(), store = get(), events = ServerRunEventSink(get())) }
@@ -168,7 +173,12 @@ object HostApp {
                 models = models,
                 planner = planner,
                 tools = get(),
-                repositories = RepositoryPorts(branches = get(), snapshots = get(), workStash = get()),
+                repositories = RepositoryPorts(
+                    branches = get(),
+                    snapshots = get(),
+                    workStash = get(),
+                    restore = get(),
+                ),
             )
         }
         single {

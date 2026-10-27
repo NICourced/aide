@@ -27,6 +27,7 @@ import dev.aide.client.ui.strings.testStateResource
 import dev.aide.domain.AgentRun
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
+import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.Task
@@ -35,6 +36,7 @@ import dev.aide.domain.TestReport
 import dev.aide.domain.TestState
 import dev.aide.domain.planNeedsApproval
 import dev.aide.domain.reportState
+import org.jetbrains.compose.resources.StringResource
 
 /**
  * Экран агента (T-1.1): состояние прогона и задачи, план, постановка задачи.
@@ -43,7 +45,8 @@ import dev.aide.domain.reportState
  * ещё до появления прогона (например, провайдер не настроен), поэтому одной строки
  * прогона мало — отказ остался бы невидимым. [requestFailed] объединяет неудачную
  * постановку задачи и неудачный снимок состояния: оба означают «связи с хостом нет».
- * Кнопки паузы и стопа — задача T-1.4; поле с кнопкой заменит чат-ввод в T-1.40.
+ * Пауза и стоп прогона — кнопки [RunControlControls] (T-1.4); поле с кнопкой заменит
+ * чат-ввод в T-1.40.
  *
  * Прогоны и задачи приходят снимком сессии, а не двумя списками: экран показывает одну
  * и ту же сессию агента, и держать её разобранной по частям значило бы позволить им
@@ -58,17 +61,23 @@ fun AgentScreen(
     modifier: Modifier = Modifier,
 ) {
     var prompt by remember { mutableStateOf("") }
+    // Последний прогон нужен четырём строкам ниже; читаем его один раз, чтобы экран не
+    // держал четыре копии одного и того же значения.
+    val run = session.runs.lastOrNull()
     Column(
         modifier = modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(Strings.text(Strings.agentTitle), style = MaterialTheme.typography.titleLarge)
-        RunStateLine(run = session.runs.lastOrNull())
-        TestStatusLine(report = session.runs.lastOrNull()?.testReport)
+        RunStateLine(run = run)
+        TestStatusLine(report = run?.testReport)
         TaskStatusLine(task = session.tasks.lastOrNull())
         // План показывается до работы (T-1.2): список шагов со статусами, а в состоянии
         // ожидания — кнопки решения. Пустой план или отсутствие прогона оставляют это место пустым.
-        PlanSection(run = session.runs.lastOrNull(), onDecidePlan = actions.decidePlan)
+        PlanSection(run = run, onDecidePlan = actions.decidePlan, onControl = actions.controlRun)
+        // Управление прогоном (T-1.4): пауза и стоп на идущем, продолжение и стоп на паузе.
+        // Кнопок нет, когда управлять нечем, — действие без активного прогона было бы обманом.
+        RunControlControls(run = run, onControl = actions.controlRun)
         if (requestFailed) {
             Text(
                 Strings.text(Strings.agentRequestFailed),
@@ -155,16 +164,70 @@ fun TaskStatusLine(task: Task?, modifier: Modifier = Modifier) {
 }
 
 /**
- * План прогона: шаги по порядку и их состояния (T-1.2, FR-AGENT-7).
+ * Кнопки управления прогоном: по состоянию видно, что можно сделать (T-1.4, FR-AGENT-11).
+ *
+ * Идущий прогон можно приостановить или остановить, приостановленный — продолжить или
+ * остановить; на завершённом, остановленном, прерванном и упавшем управлять нечем.
+ * Прогон, ждущий решения по плану, кнопок управления не получает: работа ещё не началась,
+ * и пауза там смысла не имеет (T-1.2) — его собственные кнопки стоят в разделе плана.
+ */
+@Composable
+fun RunControlControls(
+    run: AgentRun?,
+    onControl: (RunId, RunCommand) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (run == null) return
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        when (run.state) {
+            RunState.RUNNING -> RunControlButton(
+                resource = Strings.agentPauseRun,
+                tag = "pause-run",
+                onClick = { onControl(run.id, RunCommand.PAUSE) },
+            )
+
+            RunState.PAUSED -> RunControlButton(
+                resource = Strings.agentResumeRun,
+                tag = "resume-run",
+                onClick = { onControl(run.id, RunCommand.RESUME) },
+            )
+
+            else -> return
+        }
+        RunControlButton(
+            resource = Strings.agentStopRun,
+            tag = "stop-run",
+            onClick = { onControl(run.id, RunCommand.STOP) },
+        )
+    }
+}
+
+/** Кнопка управления: текст из ресурсов, метка для теста — как у остальных действий экрана. */
+@Composable
+private fun RunControlButton(
+    resource: StringResource,
+    tag: String,
+    onClick: () -> Unit,
+) {
+    Button(onClick = onClick, modifier = Modifier.testTag(tag)) {
+        Text(Strings.text(resource))
+    }
+}
+
+/**
+ * План прогона: шаги по порядку, их состояния и действия стоянки (T-1.2, FR-AGENT-7, T-1.4).
  *
  * Кнопки решения показываются только в состоянии ожидания `PLANNED` и только в режимах,
  * которые подтверждения требуют ([planNeedsApproval]): в «только предлагать» прогон не
- * ждёт решения, и кнопки были бы обманом. Пустой план и отсутствие прогона не рисуют ничего.
+ * ждёт решения, и кнопки были бы обманом. Стоп показывается в `PLANNED` всегда: FR-AGENT-11
+ * требует остановку в любой момент прогона, а пауза на стоянке смысла не имеет (T-1.2).
+ * Пустой план и отсутствие прогона не рисуют ничего.
  */
 @Composable
 fun PlanSection(
     run: AgentRun?,
     onDecidePlan: (RunId, PlanDecision) -> Unit,
+    onControl: (RunId, RunCommand) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     if (run == null || run.plan.isEmpty()) return
@@ -173,6 +236,13 @@ fun PlanSection(
         run.plan.forEach { step -> PlanStepLine(step) }
         if (run.state == RunState.PLANNED && planNeedsApproval(run.mode)) {
             PlanDecisionControls(runId = run.id, onDecidePlan = onDecidePlan)
+        }
+        if (run.state == RunState.PLANNED) {
+            RunControlButton(
+                resource = Strings.agentStopRun,
+                tag = "stop-plan",
+                onClick = { onControl(run.id, RunCommand.STOP) },
+            )
         }
     }
 }

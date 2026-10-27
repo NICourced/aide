@@ -19,6 +19,8 @@ import dev.aide.agent.ports.TaskRepository
 import dev.aide.agent.ports.TaskSnapshot
 import dev.aide.agent.ports.TaskStash
 import dev.aide.agent.ports.WorkStash
+import dev.aide.agent.ports.WorkspaceRestore
+import dev.aide.agent.ports.WorkspaceRestoreOutcome
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
@@ -109,6 +111,7 @@ class RunWorkerTest {
         // Ветка в этом тесте ни при чём: проверяется предохранитель воркера, а не T-1.18.
         // Снапшот тоже ни при чём: «коммитов нет» — самый дешёвый исход порта (T-1.19).
         // Откладывать нечего: правки пользователя тут не предмет проверки (T-1.59).
+        // Возврат дерева тут не предмет проверки: «восстанавливать нечего» — самый дешёвый исход (T-1.4).
         repositories = RepositoryPorts(
             branches = TaskBranches { TaskBranch.Existing },
             snapshots = Snapshots { TaskSnapshot.NoHead },
@@ -117,6 +120,7 @@ class RunWorkerTest {
 
                 override suspend fun restore(ref: String, branch: String?): StashReturn = StashReturn.Returned
             },
+            restore = WorkspaceRestore { WorkspaceRestoreOutcome.Nothing },
         ),
         clock = { Instant.fromEpochMilliseconds(1) },
     )

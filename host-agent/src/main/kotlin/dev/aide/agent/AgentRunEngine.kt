@@ -67,6 +67,28 @@ private class StepToolLimitException(turns: Int) : Exception(
 )
 
 /**
+ * Модель ответила обрезанным текстом без вызовов инструментов (T-1.4).
+ *
+ * Шаг, оборванный на середине ответа, выполненным считать нельзя: агент не увидел, что
+ * модель не договорила. Повторять запрос бессмысленно — обрезка по пределу вывода
+ * повторится, — поэтому прогон отказывает кодом, а не завершает шаг молча.
+ */
+private class TruncatedResponseException : Exception(
+    "ответ модели обрезан по пределу вывода: шаг не может считаться выполненным",
+)
+
+/**
+ * Требует, чтобы ответ не был обрезан: иначе шаг выполненным не считается (T-1.4).
+ *
+ * Отдельная функция, а не проверка внутри [AgentRunEngine.applyStep]: у того уже два броска
+ * (ошибка вызова модели и предел витков), и третий перешагнул бы порог `ThrowsCount`,
+ * который проект ослаблять не разрешает.
+ */
+private fun LlmResponse.Text.requireNotTruncated() {
+    if (truncated) throw TruncatedResponseException()
+}
+
+/**
  * Код причины отказа: понятную строку строит UI из ресурсов (NFR-13).
  *
  * Неожиданные ошибки дают код [RunInterruptReason.UNEXPECTED], а не имя JVM-класса:
@@ -80,6 +102,7 @@ private fun reasonOf(error: Throwable): String = when (error) {
     // понятны UI без разбора строк (NFR-13).
     is ModelUnavailableException -> error.failure.code
     is StepToolLimitException -> RunInterruptReason.TOOL_LOOP_LIMIT
+    is TruncatedResponseException -> RunInterruptReason.RESPONSE_TRUNCATED
     is PlanFormatException -> RunInterruptReason.PLAN_UNREADABLE
     else -> RunInterruptReason.UNEXPECTED
 }
@@ -103,6 +126,8 @@ private fun reasonOf(error: Throwable): String = when (error) {
  * где агент будет работать. Снапшот ставится там же (T-1.19) — это точка отсчёта для отката;
  * пустой репозиторий снапшота не даёт, и это не мешает прогону: без коммитов читать и планировать
  * можно. После прогона, каким бы исходом он ни завершился, правки возвращаются на свою ветку.
+ * Остановка пользователем — отдельный случай (T-1.4): дерево возвращается к последнему снапшоту
+ * прогона **до** возврата отложенных правок, потому что после возврата оно уже на ветке человека.
  *
  * @param clock источник времени; подменяется в тестах.
  */
@@ -122,6 +147,7 @@ class AgentRunEngine(
     private val placement = TaskBranchPlacement(repositories.branches, writer)
     private val runSnapshots = RunSnapshots(repositories.snapshots, writer)
     private val workStash = TaskWorkStash(repositories.workStash, ports.tasks, writer)
+    private val runRestore = RunRestore(repositories.restore, ports.runs)
     private val stepCommits = StepCommitWriter(tools)
     private val gate = PlanGate(planner, writer)
     private val controls = ConcurrentHashMap<RunId, RunControl>()
@@ -294,8 +320,9 @@ class AgentRunEngine(
      * время стоянки смысла не имеет и отбрасывается ([RunControl.discardPendingCommands]).
      *
      * Отмена пользователя отличается от отмены хоста флагом [RunControl.stopRequested]:
-     * остановленный прогон финализируется как STOPPED, а отменённый хостом остаётся
-     * RUNNING в базе и помечается прерванным при следующем старте (решение 8).
+     * остановленный прогон финализируется как STOPPED и возвращает дерево к последнему
+     * снапшоту, а отменённый хостом остаётся RUNNING в базе и помечается прерванным
+     * при следующем старте (решение 8); дерево при отмене хостом не трогается.
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun execute(task: Task, start: AgentRun, control: RunControl, llm: LlmClient) {
@@ -307,7 +334,7 @@ class AgentRunEngine(
             current = writer.persist(current.copy(state = RunState.RUNNING))
             for (step in current.plan) {
                 current = checkpoint(current, control)
-                current = applyStep(task, current, step, llm)
+                current = applyStep(task, current, step, control, llm)
                 current = checkpoint(current, control)
             }
         } catch (cancel: CancellationException) {
@@ -315,7 +342,24 @@ class AgentRunEngine(
             // Запись в уже отменённой корутине: без NonCancellable состояние осталось
             // бы RUNNING навсегда, и следующий старт пометил бы прогон прерванным,
             // а не «остановлен пользователем» (решение 6).
-            withContext(NonCancellable) { writer.stop(current) }
+            //
+            // Возврат дерева к снапшоту идёт тем же блоком и **до** возврата отложенных
+            // правок человека: `workStash.afterRun` уводит дерево на ветку человека, и
+            // `reset --hard` после него снёс бы уже её (решение 2). Отмена хоста сюда
+            // не доходит — там дерево не трогают вовсе.
+            //
+            // Сбой возврата дерева не отменяет остановку (решение 5): `writer.stop` обязан
+            // выполниться при любом исходе, поэтому исключение порта превращается в код
+            // причины, а не выходит наружу и не оставляет прогон RUNNING.
+            withContext(NonCancellable) {
+                val stopped = try {
+                    runRestore.afterStop(current)
+                } catch (error: Exception) {
+                    logger.warn("Прогон ${start.id.value}: дерево не восстановлено", error)
+                    StoppedRun(current, RunInterruptReason.RESTORE_FAILED)
+                }
+                writer.stop(stopped.run, stopped.reason)
+            }
             return
         } catch (error: Exception) {
             val reason = reasonOf(error)
@@ -330,7 +374,14 @@ class AgentRunEngine(
         writer.finish(current)
     }
 
-    /** Точка проверки: пауза переводит прогон в PAUSED и ждёт продолжения, стоп отменяет цикл. */
+    /**
+     * Точка проверки: пауза переводит прогон в PAUSED и ждёт продолжения, стоп отменяет цикл.
+     *
+     * Ветки `STOP` в канале сегодня недостижимы: [RunControl.request] кладёт в канал только
+     * паузу и продолжение, а стоп ставит флаг и отменяет корутину. Они оставлены как защита
+     * инварианта «стоп, дошедший командой, тоже останавливает»: если способ доставки изменится,
+     * молча проигнорированный стоп был бы хуже двух лишних сравнений.
+     */
     private suspend fun checkpoint(run: AgentRun, control: RunControl): AgentRun {
         val command = if (control.stopRequested) RunCommand.STOP else control.take()
         if (command == RunCommand.STOP) throw CancellationException(STOP_MESSAGE)
@@ -360,11 +411,21 @@ class AgentRunEngine(
      * Стоимость и время каждого вызова накапливаются сразу, поэтому отказ на середине
      * шага не прячет уже потраченное (FR-COST-2), а ошибка провайдера поднимается
      * наружу как [LlmCallException].
+     *
+     * Точка проверки вызывается в начале **каждого** витка (T-1.4): пауза, запрошенная
+     * между вызовами инструментов, встаёт на ближайшей границе витка, а состояние шага
+     * живёт в локальных переменных корутины — поэтому продолжение идёт с того же места
+     * и шаг не переделывается. Останавливать инструмент на середине нельзя: это была бы
+     * не пауза, а отмена незавершённого действия.
+     *
+     * Обрезанный ответ модели без вызовов инструментов шаг не завершает: агент не видел,
+     * что модель не договорила, и считать шаг выполненным нечем ([TruncatedResponseException]).
      */
     private suspend fun applyStep(
         task: Task,
         run: AgentRun,
         step: PlanStep,
+        control: RunControl,
         llm: LlmClient,
     ): AgentRun {
         var current = run
@@ -375,12 +436,16 @@ class AgentRunEngine(
         // решает реестр, а коммит ставится один на шаг — после того, как модель закончила.
         var changing = false
         while (true) {
+            current = checkpoint(current, control)
             val response = when (val answer = llm.complete(LlmRequest(messages, tools.definitions))) {
                 is LlmResponse.Text -> answer
                 is LlmResponse.Error -> throw LlmCallException(answer)
             }
             current = writer.accumulate(current, response)
             if (response.toolCalls.isEmpty()) {
+                // Обрезанный ответ — отказ, а не выполненный шаг: продолжения ответа нет,
+                // и повтор запроса дал бы ту же обрезку (решение 6).
+                response.requireNotTruncated()
                 if (changing) stepCommits.commit(run.id, task.branch, step)
                 return writer.recordStep(current, step)
             }

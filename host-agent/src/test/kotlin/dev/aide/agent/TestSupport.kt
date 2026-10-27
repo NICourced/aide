@@ -13,6 +13,8 @@ import dev.aide.agent.ports.TaskRepository
 import dev.aide.agent.ports.TaskSnapshot
 import dev.aide.agent.ports.TaskStash
 import dev.aide.agent.ports.WorkStash
+import dev.aide.agent.ports.WorkspaceRestore
+import dev.aide.agent.ports.WorkspaceRestoreOutcome
 import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.agent.provider.ModelProvider
 import dev.aide.agent.provider.ModelUnavailableException
@@ -24,6 +26,7 @@ import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
@@ -162,6 +165,9 @@ val branchAlreadyExists: TaskBranches = TaskBranches { TaskBranch.Existing }
 /** Порт снапшотов, отвечающий «коммитов нет»: тестам без T-1.19 важно лишь, что прогон идёт без снапшота. */
 val noSnapshots: Snapshots = Snapshots { TaskSnapshot.NoHead }
 
+/** Порт восстановления, отвечающий «восстанавливать нечего»: тестам без T-1.4 важен лишь ход прогона. */
+val noRestore: WorkspaceRestore = WorkspaceRestore { WorkspaceRestoreOutcome.Nothing }
+
 /** Порт отложенных правок, отвечающий «откладывать нечего»: тестам без T-1.59 важен лишь ход прогона. */
 val noWorkStash: WorkStash = object : WorkStash {
     override suspend fun stash(taskId: TaskId): TaskStash = TaskStash.Nothing
@@ -202,6 +208,35 @@ class FakeWorkStash(
     override suspend fun restore(ref: String, branch: String?): StashReturn {
         restored += ref to branch
         return restoreOutcome
+    }
+}
+
+/**
+ * Порт восстановления в тестах движка (T-1.4): запоминает, к какому снапшоту просили
+ * вернуться, и отвечает заданным исходом.
+ *
+ * По умолчанию отвечает «восстановлено»: так остановка, которой снапшот не важен,
+ * идёт прежним путём, а исход отказа задаёт тест.
+ */
+class FakeRestore(
+    private var outcome: WorkspaceRestoreOutcome = WorkspaceRestoreOutcome.Restored,
+) : WorkspaceRestore {
+
+    /** Снапшоты, к которым просили вернуться, в порядке обращений; null — снапшота не было. */
+    val asked = mutableListOf<SnapshotRef?>()
+
+    /** Если задан — порт бросает это исключение: так проверяется «стоп важнее сбоя». */
+    var failure: Exception? = null
+
+    /** Меняет ответ порта: так проверяется исход отказа. */
+    fun answer(outcome: WorkspaceRestoreOutcome) {
+        this.outcome = outcome
+    }
+
+    override suspend fun restoreTo(snapshot: SnapshotRef?): WorkspaceRestoreOutcome {
+        asked += snapshot
+        failure?.let { throw it }
+        return outcome
     }
 }
 

@@ -16,6 +16,7 @@ import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
+import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.StepStatus
@@ -249,6 +250,100 @@ class AgentScreenTest {
         }
 
         onNodeWithText("План до начала работы").assertDoesNotExist()
+    }
+
+    @Test
+    fun `на идущем прогоне кнопки паузы и стопа зовут команды`() = runComposeUiTest {
+        val commands = mutableListOf<Pair<RunId, RunCommand>>()
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.RUNNING))),
+                requestFailed = false,
+                actions = AgentActions(
+                    postTask = {},
+                    controlRun = { runId, command -> commands += runId to command },
+                ),
+            )
+        }
+
+        onNodeWithText("Пауза").assertIsDisplayed()
+        onNodeWithTag("pause-run").performClick()
+        onNodeWithTag("stop-run").performClick()
+
+        assertEquals(
+            listOf(RunId("run-1") to RunCommand.PAUSE, RunId("run-1") to RunCommand.STOP),
+            commands,
+            "кнопки идущего прогона обязаны звать паузу и стоп; тексты кнопок — из ресурсов",
+        )
+    }
+
+    @Test
+    fun `на приостановленном прогоне предложено продолжение, а не пауза`() = runComposeUiTest {
+        var command: RunCommand? = null
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.PAUSED))),
+                requestFailed = false,
+                actions = AgentActions(postTask = {}, controlRun = { _, sent -> command = sent }),
+            )
+        }
+
+        onNodeWithText("Продолжить").assertIsDisplayed()
+        onNodeWithTag("resume-run").performClick()
+
+        assertEquals(RunCommand.RESUME, command, "из паузы прогон выводит продолжение")
+        onNodeWithTag("pause-run").assertDoesNotExist()
+        onNodeWithTag("stop-run").assertIsDisplayed()
+    }
+
+    @Test
+    fun `на стоянке плана кнопка стопа зовёт остановку`() = runComposeUiTest {
+        var stopped: Pair<RunId, RunCommand>? = null
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.PLANNED))),
+                requestFailed = false,
+                actions = AgentActions(
+                    postTask = {},
+                    controlRun = { runId, command -> stopped = runId to command },
+                ),
+            )
+        }
+
+        // FR-AGENT-11: остановить прогон можно в любой момент, в том числе на стоянке плана.
+        onNodeWithTag("stop-plan").assertIsDisplayed()
+        onNodeWithTag("stop-plan").performClick()
+
+        assertEquals(RunId("run-1") to RunCommand.STOP, stopped, "кнопка стопа обязана отдать прогон и команду")
+        onNodeWithTag("pause-run").assertDoesNotExist()
+    }
+
+    @Test
+    fun `на завершённом прогоне кнопок управления нет`() = runComposeUiTest {
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.FINISHED))),
+                requestFailed = false,
+                actions = AgentActions(postTask = {}),
+            )
+        }
+
+        onNodeWithTag("pause-run").assertDoesNotExist()
+        onNodeWithTag("resume-run").assertDoesNotExist()
+        onNodeWithTag("stop-run").assertDoesNotExist()
+    }
+
+    @Test
+    fun `без прогона кнопок управления нет`() = runComposeUiTest {
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = emptyList(), tasks = emptyList()),
+                requestFailed = false,
+                actions = AgentActions(postTask = {}),
+            )
+        }
+
+        onNodeWithTag("stop-run").assertDoesNotExist()
     }
 
     /** Прогон с планом: список шагов и состояния; режим задаёт, ждут ли решения по плану. */

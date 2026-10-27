@@ -86,6 +86,27 @@ class TaskStatusLineTest {
     }
 
     @Test
+    fun `обрезанный ответ модели объясняется`() = runComposeUiTest {
+        setContent { TaskStatusLine(task = task(TaskStatus.FAILED, "response_truncated")) }
+
+        onNodeWithText("Модель не договорила: ответ обрезан по пределу вывода").assertIsDisplayed()
+    }
+
+    @Test
+    fun `отсутствие репозитория объясняется, а не выглядит неизвестной причиной`() = runComposeUiTest {
+        setContent { TaskStatusLine(task = task(TaskStatus.FAILED, "no_workspace")) }
+
+        onNodeWithText("Репозиторий не открыт: откройте его заново").assertIsDisplayed()
+    }
+
+    @Test
+    fun `сбой возврата дерева объясняется отдельно от остановки`() = runComposeUiTest {
+        setContent { TaskStatusLine(task = task(TaskStatus.FAILED, "restore_failed")) }
+
+        onNodeWithText("Дерево не возвращено к снапшоту: репозиторий остался изменённым").assertIsDisplayed()
+    }
+
+    @Test
     fun `конфликт возврата объясняется вместе с признаком отложенного`() = runComposeUiTest {
         setContent { TaskStatusLine(task = task(TaskStatus.FAILED, "stash_conflict", stashRef = "refs/ai/stash/t-1")) }
 

@@ -5,13 +5,17 @@ import dev.aide.agent.llm.LlmErrorKind
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.ports.RepositoryPorts
 import dev.aide.agent.ports.RunPorts
+import dev.aide.agent.ports.Snapshots
 import dev.aide.agent.ports.StashReturn
 import dev.aide.agent.ports.TaskBranches
+import dev.aide.agent.ports.TaskSnapshot
 import dev.aide.agent.ports.TaskStash
 import dev.aide.agent.ports.WorkStash
+import dev.aide.agent.ports.WorkspaceRestore
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunState
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
 import kotlin.test.Test
@@ -37,9 +41,10 @@ class AgentRunEngineWorkStashTest {
     private val sink = RecordingEventSink(runs, tasks)
     private val branches = FakeTaskBranches()
     private val stash = FakeWorkStash()
+    private val restore = FakeRestore()
     private val tools = stepTools()
 
-    /** Порядок обращений: правки обязаны откладываться до ветки задачи. */
+    /** Порядок обращений: правки обязаны откладываться до ветки задачи, а дерево — возвращаться до правок. */
     private val order = mutableListOf<String>()
 
     private fun engine(llm: LlmClient = textModel()): AgentRunEngine =
@@ -53,15 +58,23 @@ class AgentRunEngineWorkStashTest {
                     order += BRANCH
                     branches.ensure(branch)
                 },
-                snapshots = noSnapshots,
+                // Снапшот ставится всегда: возврат дерева при стопе (T-1.4) проверяется
+                // на прогоне, у которого точка отката есть, — иначе проверять нечего.
+                snapshots = Snapshots { TaskSnapshot.Created(SnapshotRef(ENGINE_SNAPSHOT_REF)) },
                 workStash = object : WorkStash {
                     override suspend fun stash(taskId: TaskId): TaskStash {
                         order += STASH
                         return stash.stash(taskId)
                     }
 
-                    override suspend fun restore(ref: String, branch: String?): StashReturn =
-                        stash.restore(ref, branch)
+                    override suspend fun restore(ref: String, branch: String?): StashReturn {
+                        order += STASH_RETURN
+                        return stash.restore(ref, branch)
+                    }
+                },
+                restore = WorkspaceRestore { snapshot ->
+                    order += RESTORE
+                    restore.restoreTo(snapshot)
                 },
             ),
             clock = { Instant.fromEpochMilliseconds(1_000) },
@@ -85,7 +98,12 @@ class AgentRunEngineWorkStashTest {
 
             runTask(engine)
 
-            assertEquals(listOf(STASH, BRANCH), order, "checkout ветки перенёс бы правки в ветку агента")
+            // Успешный прогон правок не теряет: отложили — вернули на ту же ветку (STASH_RETURN).
+            assertEquals(
+                listOf(STASH, BRANCH, STASH_RETURN),
+                order,
+                "checkout ветки перенёс бы правки в ветку агента",
+            )
         }
     }
 
@@ -158,6 +176,41 @@ class AgentRunEngineWorkStashTest {
         }
     }
 
+    /**
+     * При стопе дерево возвращается к снапшоту **до** возврата правок человека (T-1.4).
+     *
+     * Порядок и есть суть решения: возврат правок уводит дерево на ветку человека, и `reset`
+     * после него снёс бы уже её. Обратный порядок виден по [order] — он собирается самими
+     * портами, а не движком.
+     */
+    @Test
+    fun `при стопе дерево возвращается к снапшоту до возврата правок человека`() {
+        runBlocking {
+            stash.answerStash(TaskStash.Stashed(STASH_REF, "master"))
+            val gate = CompletableDeferred<Unit>()
+            val llm = ScriptedLlmClient(listOf(text())) { gate.await() }
+            val engine = engine(llm)
+            engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+
+            val worker = launch { engine.processNext() }
+            engine.awaitShownPlan(runs)
+            llm.awaitCall(0)
+            engine.control(sink.events.first().id, RunCommand.STOP)
+            worker.join()
+
+            assertEquals(
+                listOf(STASH, BRANCH, RESTORE, STASH_RETURN),
+                order,
+                "дерево возвращается к снапшоту на ветке задачи, а не на ветке человека",
+            )
+            assertEquals(
+                listOf<SnapshotRef?>(SnapshotRef(ENGINE_SNAPSHOT_REF)),
+                restore.asked,
+                "восстанавливать надо к последнему снапшоту прогона",
+            )
+        }
+    }
+
     @Test
     fun `после падения прогона правки возвращаются`() {
         runBlocking {
@@ -224,8 +277,10 @@ class AgentRunEngineWorkStashTest {
         /** Ссылка на отложенные правки: движку её значение не важно, важно, что она доехала. */
         const val STASH_REF = "refs/ai/stash/t-1"
 
-        /** Отметки порядка в [order]: правки обязаны откладываться раньше ветки. */
+        /** Отметки порядка в [order]: правки откладываются раньше ветки, дерево возвращается до правок. */
         const val STASH = "правки"
         const val BRANCH = "ветка"
+        const val RESTORE = "восстановление дерева"
+        const val STASH_RETURN = "возврат правок"
     }
 }

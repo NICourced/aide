@@ -48,6 +48,7 @@ class AgentRunEngineBranchTest {
             },
             snapshots = noSnapshots,
             workStash = noWorkStash,
+            restore = noRestore,
         ),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )

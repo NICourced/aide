@@ -275,7 +275,12 @@ class HostClient(
         }
     }
 
-    /** Пауза, продолжение или остановка прогона (T-1.1; действия в UI — T-1.4). */
+    /**
+     * Пауза, продолжение или остановка прогона (T-1.1; кнопки экрана — T-1.4).
+     *
+     * Стоп не только завершает прогон: хост возвращает рабочее дерево к последнему снапшоту
+     * прогона, поэтому отказ управления должен быть виден вызывающему (T-1.4).
+     */
     suspend fun controlRun(runId: RunId, command: RunCommand): Result<Unit> {
         val requestId = requestIds.next()
         return when (val response = connection.request(ClientMessage.RunControl(requestId, runId, command))) {

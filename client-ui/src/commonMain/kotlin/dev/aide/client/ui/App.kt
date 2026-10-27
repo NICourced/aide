@@ -39,6 +39,7 @@ import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.client.ui.theme.AideTheme
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.PlanDecision
+import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.ToolCallId
 import dev.aide.protocol.ToolCallCursor
@@ -205,6 +206,14 @@ private fun AgentDestination(
                 scope.launch {
                     requestFailed = false
                     client.decidePlan(runId, decision).onFailure { requestFailed = true }
+                }
+            },
+            // Управление прогоном (T-1.4): пауза, продолжение и стоп идут тем же путём, что
+            // и остальные запросы, — отказ виден на экране, а состояние приходит событием.
+            controlRun = { runId: RunId, command: RunCommand ->
+                scope.launch {
+                    requestFailed = false
+                    client.controlRun(runId, command).onFailure { requestFailed = true }
                 }
             },
         ),

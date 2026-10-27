@@ -122,18 +122,25 @@ internal class RunStateWriter(
         return persist(run.copy(state = RunState.FAILED, finishedAt = clock(), interruptReason = reason))
     }
 
-    /** Останавливает прогон по команде пользователя; это не ошибка. */
-    suspend fun stop(run: AgentRun): AgentRun {
-        // Стоп ставится на последнюю записанную версию: пока прогон ждал подтверждения
-        // плана (T-1.2), план мог быть перепланирован, и копия из корутины перезаписала
-        // бы новый план старым. Если записи нет, остаётся переданный прогон.
-        val latest = runs.load(run.id) ?: run
-        failTask(latest.taskId, RunInterruptReason.USER_STOP)
+    /**
+     * Останавливает переданную версию прогона по команде пользователя; это не ошибка.
+     *
+     * Версию передаёт вызывающий, и это должна быть последняя запись, иначе перепланированный
+     * план (T-1.2) был бы перезаписан копией из корутины. Читает её [RunRestore] — там она
+     * нужна и для снапшотов, поэтому на остановку приходится один поход в хранилище, а не два.
+     *
+     * [reason] — код причины остановки: по умолчанию «остановлен пользователем», но при
+     * сбое возврата дерева к снапшоту (T-1.4) приходит код этого сбоя — остановка состоялась,
+     * а её последствие важнее и обязано быть видно. Код идёт и на прогон, и на задачу, как
+     * у любой причины отказа.
+     */
+    suspend fun stop(run: AgentRun, reason: String = RunInterruptReason.USER_STOP): AgentRun {
+        failTask(run.taskId, reason)
         return persist(
-            latest.copy(
+            run.copy(
                 state = RunState.STOPPED,
                 finishedAt = clock(),
-                interruptReason = RunInterruptReason.USER_STOP,
+                interruptReason = reason,
             ),
         )
     }

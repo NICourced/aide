@@ -4,8 +4,11 @@ import androidx.compose.runtime.Composable
 import dev.aide.client.ui.resources.Res
 import dev.aide.client.ui.resources.action_back
 import dev.aide.client.ui.resources.action_settings
-import dev.aide.client.ui.resources.agent_post_task
 import dev.aide.client.ui.resources.agent_open_log
+import dev.aide.client.ui.resources.agent_pause_run
+import dev.aide.client.ui.resources.agent_post_task
+import dev.aide.client.ui.resources.agent_resume_run
+import dev.aide.client.ui.resources.agent_stop_run
 import dev.aide.client.ui.resources.agent_plan_approve
 import dev.aide.client.ui.resources.agent_plan_comment_hint
 import dev.aide.client.ui.resources.agent_plan_replan
@@ -164,9 +167,12 @@ import dev.aide.client.ui.resources.state_no_repository
 import dev.aide.client.ui.resources.state_offline_body
 import dev.aide.client.ui.resources.state_offline_title
 import dev.aide.client.ui.resources.task_failure_missing_key
+import dev.aide.client.ui.resources.task_failure_no_workspace
 import dev.aide.client.ui.resources.task_failure_rate_limited
 import dev.aide.client.ui.resources.task_failure_request_failed
+import dev.aide.client.ui.resources.task_failure_response_truncated
 import dev.aide.client.ui.resources.task_failure_response_unreadable
+import dev.aide.client.ui.resources.task_failure_restore_failed
 import dev.aide.client.ui.resources.task_failure_stash_conflict
 import dev.aide.client.ui.resources.task_failure_stash_failed
 import dev.aide.client.ui.resources.task_failure_stash_return_failed
@@ -206,6 +212,9 @@ object Strings {
     val agentTaskHint: StringResource = Res.string.agent_task_hint
     val agentPostTask: StringResource = Res.string.agent_post_task
     val agentOpenLog: StringResource = Res.string.agent_open_log
+    val agentPauseRun: StringResource = Res.string.agent_pause_run
+    val agentResumeRun: StringResource = Res.string.agent_resume_run
+    val agentStopRun: StringResource = Res.string.agent_stop_run
     val agentPlanTitle: StringResource = Res.string.agent_plan_title
     val agentPlanApprove: StringResource = Res.string.agent_plan_approve
     val agentPlanCommentHint: StringResource = Res.string.agent_plan_comment_hint
@@ -364,6 +373,9 @@ object Strings {
     val taskFailureStashConflict: StringResource = Res.string.task_failure_stash_conflict
     val taskFailureStashReturnFailed: StringResource = Res.string.task_failure_stash_return_failed
     val taskFailureStashFailed: StringResource = Res.string.task_failure_stash_failed
+    val taskFailureRestoreFailed: StringResource = Res.string.task_failure_restore_failed
+    val taskFailureResponseTruncated: StringResource = Res.string.task_failure_response_truncated
+    val taskFailureNoWorkspace: StringResource = Res.string.task_failure_no_workspace
     val taskStashPending: StringResource = Res.string.task_stash_pending
 
     val testStatusNone: StringResource = Res.string.test_status_none

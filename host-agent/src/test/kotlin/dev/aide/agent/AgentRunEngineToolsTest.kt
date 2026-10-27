@@ -54,7 +54,7 @@ class AgentRunEngineToolsTest {
         models = fixedModel(llm),
         planner = RunPlanner { _, _, _ -> plan },
         tools = stepToolsIn(workspace, journal),
-        repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
+        repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
 

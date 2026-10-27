@@ -75,6 +75,12 @@
     <string name="plan_step_failed">ошибка</string>
     <string name="plan_step_skipped">пропущен</string>
     <string name="task_failure_plan_awaiting_confirmation">Прогон прерван перезапуском хоста, пока ждал подтверждения плана</string>
+    <string name="task_failure_restore_failed">Дерево не возвращено к снапшоту: репозиторий остался изменённым</string>
+    <string name="task_failure_response_truncated">Модель не договорила: ответ обрезан по пределу вывода</string>
+    <string name="task_failure_no_workspace">Репозиторий не открыт: откройте его заново</string>
+    <string name="agent_pause_run">Пауза</string>
+    <string name="agent_resume_run">Продолжить</string>
+    <string name="agent_stop_run">Стоп</string>
 
     <string name="call_log_title">Журнал вызовов</string>
     <string name="agent_open_log">Логи</string>

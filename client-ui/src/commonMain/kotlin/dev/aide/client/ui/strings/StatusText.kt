@@ -18,7 +18,7 @@ import org.jetbrains.compose.resources.StringResource
  * Текст состояния прогона берётся из ресурсов, а не из кода (NFR-13).
  *
  * Функция обязана покрыть все значения [RunState]: строка состояния показывает и
- * `PAUSED`, и `STOPPED`, даже когда кнопки паузы и стопа появятся отдельной задачей (T-1.4).
+ * `PAUSED`, и `STOPPED` — состояния, которые появляются по кнопкам управления (T-1.4).
  */
 fun runStateResource(state: RunState): StringResource = when (state) {
     RunState.PLANNED -> Strings.runStatePlanned
@@ -91,6 +91,9 @@ private fun codedFailureResource(reason: String?): StringResource = when (reason
     STASH_CONFLICT -> Strings.taskFailureStashConflict
     STASH_RETURN_FAILED -> Strings.taskFailureStashReturnFailed
     STASH_FAILED -> Strings.taskFailureStashFailed
+    RESTORE_FAILED -> Strings.taskFailureRestoreFailed
+    RESPONSE_TRUNCATED -> Strings.taskFailureResponseTruncated
+    NO_WORKSPACE -> Strings.taskFailureNoWorkspace
     else -> Strings.taskFailureGeneric
 }
 
@@ -103,6 +106,20 @@ private const val HOST_RESTART = "host_restart"
 private const val STASH_CONFLICT = "stash_conflict"
 private const val STASH_RETURN_FAILED = "stash_return_failed"
 private const val STASH_FAILED = "stash_failed"
+
+/** Код «прогон остановлен, но дерево к снапшоту не вернулось» (T-1.4). */
+private const val RESTORE_FAILED = "restore_failed"
+
+/** Код «ответ модели обрезан по пределу вывода, шаг не выполнен» (T-1.4). */
+private const val RESPONSE_TRUNCATED = "response_truncated"
+
+/**
+ * Код «нет открытого репозитория» (T-1.4).
+ *
+ * Для остановки это значит, что дерево не к чему возвращать: воркспейс закрыт. Тот же код
+ * приходит и до начала прогона — «задачу некуда поставить», — поэтому текст общий.
+ */
+private const val NO_WORKSPACE = "no_workspace"
 
 /**
  * Текст строки статуса тестов из ресурсов (NFR-13).

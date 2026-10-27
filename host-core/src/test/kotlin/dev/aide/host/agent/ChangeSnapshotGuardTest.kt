@@ -9,6 +9,8 @@ import dev.aide.host.git.CommitInfo
 import dev.aide.host.git.GitCliFixture
 import dev.aide.host.git.GitRepository
 import dev.aide.host.git.JGitRepository
+import dev.aide.host.git.RestoreOutcome
+import dev.aide.host.git.RestoreRepository
 import dev.aide.host.git.SnapshotOutcome
 import dev.aide.host.git.StashOutcome
 import dev.aide.host.git.StashRepository
@@ -253,6 +255,8 @@ private class RefusingGit : GitRepository {
         override fun returnStashEdits(ref: String, branch: String?): StashReturnOutcome =
             StashReturnOutcome.Returned
     }
+
+    override val restore: RestoreRepository = RestoreRepository { RestoreOutcome.Restored }
 
     override fun close() = Unit
 }

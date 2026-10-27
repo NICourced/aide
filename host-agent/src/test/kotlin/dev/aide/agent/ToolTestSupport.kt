@@ -1,6 +1,7 @@
 package dev.aide.agent
 
 import dev.aide.agent.tools.StepTools
+import dev.aide.domain.Permission
 import dev.aide.domain.RunId
 import dev.aide.domain.SnapshotRef
 import dev.aide.domain.ToolCall
@@ -62,6 +63,16 @@ fun stepTools(
     recorder: ToolCallRecorder = RecordingToolCalls(),
     stored: (String) -> ToolPermission? = { null },
 ): StepTools = stepToolsIn(Files.createTempDirectory("aide-agent-tools"), recorder, stored)
+
+/**
+ * Права, разрешающие запись: без них изменяющий вызов упрётся в объявленное умолчание ASK.
+ *
+ * Общие для тестов движка: изменяющий шаг нужен и проверке точки отката, и проверке стопа
+ * с восстановлением дерева (T-1.4), и второй такой же набор прав разошёлся бы с первым.
+ */
+val writeAllowed: (String) -> ToolPermission = { name ->
+    ToolPermission(tool = name, read = Permission.ALLOW, write = Permission.ALLOW)
+}
 
 /** Инструменты шага в заданном каталоге: файлы для чтения готовит сам тест. */
 fun stepToolsIn(
@@ -134,13 +145,22 @@ class FakeStepCommits(
 const val ENGINE_SNAPSHOT_REF: String = "refs/ai/snap/1758535200000-before-agent-step"
 
 /**
+ * Ссылка точки отката изменяющего вызова.
+ *
+ * Отличается от [ENGINE_SNAPSHOT_REF] намеренно: иначе «последний снапшот прогона» и снапшот
+ * начала шага неразличимы, и проверка «стоп восстанавливает к снапшоту внутри шага» проходила
+ * бы и на устаревшей копии прогона (T-1.4).
+ */
+const val CHANGE_SNAPSHOT_REF: String = "refs/ai/snap/1758535200001-before-agent-step"
+
+/**
  * Порт точки отката в тестах движка: по умолчанию точка есть, исход задаёт тест.
  *
  * Так изменяющие вызовы доходят до инструмента; пустой репозиторий и сбой проверяются
  * сменой ответа, а не подменой самого порта.
  */
 class EngineChangeSnapshots(
-    private var outcome: ChangeSnapshot = ChangeSnapshot.Taken(SnapshotRef(ENGINE_SNAPSHOT_REF)),
+    private var outcome: ChangeSnapshot = ChangeSnapshot.Taken(SnapshotRef(CHANGE_SNAPSHOT_REF)),
 ) : ChangeSnapshots {
 
     /** Сколько раз точка вызова спрашивала точку отката. */

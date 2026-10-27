@@ -66,7 +66,7 @@ class AgentRunEngineCommitTest {
         models = fixedModel(llm),
         planner = RunPlanner { _, _, _ -> plan },
         tools = stepToolsIn(workspace, journal, stored, commits, snapshots = snapshots),
-        repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
+        repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
 

@@ -8,7 +8,6 @@ import dev.aide.agent.ports.RepositoryPorts
 import dev.aide.agent.ports.RunPorts
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
-import dev.aide.domain.Permission
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunState
 import dev.aide.domain.SnapshotRef
@@ -64,7 +63,7 @@ class AgentRunEngineWriteTest {
         models = fixedModel(llm),
         planner = RunPlanner { _, _, _ -> plan("шаг") },
         tools = stepToolsIn(workspace, journal, stored, snapshots = snapshots),
-        repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash),
+        repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
 
@@ -86,7 +85,7 @@ class AgentRunEngineWriteTest {
             val run = runs.all().single()
             assertEquals(RunState.FINISHED, run.state)
             assertEquals(
-                listOf(SnapshotRef(ENGINE_SNAPSHOT_REF)),
+                listOf(SnapshotRef(CHANGE_SNAPSHOT_REF)),
                 run.snapshots,
                 "ссылка обязана попасть в прогон: по ней защита снапшотов отличает свои от вытесняемых",
             )
@@ -147,7 +146,7 @@ class AgentRunEngineWriteTest {
             assertEquals("первый\n", workspace.resolve("a.txt").readText())
             assertEquals("второй\n", workspace.resolve("b.txt").readText())
             assertEquals(
-                listOf(SnapshotRef(ENGINE_SNAPSHOT_REF)),
+                listOf(SnapshotRef(CHANGE_SNAPSHOT_REF)),
                 runs.all().single().snapshots,
                 "до коммита шага HEAD не двигается: вторая ссылка — дубль той же точки отката",
             )
@@ -197,11 +196,6 @@ class AgentRunEngineWriteTest {
         const val WRITE_FILE: String = "write_file"
 
         const val APP_ARGUMENTS: String = """{"path":"src/App.kt","content":"новое\n"}"""
-
-        /** Настройки прав, разрешающие запись: без них вызов упрётся в ASK раньше файла. */
-        val writeAllowed: (String) -> ToolPermission? = { name ->
-            ToolPermission(tool = name, read = Permission.ALLOW, write = Permission.ALLOW)
-        }
     }
 }
 

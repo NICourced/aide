@@ -5,6 +5,7 @@ import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.RunId
+import dev.aide.domain.RunCommand
 import dev.aide.domain.RunState
 import dev.aide.domain.TaskId
 import dev.aide.domain.ToolCall
@@ -12,11 +13,14 @@ import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostEvent
+import dev.aide.protocol.HostMessage
+import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.ToolCallCursor
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
@@ -131,6 +135,64 @@ class HostClientTest {
             )
             assertEquals(ToolCallId("tc-1"), pages[1].cursor?.id, "курсор обязан уехать на хост")
             assertEquals(50, pages[1].limit)
+        }
+    }
+
+    /**
+     * Команда управления прогоном уходит на хост отдельным запросом с новым идентификатором.
+     *
+     * Тестов на `controlRun` не было вовсе: пауза, продолжение и стоп проверялись на уровне
+     * хоста, а клиентская половина пути — нет. Повтор с тем же `RequestId` хост принял бы
+     * за повтор и вернул прежний ответ, поэтому уникальность здесь — часть контракта.
+     */
+    @Test
+    fun `команда управления прогоном уходит с новым RequestId`() {
+        runBlocking {
+            val runId = RunId("r-1")
+
+            client.controlRun(runId, RunCommand.PAUSE)
+            client.controlRun(runId, RunCommand.RESUME)
+            client.controlRun(runId, RunCommand.STOP)
+
+            val commands = connection.takeRequests().filterIsInstance<ClientMessage.RunControl>()
+            assertEquals(3, commands.size, "все три команды обязаны дойти до хоста")
+            assertEquals(
+                3,
+                commands.map { it.requestId }.distinct().size,
+                "повтор с тем же RequestId хост принял бы за повтор и вернул прежний ответ",
+            )
+            assertEquals(
+                listOf(RunCommand.PAUSE, RunCommand.RESUME, RunCommand.STOP),
+                commands.map { it.command },
+                "порядок команд обязан сохраниться",
+            )
+            assertEquals(listOf(runId, runId, runId), commands.map { it.runId }, "команда адресуется прогону")
+        }
+    }
+
+    /** Отказ хоста виден вызывающему, а следующая команда проходит: клиент не залипает. */
+    @Test
+    fun `отказ управления прогоном возвращается ошибкой и не ломает клиент`() {
+        runBlocking {
+            var refuseFirst = true
+            connection.respond = { message ->
+                val control = assertIs<ClientMessage.RunControl>(message)
+                if (refuseFirst) {
+                    refuseFirst = false
+                    HostMessage.Failure(control.requestId, ProtocolError.NotFound("нет такого прогона"))
+                } else {
+                    HostMessage.RunControlled(control.requestId, control.runId)
+                }
+            }
+
+            val refused = client.controlRun(RunId("нет-такого"), RunCommand.STOP)
+            val error = assertIs<HostCallException>(refused.exceptionOrNull()).error
+            assertIs<ProtocolError.NotFound>(error, "типизированный отказ обязан доехать до вызывающего")
+
+            assertTrue(
+                client.controlRun(RunId("r-1"), RunCommand.PAUSE).isSuccess,
+                "после отказа клиент обязан работать дальше",
+            )
         }
     }
 
