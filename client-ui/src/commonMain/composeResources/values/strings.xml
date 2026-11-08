@@ -40,6 +40,12 @@
     <string name="run_state_failed">Ошибка прогона</string>
     <string name="run_state_stopped">Остановлен</string>
     <string name="run_state_interrupted">Прерван перезапуском хоста</string>
+    <string name="run_metrics_duration">%1$d ч %2$d мин %3$d с</string>
+    <string name="run_metrics_line">Время: %1$s · Стоимость: %2$s</string>
+    <string name="run_metrics_cost">%1$d мк</string>
+    <string name="run_metrics_cost_unknown">цена неизвестна</string>
+    <string name="run_metrics_task">Задача: %1$s</string>
+    <string name="run_metrics_task_unknown">итог неполный</string>
 
     <string name="task_status_none">Задач пока нет</string>
     <string name="task_status_queued">Задача в очереди</string>

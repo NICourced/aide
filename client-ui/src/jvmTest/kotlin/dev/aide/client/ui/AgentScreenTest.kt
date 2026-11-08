@@ -14,13 +14,16 @@ import dev.aide.client.ui.screens.AgentScreen
 import dev.aide.client.ui.screens.TestStatusLine
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.Cost
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.StepStatus
+import dev.aide.domain.Task
 import dev.aide.domain.TaskId
+import dev.aide.domain.TaskStatus
 import dev.aide.domain.TestFailure
 import dev.aide.domain.TestReport
 import dev.aide.domain.TestState
@@ -345,6 +348,55 @@ class AgentScreenTest {
 
         onNodeWithTag("stop-run").assertDoesNotExist()
     }
+
+    @Test
+    fun `сумма стоимости считается по задаче показанного прогона, а не по последней задаче списка`() =
+        runComposeUiTest {
+            // Показан последний прогон (task-2), а последняя задача в списке — task-1:
+            // если бы сумма считалась по `tasks.lastOrNull()`, она показала бы 12 мк.
+            val first = Task(
+                id = TaskId("task-1"),
+                title = "Первая",
+                prompt = "первая",
+                branch = "ai/task-1",
+                status = TaskStatus.RUNNING,
+                createdAt = Instant.fromEpochMilliseconds(1),
+            )
+            val second = Task(
+                id = TaskId("task-2"),
+                title = "Вторая",
+                prompt = "вторая",
+                branch = "ai/task-2",
+                status = TaskStatus.QUEUED,
+                createdAt = Instant.fromEpochMilliseconds(2),
+            )
+            val runs = listOf(
+                pricedRun("run-1", first.id, startedAt = 10, amountMicros = 5),
+                pricedRun("run-2", first.id, startedAt = 20, amountMicros = 7),
+                pricedRun("run-3", second.id, startedAt = 30, amountMicros = 100),
+            )
+            setContent {
+                AgentScreen(
+                    session = HostSession(runs = runs, tasks = listOf(second, first)),
+                    requestFailed = false,
+                    actions = AgentActions(postTask = {}),
+                )
+            }
+
+            onNodeWithText("Задача: 100 мк").assertIsDisplayed()
+        }
+
+    /** Прогон с заданной стоимостью: для суммы по задаче важны задача, старт и цена. */
+    private fun pricedRun(id: String, taskId: TaskId, startedAt: Long, amountMicros: Long): AgentRun = AgentRun(
+        id = RunId(id),
+        taskId = taskId,
+        state = RunState.FINISHED,
+        mode = AutonomyMode.ASK_BEFORE_CHANGES,
+        startedAt = Instant.fromEpochMilliseconds(startedAt),
+        finishedAt = Instant.fromEpochMilliseconds(startedAt + 1_000),
+        elapsedMillis = 1_000,
+        cost = Cost(amountMicros = amountMicros, known = true),
+    )
 
     /** Прогон с планом: список шагов и состояния; режим задаёт, ждут ли решения по плану. */
     private fun planRun(state: RunState, mode: AutonomyMode = AutonomyMode.ASK_BEFORE_CHANGES): AgentRun = AgentRun(

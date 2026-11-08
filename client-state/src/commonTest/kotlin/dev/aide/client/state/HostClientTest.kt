@@ -70,7 +70,10 @@ class HostClientTest {
                     // воркспейса. Именно в этом порядке событие раньше и терялось.
                     connection.emit(HostEvent.WorkspaceChanged(connection.workspaceId))
                     connection.emit(HostEvent.HostShuttingDown)
-                    client.hostShuttingDown.first { shuttingDown -> shuttingDown }
+                    assertTrue(
+                        withTimeoutOrNull(WAIT_MILLIS) { client.hostShuttingDown.first { it } } == true,
+                        "событие остановки хоста обязано дойти до клиента",
+                    )
                 }
             }
 
@@ -240,6 +243,89 @@ class HostClientTest {
         mode = AutonomyMode.ASK_BEFORE_CHANGES,
         startedAt = TOOL_CALL_AT,
     )
+
+    @Test
+    fun `прогресс обновляет метрики своего прогона и не создаёт новый`() {
+        runBlocking {
+            val run = runFixture()
+            connection.emit(HostEvent.RunStateChanged(run))
+            assertTrue(
+                awaitProcessed { client.session.value.runs.any { it.id == run.id } },
+                "прогон обязан появиться в сессии до прогресса",
+            )
+
+            connection.emit(HostEvent.RunProgress(run.id, elapsedMillis = 1_500, cost = Cost(25, known = true)))
+            assertTrue(
+                awaitProcessed { client.session.value.runs.singleOrNull()?.elapsedMillis == 1_500L },
+                "прогресс обязан дойти до сессии: ${client.session.value.runs}",
+            )
+
+            val updated = client.session.value.runs.single()
+            assertEquals(1, client.session.value.runs.size, "прогресс не создаёт второй прогон")
+            assertEquals(run.id, updated.id)
+            assertEquals(1_500, updated.elapsedMillis, "время из события обязано попасть в сессию")
+            assertEquals(Cost(25, known = true), updated.cost, "стоимость из события обязана попасть в сессию")
+            assertEquals(RunState.RUNNING, updated.state, "прогресс не подменяет состояние прогона")
+        }
+    }
+
+    @Test
+    fun `прогресс неизвестного прогона игнорируется`() {
+        runBlocking {
+            connection.emit(HostEvent.RunProgress(RunId("чужой"), elapsedMillis = 500, cost = Cost()))
+            // Событие за ним обрабатывается тем же сборщиком: дождавшись его, проверяем,
+            // что прогресс уже обработан. Ожидание ограничено, иначе регрессия повесила бы тест.
+            connection.emit(HostEvent.HostShuttingDown)
+            assertTrue(awaitShuttingDown(), "событие-маркер обязано дойти до клиента")
+
+            assertTrue(
+                client.session.value.runs.isEmpty(),
+                "прогресс не рисует прогон, о котором клиент не знает: ${client.session.value.runs}",
+            )
+        }
+    }
+
+    @Test
+    fun `запоздавший прогресс не откатывает итог завершённого прогона`() {
+        runBlocking {
+            val finished = runFixture().copy(
+                state = RunState.FINISHED,
+                finishedAt = TOOL_CALL_AT,
+                elapsedMillis = 9_000,
+                cost = Cost(40, known = true),
+            )
+            connection.emit(HostEvent.RunStateChanged(finished))
+            assertTrue(
+                awaitProcessed { client.session.value.runs.any { it.id == finished.id } },
+                "завершённый прогон обязан появиться в сессии",
+            )
+
+            connection.emit(HostEvent.RunProgress(finished.id, elapsedMillis = 1_000, cost = Cost(5, known = true)))
+            connection.emit(HostEvent.HostShuttingDown)
+            assertTrue(awaitShuttingDown(), "событие-маркер обязано дойти до клиента")
+
+            val stored = client.session.value.runs.single()
+            assertEquals(9_000, stored.elapsedMillis, "итог завершённого прогона не переписывается")
+            assertEquals(Cost(40, known = true), stored.cost)
+        }
+    }
+
+    /**
+     * Ждёт, пока клиент выполнит [condition]; false — ожидание истекло.
+     *
+     * Предел обязателен: без него регрессия в обработке событий повесила бы тест, а не
+     * уронила его с внятным сообщением.
+     */
+    private suspend fun awaitProcessed(condition: () -> Boolean): Boolean = withTimeoutOrNull(WAIT_MILLIS) {
+        while (!condition()) delay(POLL_MILLIS)
+        true
+    } == true
+
+    /** Ждёт события остановки хоста; false — оно не дошло за [WAIT_MILLIS]. */
+    private suspend fun awaitShuttingDown(): Boolean = withTimeoutOrNull(WAIT_MILLIS) {
+        client.hostShuttingDown.first { shuttingDown -> shuttingDown }
+        true
+    } == true
 
     @Test
     fun `живая запись журнала доходит до подписчика`() {

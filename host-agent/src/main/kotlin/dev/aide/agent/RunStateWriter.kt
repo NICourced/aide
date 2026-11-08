@@ -5,7 +5,6 @@ import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.RunRepository
 import dev.aide.agent.ports.TaskRepository
 import dev.aide.domain.AgentRun
-import dev.aide.domain.Cost
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunState
 import dev.aide.domain.SnapshotRef
@@ -35,25 +34,35 @@ internal class RunStateWriter(
     private val lock: Mutex,
 ) {
 
-    /** Сохраняет прогон и, если нужно, сообщает о смене состояния. */
+    /**
+     * Сохраняет прогон и, если нужно, сообщает о смене состояния.
+     *
+     * У идущего прогона время проставляется здесь, а не только таймером (T-1.5): событие
+     * смены состояния несёт полный [AgentRun], и без этого пауза, продолжение, перепланирование
+     * или отчёт тестов (`testReport` рассылается) показали бы «0 с» до ближайшего тика.
+     * Завершённый прогон не пересчитывается: его значение зафиксировано в `completed`.
+     */
     suspend fun persist(run: AgentRun, emit: Boolean = true): AgentRun {
-        lock.withLock { runs.save(run) }
-        if (emit) events.runStateChanged(run)
-        return run
+        val stamped = run.withElapsed(clock())
+        lock.withLock { runs.save(stamped) }
+        if (emit) events.runStateChanged(stamped)
+        return stamped
     }
 
     /**
-     * Накапливает стоимость и время одного вызова модели.
+     * Накапливает стоимость одного вызова модели.
      *
      * Отдельно от [recordStep], потому что вызовов на шаг теперь больше одного (T-1.7):
      * запись после каждого вызова не даёт потерять потраченное, если следующий вызов
-     * откажет. Событие не рассылается — состояние прогона от стоимости не меняется (§ 8.4).
+     * откажет. Событие не рассылается — состояние прогона от стоимости не меняется (§ 8.4);
+     * за обновлением метрик на живом экране следит таймер прогресса (T-1.5).
+     *
+     * Время ответа сюда не складывается (T-1.5): длительность прогона считается от
+     * [AgentRun.startedAt] до завершения, а сумма времени модели на вопрос «сколько идёт
+     * прогон» не отвечает — стоянка плана и вызов инструмента в ней не видны вовсе.
      */
     suspend fun accumulate(run: AgentRun, response: LlmResponse.Text): AgentRun = persist(
-        run.copy(
-            cost = run.cost + response.cost,
-            elapsedMillis = run.elapsedMillis + response.elapsedMillis,
-        ),
+        run.copy(cost = run.cost + response.cost),
         emit = false,
     )
 
@@ -113,13 +122,15 @@ internal class RunStateWriter(
         // Отметка задачи здесь, а не отдельным методом: вызывается она только отсюда,
         // а лишний метод перешагнул бы предел числа функций на класс (детект).
         tasks.load(run.taskId)?.let { persistTask(it.copy(status = TaskStatus.REVIEW, failureReason = null)) }
-        return persist(run.copy(state = RunState.FINISHED, finishedAt = clock()))
+        return persist(run.completed(clock()).copy(state = RunState.FINISHED))
     }
 
     /** Завершает прогон ошибкой; причина сохраняется кодом и на прогоне, и на задаче. */
     suspend fun fail(run: AgentRun, reason: String): AgentRun {
         failTask(run.taskId, reason)
-        return persist(run.copy(state = RunState.FAILED, finishedAt = clock(), interruptReason = reason))
+        return persist(
+            run.completed(clock()).copy(state = RunState.FAILED, interruptReason = reason),
+        )
     }
 
     /**
@@ -137,9 +148,8 @@ internal class RunStateWriter(
     suspend fun stop(run: AgentRun, reason: String = RunInterruptReason.USER_STOP): AgentRun {
         failTask(run.taskId, reason)
         return persist(
-            run.copy(
+            run.completed(clock()).copy(
                 state = RunState.STOPPED,
-                finishedAt = clock(),
                 interruptReason = reason,
             ),
         )
@@ -151,6 +161,20 @@ internal class RunStateWriter(
     }
 }
 
-/** Сумма стоимостей: неполный итог остаётся неполным (FR-COST-5). */
-private operator fun Cost.plus(other: Cost): Cost =
-    Cost(amountMicros = amountMicros + other.amountMicros, known = known && other.known)
+/** Прогон завершён в [at]: время фиксируется здесь, а не складывается из ответов модели (T-1.5). */
+private fun AgentRun.completed(at: Instant): AgentRun = copy(
+    finishedAt = at,
+    elapsedMillis = (at - startedAt).inWholeMilliseconds.coerceAtLeast(0),
+)
+
+/**
+ * Время идущего прогона на момент [now]; завершённый прогон возвращается как есть.
+ *
+ * Отрицательное значение отброшено к нулю в источнике, а не только в UI: часы машины
+ * могут уйти назад, и «минус секунда» в базе — некорректная длительность.
+ */
+private fun AgentRun.withElapsed(now: Instant): AgentRun = if (finishedAt == null) {
+    copy(elapsedMillis = (now - startedAt).inWholeMilliseconds.coerceAtLeast(0))
+} else {
+    this
+}

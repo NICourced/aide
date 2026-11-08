@@ -294,6 +294,7 @@ class ProtocolCodecTest {
             ),
             HostMessage.Event(HostEvent.WorkspaceChanged(workspaceId)),
             HostMessage.Event(HostEvent.RunStateChanged(agentRun())),
+            HostMessage.Event(HostEvent.RunProgress(RunId("r-1"), 1_500, Cost(amountMicros = 25, known = true))),
             HostMessage.Event(HostEvent.TaskStateChanged(task())),
             HostMessage.Event(HostEvent.ToolCallRecorded(toolCall())),
             HostMessage.Event(HostEvent.HostShuttingDown),
@@ -438,6 +439,7 @@ class ProtocolCodecTest {
         val events: List<HostEvent> = listOf(
             HostEvent.WorkspaceChanged(workspaceId),
             HostEvent.RunStateChanged(agentRun().copy(state = RunState.PAUSED)),
+            HostEvent.RunProgress(RunId("r-1"), 1_500, Cost(amountMicros = 25, known = false)),
             HostEvent.HostShuttingDown,
         )
         events.forEach { event ->

@@ -198,6 +198,8 @@ class RunWorkerTest {
     private object NoopSink : AgentEventSink {
         override suspend fun runStateChanged(run: AgentRun) = Unit
 
+        override suspend fun runProgress(runId: RunId, elapsedMillis: Long, cost: Cost) = Unit
+
         override suspend fun taskStateChanged(task: Task) = Unit
     }
 

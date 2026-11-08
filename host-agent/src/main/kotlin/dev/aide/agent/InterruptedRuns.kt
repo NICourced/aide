@@ -162,11 +162,18 @@ class InterruptedRuns(
         return interrupted
     }
 
-    private fun interrupt(run: AgentRun): AgentRun = run.copy(
-        state = RunState.INTERRUPTED,
-        finishedAt = clock(),
-        interruptReason = reasonOf(run),
-    ).also(runs::save)
+    private fun interrupt(run: AgentRun): AgentRun {
+        val at = clock()
+        return run.copy(
+            state = RunState.INTERRUPTED,
+            finishedAt = at,
+            // Длительность прерванного прогона тоже считается от старта до метки прерывания
+            // (T-1.5): иначе он остался бы с нулём или суммой времени модели. Отрицательное
+            // значение отбрасывается к нулю: часы машины могли уйти назад.
+            elapsedMillis = (at - run.startedAt).inWholeMilliseconds.coerceAtLeast(0),
+            interruptReason = reasonOf(run),
+        ).also(runs::save)
+    }
 
     /**
      * Ждавший подтверждения плана прогон прерывается отдельным кодом, работавший — общим (T-1.2).

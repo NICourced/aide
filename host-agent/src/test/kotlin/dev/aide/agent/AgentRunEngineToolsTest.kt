@@ -49,17 +49,21 @@ class AgentRunEngineToolsTest {
         path.writeText(text)
     }
 
-    private fun engine(llm: LlmClient, plan: List<PlanStep> = plan("шаг")): AgentRunEngine = AgentRunEngine(
+    private fun engine(
+        llm: LlmClient,
+        plan: List<PlanStep> = plan("шаг"),
+        clock: () -> Instant = { Instant.fromEpochMilliseconds(1_000) },
+    ): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, sink),
         models = fixedModel(llm),
         planner = RunPlanner { _, _, _ -> plan },
         tools = stepToolsIn(workspace, journal),
         repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
-        clock = { Instant.fromEpochMilliseconds(1_000) },
+        clock = clock,
     )
 
-    private suspend fun run(llm: LlmClient) {
-        val engine = engine(llm)
+    private suspend fun run(llm: LlmClient, clock: () -> Instant = { Instant.fromEpochMilliseconds(1_000) }) {
+        val engine = engine(llm, clock = clock)
         engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
         assertTrue(engine.processNextApproved(runs))
     }
@@ -163,9 +167,14 @@ class AgentRunEngineToolsTest {
     }
 
     @Test
-    fun `стоимость и время всех вызовов шага попадают в прогон`() {
+    fun `стоимость всех вызовов шага попадает в прогон, а время — длительность прогона`() {
         runBlocking {
             file("a.txt", "текст\n")
+            // Время прогона теперь не сумма времени ответов модели (3 + 4 мс), а расстояние
+            // от старта до завершения. Часы двигает сам тест: перед вторым ответом проходит
+            // шесть секунд, и именно они обязаны оказаться в итоге.
+            var now = 1_000L
+            val clock = { Instant.fromEpochMilliseconds(now) }
             val llm = ScriptedLlmClient(
                 listOf(
                     LlmResponse.Text(
@@ -176,15 +185,16 @@ class AgentRunEngineToolsTest {
                     ),
                     LlmResponse.Text(text = "готово", cost = Cost(amountMicros = 7, known = true), elapsedMillis = 4),
                 ),
-            )
+            ) { index -> if (index == 1) now = 7_000 }
 
-            run(llm)
+            run(llm, clock)
 
             val run = runs.all().single()
             // Промежуточный вызов стоит тех же денег, что и последний: потерять его
             // значило бы показать пользователю стоимость меньше настоящей (FR-COST-2).
             assertEquals(Cost(amountMicros = 12, known = true), run.cost)
-            assertEquals(7, run.elapsedMillis)
+            assertEquals(6_000, run.elapsedMillis, "длительность — от startedAt до finishedAt (T-1.5)")
+            assertEquals(6_000, (run.finishedAt!! - run.startedAt).inWholeMilliseconds)
         }
     }
 

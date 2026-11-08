@@ -3,6 +3,7 @@ package dev.aide.client.state
 import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.Cost
 import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.ProviderCatalogEntry
@@ -137,7 +138,8 @@ class HostClient(
      * Подписывается на состояние соединения и события хоста.
      *
      * Событие [HostEvent.WorkspaceChanged] заставляет перезапросить состояние открытого
-     * воркспейса; [HostEvent.RunStateChanged] обновляет прогон в сессии; [HostEvent.HostShuttingDown]
+     * воркспейса; [HostEvent.RunStateChanged] обновляет прогон в сессии, а [HostEvent.RunProgress]
+     * — только его время и стоимость (T-1.5); [HostEvent.HostShuttingDown]
      * сразу помечает сессию, чтобы UI перешёл в состояние «нет связи», не дожидаясь закрытия сокета.
      */
     fun start() {
@@ -170,6 +172,10 @@ class HostClient(
                     }
 
                     is HostEvent.RunStateChanged -> _session.update { it.withRun(event.run) }
+
+                    is HostEvent.RunProgress -> _session.update {
+                        it.withRunProgress(event.runId, event.elapsedMillis, event.cost)
+                    }
 
                     is HostEvent.TaskStateChanged -> _session.update { it.withTask(event.task) }
 
@@ -344,6 +350,25 @@ class HostClient(
 /** Обновляет прогон в сессии, сохраняя порядок по времени старта. */
 private fun HostSession.withRun(run: AgentRun): HostSession =
     copy(runs = (runs.filterNot { it.id == run.id } + run).sortedBy { it.startedAt })
+
+/**
+ * Обновляет только метрики идущего прогона (T-1.5).
+ *
+ * Прогресс не создаёт прогон: событие для неизвестного прогона игнорируется — иначе
+ * запоздавшее событие нарисовало бы прогон, о котором клиент ещё ничего не знает.
+ * Завершённый прогон тоже не трогается: событие могло быть вычислено до терминальной
+ * записи, и запоздавший тик не должен откатить итог назад.
+ */
+private fun HostSession.withRunProgress(runId: RunId, elapsedMillis: Long, cost: Cost): HostSession =
+    copy(
+        runs = runs.map { run ->
+            if (run.id == runId && run.finishedAt == null) {
+                run.copy(elapsedMillis = elapsedMillis, cost = cost)
+            } else {
+                run
+            }
+        },
+    )
 
 /** Обновляет задачу в сессии, сохраняя порядок постановки. */
 private fun HostSession.withTask(task: Task): HostSession =

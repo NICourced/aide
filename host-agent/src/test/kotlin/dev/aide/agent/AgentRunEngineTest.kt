@@ -521,6 +521,24 @@ class AgentRunEngineTest {
         assertEquals(1, llm.callCount)
     }
 
+    /**
+     * Отмена таймера в `finally` обязательна: он дочерняя корутина прогона, и без отмены
+     * `coroutineScope` ждал бы следующего тика (секунду) даже после завершённой работы.
+     */
+    @Test
+    fun `таймер прогресса отменяется при завершении прогона, а не ждёт следующего тика`() = runBlocking {
+        val engine = engine()
+        engine.postTask("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        val processed = withTimeoutOrNull(RUN_MUST_FINISH_MILLIS) { engine.processNextApproved(runs) }
+
+        assertTrue(
+            processed == true,
+            "короткий прогон обязан завершиться раньше первого тика таймера (отмена в finally)",
+        )
+        assertEquals(RunState.FINISHED, runs.all().single().state)
+    }
+
     private suspend fun awaitState(runId: RunId, state: RunState) {
         withTimeout(5_000) {
             while (runs.load(runId)?.state != state) delay(10)
@@ -530,6 +548,12 @@ class AgentRunEngineTest {
     private companion object {
         /** Сколько ждать, чтобы лишняя команда паузы успела дойти до цикла прогона. */
         const val PAUSE_SETTLE_MILLIS = 100L
+
+        /**
+         * Предел короткого прогона на фейках: боевой тик — секунда, поэтому отмена таймера
+         * видна как разрыв между «десятки миллисекунд» и «около секунды».
+         */
+        const val RUN_MUST_FINISH_MILLIS = 900L
     }
 }
 

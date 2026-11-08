@@ -6,6 +6,7 @@ import dev.aide.agent.RunInterruptReason
 import dev.aide.agent.ports.AgentEventSink
 import dev.aide.agent.ports.TaskStash
 import dev.aide.domain.AgentRun
+import dev.aide.domain.Cost
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.Task
@@ -166,6 +167,8 @@ class StashRecoveryTest {
         val tasks = mutableListOf<Task>()
 
         override suspend fun runStateChanged(run: AgentRun) = Unit
+
+        override suspend fun runProgress(runId: RunId, elapsedMillis: Long, cost: Cost) = Unit
 
         override suspend fun taskStateChanged(task: Task) {
             tasks += task

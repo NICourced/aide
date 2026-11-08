@@ -42,6 +42,11 @@ class InterruptedRunsTest {
             val stored = assertNotNull(runs.load(RunId(id)))
             assertEquals(RunState.INTERRUPTED, stored.state)
             assertEquals(finishedAt, stored.finishedAt, "у прерванного прогона есть время и причина")
+            assertEquals(
+                (finishedAt - stored.startedAt).inWholeMilliseconds,
+                stored.elapsedMillis,
+                "у прерванного прогона длительность считается от старта до метки прерывания (T-1.5)",
+            )
         }
         assertEquals(
             RunInterruptReason.PLAN_AWAITING_CONFIRMATION,

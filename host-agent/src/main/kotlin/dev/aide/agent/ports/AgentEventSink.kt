@@ -1,6 +1,8 @@
 package dev.aide.agent.ports
 
 import dev.aide.domain.AgentRun
+import dev.aide.domain.Cost
+import dev.aide.domain.RunId
 import dev.aide.domain.Task
 
 /**
@@ -14,6 +16,15 @@ interface AgentEventSink {
 
     /** Сообщает о прогоне в новом состоянии. */
     suspend fun runStateChanged(run: AgentRun)
+
+    /**
+     * Сообщает о накопленных времени и стоимости идущего прогона (T-1.5).
+     *
+     * Отдельный метод, а не [runStateChanged]: прогресс приходит раз в секунду, полное
+     * состояние с такой частотой ломало бы проверки последовательностей и могло бы
+     * доставить устаревшее `RUNNING` после `FINISHED` — у прогона нет ревизии.
+     */
+    suspend fun runProgress(runId: RunId, elapsedMillis: Long, cost: Cost)
 
     /**
      * Сообщает о задаче в новом статусе.

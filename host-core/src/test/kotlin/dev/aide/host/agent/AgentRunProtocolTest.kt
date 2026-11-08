@@ -84,6 +84,50 @@ class AgentRunProtocolTest {
     }
 
     @Test
+    fun `прогресс прогона приходит без ручного запроса, а итог равен длительности и сумме ответов`() {
+        // Тело блочное: `= runBlocking { … }` вернул бы не-Unit, и JUnit молча пропустил бы тест.
+        runBlocking {
+            val model = ProgressModel()
+            val host = EmbeddedHost.open(
+                databasePath = tempDatabase(),
+                models = scripted(model),
+                planner = fixedPlanner(1),
+            )
+            try {
+                val (connection, client) = newClient(host, "progress")
+                client.start()
+                awaitConnected(connection)
+                openRepository(client)
+
+                val taskId = client.postTaskApprovingPlan("Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES)
+                    .getOrThrow()
+
+                // Модель ещё не ответила: прогон идёт. Ненулевое время в сессии могло попасть
+                // туда только событием прогресса — состояние хоста тест не перезапрашивает.
+                val progressed = awaitRun(client) {
+                    it.taskId == taskId && it.state == RunState.RUNNING && it.elapsedMillis > 0
+                }
+                assertNotNull(progressed, "прогресс обязан прийти без запроса: ${client.session.value.runs}")
+
+                model.release()
+                val finished = awaitRun(client) { it.taskId == taskId && it.state == RunState.FINISHED }
+                assertNotNull(finished, "прогон обязан завершиться: ${client.session.value.runs}")
+
+                val finishedAt = assertNotNull(finished.finishedAt, "у завершённого прогона есть finishedAt")
+                assertEquals(
+                    (finishedAt - finished.startedAt).inWholeMilliseconds,
+                    finished.elapsedMillis,
+                    "итог по времени — длительность прогона, а не сумма времени ответов модели (T-1.5)",
+                )
+                // Два ответа по 5 и 7 мк: стоимость складывается по всем вызовам шага (FR-COST-2).
+                assertEquals(Cost(amountMicros = 12, known = true), finished.cost)
+            } finally {
+                host.close()
+            }
+        }
+    }
+
+    @Test
     fun `клиент ставит задачу, получает события и доходит до finished`() = runBlocking {
         val host = EmbeddedHost.open(
             databasePath = tempDatabase(),
@@ -672,6 +716,41 @@ class AgentRunProtocolTest {
     private class TextModel : LlmClient {
         override suspend fun complete(request: LlmRequest): LlmResponse =
             LlmResponse.Text(text = "готово", cost = Cost(), elapsedMillis = 1)
+    }
+
+    /**
+     * Модель, которая держит первый вызов открытым, пока тест не разрешит (T-1.5).
+     *
+     * Пока она молчит, прогон идёт — и единственный способ увидеть его время и стоимость
+     * в клиенте — событие прогресса. Второй ответ складывается с первым по стоимости,
+     * чтобы итог можно было сверить с суммой ответов, а не с последним из них.
+     */
+    private class ProgressModel : LlmClient {
+
+        private val release = CompletableDeferred<Unit>()
+        private val calls = AtomicInteger(0)
+
+        /** Разрешает первый ответ модели. */
+        fun release() {
+            release.complete(Unit)
+        }
+
+        override suspend fun complete(request: LlmRequest): LlmResponse {
+            val index = calls.incrementAndGet()
+            return if (index == 1) {
+                release.await()
+                LlmResponse.Text(
+                    text = "",
+                    cost = Cost(amountMicros = 5, known = true),
+                    elapsedMillis = 3,
+                    toolCalls = listOf(
+                        LlmToolCall(id = "progress-call", name = FIND_FILES, arguments = """{"mask":"*"}"""),
+                    ),
+                )
+            } else {
+                LlmResponse.Text(text = "готово", cost = Cost(amountMicros = 7, known = true), elapsedMillis = 4)
+            }
+        }
     }
 
     /**

@@ -143,7 +143,12 @@ class AgentRunEngine(
     private val logger = LoggerFactory.getLogger(AgentRunEngine::class.java)
 
     private val queue = RunQueue(ports.tasks)
-    private val writer = RunStateWriter(ports.runs, ports.tasks, ports.events, clock, Mutex())
+
+    /** Замок записи прогона: общий у писателя состояний и у таймера прогресса (T-1.5). */
+    private val stateLock = Mutex()
+
+    private val writer = RunStateWriter(ports.runs, ports.tasks, ports.events, clock, stateLock)
+    private val progress = RunProgress(ports.runs, ports.events, clock, stateLock)
     private val placement = TaskBranchPlacement(repositories.branches, writer)
     private val runSnapshots = RunSnapshots(repositories.snapshots, writer)
     private val workStash = TaskWorkStash(repositories.workStash, ports.tasks, writer)
@@ -327,6 +332,9 @@ class AgentRunEngine(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun execute(task: Task, start: AgentRun, control: RunControl, llm: LlmClient) {
         var current = start
+        // Прогресс идёт всё время прогона, включая стоянку плана и паузы (T-1.5): тикер
+        // отменяется в `finally`, поэтому `coroutineScope` дожидается прогона, а не таймера.
+        val progressJob = progress.start(start.id)
         try {
             // Стоянка плана (T-1.2): пока решения нет, работа не начинается. Перепланированный
             // план шлюз уже записал и разослал, поэтому в `current` приходит актуальный.
@@ -366,6 +374,10 @@ class AgentRunEngine(
             logger.warn("Прогон ${start.id.value} завершился ошибкой ($reason): ${error.message}", error)
             writer.fail(current, reason)
             return
+        } finally {
+            // Таймер не переживает прогон; отмена до терминальной записи, чтобы после
+            // итогового состояния уже не пришло событие с меньшим временем.
+            progressJob.cancel()
         }
         // Терминальная запись вне try: решение о завершении уже принято, и сбой доставки
         // события не должен отменять его — иначе успешный прогон можно было бы подменить

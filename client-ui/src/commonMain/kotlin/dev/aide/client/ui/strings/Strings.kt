@@ -53,6 +53,12 @@ import dev.aide.client.ui.resources.repo_header_branch
 import dev.aide.client.ui.resources.repo_header_root
 import dev.aide.client.ui.resources.repo_tree_title
 import dev.aide.client.ui.resources.repo_tree_truncated
+import dev.aide.client.ui.resources.run_metrics_cost
+import dev.aide.client.ui.resources.run_metrics_cost_unknown
+import dev.aide.client.ui.resources.run_metrics_duration
+import dev.aide.client.ui.resources.run_metrics_line
+import dev.aide.client.ui.resources.run_metrics_task
+import dev.aide.client.ui.resources.run_metrics_task_unknown
 import dev.aide.client.ui.resources.run_state_failed
 import dev.aide.client.ui.resources.run_state_finished
 import dev.aide.client.ui.resources.run_state_interrupted
@@ -232,6 +238,12 @@ object Strings {
     val runStateFailed: StringResource = Res.string.run_state_failed
     val runStateStopped: StringResource = Res.string.run_state_stopped
     val runStateInterrupted: StringResource = Res.string.run_state_interrupted
+    val runMetricsDuration: StringResource = Res.string.run_metrics_duration
+    val runMetricsLine: StringResource = Res.string.run_metrics_line
+    val runMetricsCost: StringResource = Res.string.run_metrics_cost
+    val runMetricsCostUnknown: StringResource = Res.string.run_metrics_cost_unknown
+    val runMetricsTask: StringResource = Res.string.run_metrics_task
+    val runMetricsTaskUnknown: StringResource = Res.string.run_metrics_task_unknown
 
     val taskStatusNone: StringResource = Res.string.task_status_none
     val taskStatusQueued: StringResource = Res.string.task_status_queued

@@ -137,3 +137,39 @@ fun testStateResource(state: TestState): StringResource = when (state) {
     TestState.INFRA_ERROR -> Strings.testStatusInfraError
     TestState.SKIPPED -> Strings.testStatusSkipped
 }
+
+/**
+ * Длительность прогона, разложенная на часы, минуты и секунды (T-1.5, FR-AGENT-10).
+ *
+ * Отдельный тип, а не строка: строку собирает UI из ресурсов, а раскладку проверяет
+ * тест без Compose. Нулевые части показываются всегда — «5 с» и «5 мин» не должны
+ * отличаться только позицией числа, и разметка не обязана меняться на ходу.
+ */
+data class RunDuration(
+    /** Полные часы. */
+    val hours: Long,
+    /** Полные минуты сверх часов. */
+    val minutes: Long,
+    /** Полные секунды сверх минут. */
+    val seconds: Long,
+)
+
+/**
+ * Раскладывает миллисекунды на часы, минуты и секунды; отрицательное время считается нулём.
+ *
+ * Отрицательное значение возможно, только если часы машины ушли назад между стартом
+ * и завершением: «−1 с» на экране было бы хуже, чем округление к нулю.
+ */
+fun runDuration(millis: Long): RunDuration {
+    val totalSeconds = (millis / MILLIS_PER_SECOND).coerceAtLeast(0)
+    return RunDuration(
+        hours = totalSeconds / SECONDS_PER_HOUR,
+        minutes = totalSeconds / SECONDS_PER_MINUTE % MINUTES_PER_HOUR,
+        seconds = totalSeconds % SECONDS_PER_MINUTE,
+    )
+}
+
+private const val MILLIS_PER_SECOND: Long = 1_000
+private const val SECONDS_PER_MINUTE: Long = 60
+private const val MINUTES_PER_HOUR: Long = 60
+private const val SECONDS_PER_HOUR: Long = SECONDS_PER_MINUTE * MINUTES_PER_HOUR

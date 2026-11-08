@@ -20,11 +20,13 @@ import androidx.compose.ui.unit.dp
 import dev.aide.client.state.HostSession
 import dev.aide.client.ui.strings.Strings
 import dev.aide.client.ui.strings.planStepStatusResource
+import dev.aide.client.ui.strings.runDuration
 import dev.aide.client.ui.strings.runStateResource
 import dev.aide.client.ui.strings.taskFailureResource
 import dev.aide.client.ui.strings.taskStatusResource
 import dev.aide.client.ui.strings.testStateResource
 import dev.aide.domain.AgentRun
+import dev.aide.domain.Cost
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
 import dev.aide.domain.RunCommand
@@ -34,6 +36,7 @@ import dev.aide.domain.Task
 import dev.aide.domain.TaskStatus
 import dev.aide.domain.TestReport
 import dev.aide.domain.TestState
+import dev.aide.domain.costOfTask
 import dev.aide.domain.planNeedsApproval
 import dev.aide.domain.reportState
 import org.jetbrains.compose.resources.StringResource
@@ -61,15 +64,19 @@ fun AgentScreen(
     modifier: Modifier = Modifier,
 ) {
     var prompt by remember { mutableStateOf("") }
-    // Последний прогон нужен четырём строкам ниже; читаем его один раз, чтобы экран не
-    // держал четыре копии одного и того же значения.
+    // Последний прогон нужен нескольким строкам ниже; читаем его один раз, чтобы экран
+    // не держал отдельную копию одного и того же значения в каждой.
     val run = session.runs.lastOrNull()
+    // Сумма по задаче — по задаче показанного прогона, а не по последней задаче списка:
+    // пока идёт первая, вторая уже может стоять в очереди (T-1.5).
+    val taskCost = run?.let { costOfTask(session.runs, it.taskId) } ?: Cost()
     Column(
         modifier = modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(Strings.text(Strings.agentTitle), style = MaterialTheme.typography.titleLarge)
         RunStateLine(run = run)
+        RunMetricsLine(run = run, taskCost = taskCost)
         TestStatusLine(report = run?.testReport)
         TaskStatusLine(task = session.tasks.lastOrNull())
         // План показывается до работы (T-1.2): список шагов со статусами, а в состоянии
@@ -121,6 +128,54 @@ fun RunStateLine(run: AgentRun?, modifier: Modifier = Modifier) {
         Strings.text(runStateResource(run.state))
     }
     Text(text, modifier = modifier.testTag("run-state"), style = MaterialTheme.typography.bodyLarge)
+}
+
+/**
+ * Метрики прогона: сколько он идёт и сколько стоит, и сумма по его задаче (T-1.5, FR-AGENT-10).
+ *
+ * Стоимость показывается в микроединицах — как в журнале вызовов: валюта и тарифная
+ * модель появятся вместе с лимитами (этап 3). Неизвестная цена не превращается в ноль:
+ * и прогон, и итог задачи помечаются словами (FR-COST-5). Пока прогон идёт, значения
+ * обновляются событием прогресса; после завершения здесь остаётся итог из состояния.
+ */
+@Composable
+fun RunMetricsLine(run: AgentRun?, taskCost: Cost, modifier: Modifier = Modifier) {
+    if (run == null) return
+    val duration = runDuration(run.elapsedMillis)
+    val elapsed = Strings.text(
+        Strings.runMetricsDuration,
+        duration.hours,
+        duration.minutes,
+        duration.seconds,
+    )
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            Strings.text(Strings.runMetricsLine, elapsed, costText(run.cost)),
+            modifier = Modifier.testTag("run-metrics"),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            Strings.text(Strings.runMetricsTask, taskCostText(taskCost)),
+            modifier = Modifier.testTag("task-metrics"),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
+
+/** Стоимость прогона: число в микроединицах или явное «цена неизвестна» (FR-COST-5). */
+@Composable
+private fun costText(cost: Cost): String = if (cost.known) {
+    Strings.text(Strings.runMetricsCost, cost.amountMicros)
+} else {
+    Strings.text(Strings.runMetricsCostUnknown)
+}
+
+/** Итог по задаче: сумма в микроединицах или «итог неполный», а не ноль (FR-COST-5). */
+@Composable
+private fun taskCostText(cost: Cost): String = if (cost.known) {
+    costText(cost)
+} else {
+    Strings.text(Strings.runMetricsTaskUnknown)
 }
 
 /** Строка статуса тестов прогона: знает все значения `TestState` (T-1.10, NFR-13). */

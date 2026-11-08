@@ -97,10 +97,17 @@ class RecordingEventSink(
     val taskEvents = mutableListOf<Task>()
     val taskStoredAtEmit = mutableListOf<Task?>()
 
+    /** События прогресса в порядке рассылки (T-1.5). */
+    val progress = mutableListOf<RecordedProgress>()
+
     override suspend fun runStateChanged(run: AgentRun) {
         yield()
         events += run
         storedAtEmit += runs.load(run.id)
+    }
+
+    override suspend fun runProgress(runId: RunId, elapsedMillis: Long, cost: Cost) {
+        progress += RecordedProgress(runId, elapsedMillis, cost)
     }
 
     override suspend fun taskStateChanged(task: Task) {
@@ -115,6 +122,16 @@ class RecordingEventSink(
     /** Статусы задач в порядке рассылки. */
     val taskStates: List<TaskStatus> get() = taskEvents.map { it.status }
 }
+
+/** Прогресс, разосланный приёмником: прогон, время и стоимость на момент события (T-1.5). */
+data class RecordedProgress(
+    /** Какой прогон. */
+    val runId: RunId,
+    /** Сколько прогон шёл на момент события. */
+    val elapsedMillis: Long,
+    /** Накопленная стоимость на момент события. */
+    val cost: Cost,
+)
 
 /**
  * Приёмник, у которого падает рассылка терминального события прогона.
@@ -132,6 +149,10 @@ class ThrowingOnFinishSink(
     override suspend fun runStateChanged(run: AgentRun) {
         if (run.state == RunState.FINISHED) error("рассылка терминального события не удалась")
         delegate.runStateChanged(run)
+    }
+
+    override suspend fun runProgress(runId: RunId, elapsedMillis: Long, cost: Cost) {
+        delegate.runProgress(runId, elapsedMillis, cost)
     }
 
     override suspend fun taskStateChanged(task: Task) {
