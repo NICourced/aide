@@ -173,7 +173,15 @@ internal class FakeHostConnection : HostConnection {
         is ClientMessage.ModelSecrets -> HostMessage.ModelSecretsSnapshot(message.requestId, emptyMap())
 
         is ClientMessage.ToolCalls ->
-            HostMessage.ToolCallPage(message.requestId, message.runId, emptyList(), nextCursor = null, hasMore = false)
+            HostMessage.ToolCallPage(
+                requestId = message.requestId,
+                scope = message.scope,
+                tool = message.tool,
+                calls = emptyList(),
+                nextCursor = null,
+                hasMore = false,
+                tools = emptyList(),
+            )
 
         is ClientMessage.ToolCallDetail ->
             HostMessage.Failure(message.requestId, ProtocolError.NotFound("вызов ${message.callId.value}"))

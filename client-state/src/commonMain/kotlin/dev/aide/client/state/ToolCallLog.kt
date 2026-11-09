@@ -1,20 +1,24 @@
 package dev.aide.client.state
 
 import dev.aide.domain.RunId
+import dev.aide.domain.TaskId
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.protocol.ToolCallCursor
+import dev.aide.protocol.ToolCallScope
 import dev.aide.protocol.ToolCallSummary
 
 /**
- * Состояние журнала вызовов на клиенте (T-1.3).
+ * Состояние журнала вызовов на клиенте (T-1.3, T-1.14).
  *
  * Отдельно от [HostSession], потому что у журнала есть то, чего нет у снимка состояния:
- * страницы, курсор и признак «есть ещё». Снимок отвечает «какие прогоны и задачи есть»,
- * а журнал — «что уже подгружено из вызовов выбранного прогона».
+ * страницы, курсор, признак «есть ещё» и фильтры по задаче/инструменту. Снимок отвечает
+ * «какие прогоны и задачи есть», а журнал — «что уже подгружено из вызовов выбранной области».
  *
- * @param runId прогон, журнал которого показан; null — журнал ещё не открывали.
+ * @param scope область журнала: прогон или задача; null — журнал ещё не открывали.
+ * @param tool выбранный фильтр по инструменту; null — все инструменты.
  * @param calls записи от новых к старым: живые события вставляются в начало, страницы — в конец.
+ * @param availableTools distinct-имена инструментов в выбранной области, не зависящие от фильтра.
  * @param cursor курсор последней подгруженной страницы; null означает «старше пока не грузили».
  * @param hasMore хост сообщил, что за последней страницей есть ещё записи.
  * @param loading идёт запрос (первой страницы или следующей).
@@ -27,10 +31,14 @@ import dev.aide.protocol.ToolCallSummary
  * @param detailFailed запрос полного содержимого раскрытой записи завершился ошибкой.
  */
 data class ToolCallLog(
-    /** Прогон, журнал которого показан. */
-    val runId: RunId? = null,
+    /** Область журнала: прогон или задача. */
+    val scope: ToolCallScope? = null,
+    /** Выбранный фильтр по инструменту; null — все инструменты. */
+    val tool: String? = null,
     /** Загруженные записи от новых к старым. */
     val calls: List<ToolCallSummary> = emptyList(),
+    /** Доступные инструменты в выбранной области. */
+    val availableTools: List<String> = emptyList(),
     /** Курсор последней страницы; null — самая новая страница ещё не подгружена. */
     val cursor: ToolCallCursor? = null,
     /** Есть ли записи старше подгруженных. */
@@ -52,4 +60,3 @@ data class ToolCallLog(
     /** Загрузка полного содержимого завершилась ошибкой. */
     val detailFailed: Boolean = false,
 )
-

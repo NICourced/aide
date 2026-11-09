@@ -203,7 +203,9 @@ class AgentRunProtocolTest {
                     "до решения прогон обязан оставаться в PLANNED",
                 )
                 assertEquals(0, model.calls.get(), "до решения модель не спрашивают")
-                val beforeDecision = client.toolLogClient.toolCalls(planned.id).getOrThrow()
+                val beforeDecision = client.toolLogClient.toolCalls(
+                    dev.aide.protocol.ToolCallScope.Run(planned.id),
+                ).getOrThrow()
                 assertTrue(beforeDecision.calls.isEmpty(), "до решения вызовов инструментов быть не должно")
 
                 client.decidePlan(planned.id, PlanDecision.Approve).getOrThrow()
@@ -214,7 +216,9 @@ class AgentRunProtocolTest {
                 // После решения вызов действительно состоялся — иначе «до решения пусто»
                 // ничего не доказывало бы: у модели могло не быть вызовов вовсе.
                 assertTrue(model.calls.get() > 0, "после решения модель обязана быть спрошена")
-                val afterDecision = client.toolLogClient.toolCalls(planned.id).getOrThrow()
+                val afterDecision = client.toolLogClient.toolCalls(
+                    dev.aide.protocol.ToolCallScope.Run(planned.id),
+                ).getOrThrow()
                 assertTrue(
                     afterDecision.calls.any { it.tool == FIND_FILES },
                     "после решения вызов инструмента обязан появиться в журнале: ${afterDecision.calls}",

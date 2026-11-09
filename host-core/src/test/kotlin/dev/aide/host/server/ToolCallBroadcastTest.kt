@@ -99,7 +99,12 @@ class ToolCallBroadcastTest {
 
         repeat(5) { recorder.record(call(it)) }
 
-        val page = store.toolCalls.page(RUN, before = null, limit = 100)
+        val page = store.toolCalls.page(
+            dev.aide.protocol.ToolCallScope.Run(RUN),
+            tool = null,
+            before = null,
+            limit = 100,
+        )
         assertEquals(5, page.calls.size, "переполнение очереди теряет событие, но не запись в базе")
     }
 

@@ -25,12 +25,14 @@ import dev.aide.client.state.HostCallException
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.HostConnection
 import dev.aide.client.state.HostSession
+import dev.aide.client.state.ToolCallLogStore
 import dev.aide.client.state.answerApproval
 import dev.aide.client.state.decidePlan
 import dev.aide.client.state.requestPendingApprovals
 import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.ui.screens.AgentActions
 import dev.aide.client.ui.screens.AgentScreen
+import dev.aide.client.ui.screens.CallLogActions
 import dev.aide.client.ui.screens.CallLogScreen
 import dev.aide.client.ui.screens.ModelSettingsState
 import dev.aide.client.ui.screens.RepoScreen
@@ -45,8 +47,10 @@ import dev.aide.domain.AutonomyMode
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
+import dev.aide.domain.TaskId
 import dev.aide.domain.ToolCallId
 import dev.aide.protocol.ToolCallCursor
+import dev.aide.protocol.ToolCallScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -87,9 +91,10 @@ fun App(
     // HostClient перезапрашивает дерево и файл сам, и их нужно отдать экрану.
     LaunchedEffect(client) { client.session.collect { state.onHostSession(it) } }
 
-    // Живые записи журнала приходят событием без запроса (T-1.3): без этой подписки
-    // вызов, сделанный агентом, не появился бы в логе до перезапроса страницы.
-    LaunchedEffect(client) { client.toolCallEvents.collect { state.toolCallLog.recorded(it) } }
+    // Живые записи журнала приходят событием без запроса (T-1.3, T-1.14): без подписки вызов
+    // не появился бы в логе до перезапроса страницы. Для task-области runId разрешается в
+    // taskId по уже известным прогонам сессии.
+    ToolCallEventSubscription(client, state.toolCallLog)
 
     // Хост сообщил о завершении работы: показать «нет связи», не дожидаясь закрытия сокета.
     val hostShuttingDown by client.hostShuttingDown.collectAsState()
@@ -105,7 +110,6 @@ fun App(
     var destination by remember { mutableStateOf(Destination.REPOSITORY) }
 
     val pendingApproval by state.pendingApproval.collectAsState()
-
     AideTheme(preference = settings.theme) {
         Surface(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
@@ -123,7 +127,7 @@ fun App(
                     Destination.CALL_LOG -> CallLogDestination(
                         state = state,
                         client = client,
-                        runId = session.runs.lastOrNull()?.id,
+                        session = session,
                         scope = coroutineScope,
                         onBack = { destination = Destination.AGENT },
                     )
@@ -225,46 +229,65 @@ private fun AgentDestination(
 }
 
 /**
- * Экран журнала вызовов прогона (T-1.3).
+ * Экран журнала вызовов (T-1.3, T-1.14).
  *
- * При входе открывается журнал последнего прогона и грузится первая страница; старые
- * записи догружаются по кнопке по курсору. Живые записи приходят в состояние подпиской
- * в [App] и вставляются в начало без перезапроса страницы. Тап по строке раскрывает её:
- * состояние переключает [ToolCallLogStore.toggle], а полное содержимое запрашивается
- * здесь — состояние лога не знает про транспорт.
+ * При входе открывается журнал задачи последнего прогона (задача — основная единица
+ * ревью, прогон — попытка внутри неё). Старые записи догружаются по кнопке по курсору.
+ * Живые записи приходят в состояние подпиской в [App] и вставляются в начало с учётом
+ * области и фильтра. Тап по строке раскрывает её: состояние переключает [ToolCallLogStore.toggle],
+ * а полное содержимое запрашивается здесь — состояние лога не знает про транспорт.
  */
 @Composable
 private fun CallLogDestination(
     state: AppStateStore,
     client: HostClient,
-    runId: RunId?,
+    session: HostSession,
     scope: CoroutineScope,
     onBack: () -> Unit,
 ) {
     val log by state.toolCallLog.log.collectAsState()
+    val tasks = session.tasks
+    val initialTaskId = remember(tasks, session.runs) {
+        session.runs.lastOrNull()?.taskId ?: tasks.lastOrNull()?.id
+    }
 
-    LaunchedEffect(runId) {
-        if (runId != null) {
-            state.toolCallLog.open(runId)
-            loadToolCallPage(state, client, runId, cursor = null)
+    LaunchedEffect(initialTaskId) {
+        if (initialTaskId != null) {
+            state.toolCallLog.selectTask(initialTaskId)
+            loadToolCallPage(state, client, ToolCallScope.Task(initialTaskId), tool = null, cursor = null)
         }
     }
 
     CallLogScreen(
         log = log,
-        onLoadPage = {
-            if (runId != null) {
-                state.toolCallLog.loading()
-                scope.launch { loadToolCallPage(state, client, runId, cursor = log.cursor) }
-            }
-        },
-        onBack = onBack,
-        onToggleRow = { callId ->
-            // Запрос только при раскрытии: сворачивание не ходит на хост.
-            if (state.toolCallLog.toggle(callId)) {
-                scope.launch { loadToolCallDetail(state, client, callId) }
-            }
-        },
+        tasks = tasks,
+        actions = CallLogActions(
+            onLoadPage = {
+                val currentScope = log.scope
+                if (currentScope != null) {
+                    state.toolCallLog.loading()
+                    scope.launch { loadToolCallPage(state, client, currentScope, log.tool, log.cursor) }
+                }
+            },
+            onBack = onBack,
+            onToggleRow = { callId ->
+                // Запрос только при раскрытии: сворачивание не ходит на хост.
+                if (state.toolCallLog.toggle(callId)) {
+                    scope.launch { loadToolCallDetail(state, client, callId) }
+                }
+            },
+            onSelectTask = { taskId ->
+                state.toolCallLog.selectTask(taskId)
+                scope.launch { loadToolCallPage(state, client, ToolCallScope.Task(taskId), tool = null, cursor = null) }
+            },
+            onSelectTool = { tool ->
+                state.toolCallLog.filter(tool)
+                val currentScope = log.scope
+                if (currentScope != null) {
+                    scope.launch { loadToolCallPage(state, client, currentScope, tool, cursor = null) }
+                }
+            },
+        ),
     )
 }
 
@@ -272,19 +295,18 @@ private fun CallLogDestination(
 private suspend fun loadToolCallPage(
     state: AppStateStore,
     client: HostClient,
-    runId: RunId,
+    scope: ToolCallScope,
+    tool: String?,
     cursor: ToolCallCursor?,
 ) {
-    client.toolLogClient.toolCalls(runId, cursor)
+    client.toolLogClient.toolCalls(scope, tool, cursor)
         .onSuccess { page -> state.toolCallLog.page(page) }
         .onFailure { state.toolCallLog.failed() }
 }
 
 /** Запрашивает полное содержимое раскрытой записи; ошибка видна у самой записи. */
 private suspend fun loadToolCallDetail(state: AppStateStore, client: HostClient, callId: ToolCallId) {
-    client.toolLogClient.toolCallDetail(callId)
-        .onSuccess { call -> state.toolCallLog.detailLoaded(call) }
-        .onFailure { state.toolCallLog.detailFailed() }
+    state.toolCallLog.detailResult(client.toolLogClient.toolCallDetail(callId))
 }
 
 /**
@@ -387,6 +409,16 @@ private suspend fun loadFile(client: HostClient, state: AppStateStore, path: Str
     client.fileContent(path).onFailure { error ->
         val protocolError = (error as? HostCallException)?.error
         if (protocolError != null) state.onFileFailed(protocolError)
+    }
+}
+
+/** Подписка на живые записи журнала: событие применяется только к совпадающей области. */
+@Composable
+private fun ToolCallEventSubscription(client: HostClient, logStore: ToolCallLogStore) {
+    LaunchedEffect(client) {
+        client.toolCallEvents.collect { call ->
+            logStore.recorded(call) { runId -> client.session.value.runs.find { it.id == runId }?.taskId }
+        }
     }
 }
 

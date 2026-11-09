@@ -12,11 +12,12 @@ import dev.aide.protocol.ToolCallSummary
 import dev.aide.protocol.requestIdOrNull
 
 /**
- * Обработчик журнала вызовов (T-1.3).
+ * Обработчик журнала вызовов (T-1.3, T-1.14).
  *
  * Отдельная группа, а не строки в `AgentRunHandler`: у журнала свой повод меняться —
- * он читается страницами по курсору и отдаёт полное содержимое отдельным запросом, тогда
- * как обработчик агента отвечает за постановку задач и состояния прогонов.
+ * он читается страницами по курсору, фильтруется по задаче и инструменту, и отдаёт
+ * полное содержимое отдельным запросом, тогда как обработчик агента отвечает за
+ * постановку задач и состояния прогонов.
  */
 class ToolLogHandler(private val store: ToolCallStore) : ClientMessageHandler {
 
@@ -41,14 +42,17 @@ class ToolLogHandler(private val store: ToolCallStore) : ClientMessageHandler {
      */
     private fun page(message: ClientMessage.ToolCalls): HostMessage.ToolCallPage {
         val limit = (message.limit ?: TOOL_CALL_PAGE_DEFAULT_LIMIT).coerceIn(1, TOOL_CALL_PAGE_MAX_LIMIT)
-        val page = store.page(message.runId, message.cursor, limit)
+        val page = store.page(message.scope, message.tool, message.cursor, limit)
         val calls = page.calls.map { ToolCallSummary.of(it) }
+        val tools = store.tools(message.scope)
         return HostMessage.ToolCallPage(
             requestId = message.requestId,
-            runId = message.runId,
+            scope = message.scope,
+            tool = message.tool,
             calls = calls,
             nextCursor = if (page.hasMore) calls.last().let { ToolCallCursor(it.at, it.id) } else null,
             hasMore = page.hasMore,
+            tools = tools,
         )
     }
 

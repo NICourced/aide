@@ -31,21 +31,52 @@ SELECT * FROM tool_call WHERE run_id = ? AND tool = ? ORDER BY at;
 count:
 SELECT count(*) FROM tool_call;
 
-/** Первая страница журнала прогона: самые новые сверху (T-1.3). */
+/** Первая страница журнала прогона: самые новые сверху (T-1.3, T-1.14). */
 firstPage:
 SELECT * FROM tool_call
-WHERE run_id = :runId
+WHERE run_id = :runId AND (:tool IS NULL OR tool = :tool)
 ORDER BY at DESC, id DESC
 LIMIT :limit;
 
 /**
- * Страница строго старше курсора — пары «время, идентификатор» (T-1.3).
+ * Страница строго старше курсора — пары «время, идентификатор» (T-1.3, T-1.14).
  *
  * Пара, а не одно время: два вызова в одну миллисекунду сортировались бы между собой
  * произвольно, и постраничный проход либо потерял бы один, либо зациклился на нём.
  */
 pageBefore:
 SELECT * FROM tool_call
-WHERE run_id = :runId AND (at < :beforeAt OR (at = :beforeAt AND id < :beforeId))
+WHERE run_id = :runId AND (:tool IS NULL OR tool = :tool)
+  AND (at < :beforeAt OR (at = :beforeAt AND id < :beforeId))
 ORDER BY at DESC, id DESC
 LIMIT :limit;
+
+/** Первая страница журнала задачи: самые новые сверху (T-1.14). */
+firstPageByTask:
+SELECT tool_call.* FROM tool_call
+JOIN agent_run ON tool_call.run_id = agent_run.id
+WHERE agent_run.task_id = :taskId AND (:tool IS NULL OR tool_call.tool = :tool)
+ORDER BY tool_call.at DESC, tool_call.id DESC
+LIMIT :limit;
+
+/** Страница строго старше курсора по задаче (T-1.14). */
+pageBeforeByTask:
+SELECT tool_call.* FROM tool_call
+JOIN agent_run ON tool_call.run_id = agent_run.id
+WHERE agent_run.task_id = :taskId AND (:tool IS NULL OR tool_call.tool = :tool)
+  AND (tool_call.at < :beforeAt OR (tool_call.at = :beforeAt AND tool_call.id < :beforeId))
+ORDER BY tool_call.at DESC, tool_call.id DESC
+LIMIT :limit;
+
+/** Доступные инструменты в прогоне (T-1.14). */
+toolsByRun:
+SELECT DISTINCT tool FROM tool_call
+WHERE run_id = :runId
+ORDER BY tool;
+
+/** Доступные инструменты в задаче (T-1.14). */
+toolsByTask:
+SELECT DISTINCT tool_call.tool FROM tool_call
+JOIN agent_run ON tool_call.run_id = agent_run.id
+WHERE agent_run.task_id = :taskId
+ORDER BY tool_call.tool;

@@ -1,9 +1,11 @@
 package dev.aide.client.state
 
 import dev.aide.domain.RunId
+import dev.aide.domain.TaskId
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.protocol.HostMessage
+import dev.aide.protocol.ToolCallScope
 import dev.aide.protocol.ToolCallSummary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,10 +13,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 /**
- * Состояние журнала вызовов и переходы между ним (T-1.3).
+ * Состояние журнала вызовов и переходы между ним (T-1.3, T-1.14).
  *
- * Отдельный объект, а не методы [AppStateStore]: у журнала своя пара «данные и переходы»
- * (страницы, курсор, «есть ещё»), и складывать её в общий держатель экранов значило бы
+ * Отдельный объект, а не методы [AppStateStore]: у журнала своя пара «данные и переходы"
+ * (страницы, курсор, «есть ещё", фильтры), и складывать её в общий держатель экранов значило бы
  * держать его на пороге сложности линтера (класс дефектов `TooManyFunctions`). [AppStateStore]
  * владеет журналом рядом с остальными состояниями, а правила их изменения живут здесь.
  *
@@ -26,17 +28,30 @@ class ToolCallLogStore {
 
     private val _log = MutableStateFlow(ToolCallLog())
 
-    /** Состояние журнала: страницы, курсор, живые записи. */
+    /** Состояние журнала: страницы, курсор, живые записи, фильтры. */
     val log: StateFlow<ToolCallLog> = _log.asStateFlow()
 
     /**
-     * Открывает журнал прогона: сбрасывает прежние страницы и показывает загрузку.
+     * Открывает журнал в выбранной области: сбрасывает прежние страницы и показывает загрузку.
      *
-     * Сброс обязателен: журнал другого прогона — другие записи, и доклеивать их к прежним
-     * значило бы показать вызовы двух прогонов одним списком.
+     * Сброс обязателен: журнал другой области — другие записи, и доклеивать их к прежним
+     * значило бы показать вызовы двух задач одним списком.
      */
-    fun open(runId: RunId) {
-        _log.value = ToolCallLog(runId = runId, loading = true)
+    fun open(scope: ToolCallScope, tool: String? = null) {
+        _log.value = ToolCallLog(scope = scope, tool = tool, loading = true)
+    }
+
+    /** Переключает задачу: сбрасывает записи, курсор, раскрытие и фильтр по инструменту. */
+    fun selectTask(taskId: TaskId) {
+        open(ToolCallScope.Task(taskId), tool = null)
+    }
+
+    /** Меняет фильтр по инструменту: записи сбрасываются, чтобы не смешивать с прежним фильтром. */
+    fun filter(tool: String?) {
+        _log.update { log ->
+            val scope = log.scope ?: return@update log
+            ToolCallLog(scope = scope, tool = tool, loading = true)
+        }
     }
 
     /** Показывает загрузку страницы (первой при повторе или следующей), не теряя показанные записи. */
@@ -47,17 +62,19 @@ class ToolCallLogStore {
     /**
      * Принимает страницу журнала.
      *
-     * Записи страницы старше уже показанных и приклеиваются в конец. Дубли отсекаются по
-     * идентификатору: живое событие могло успеть добавить вызов раньше, чем доехала страница.
+     * Страница применяется только если её scope и tool совпадают с текущими: при смене фильтра
+     * поздний ответ старого запроса не должен доклеиваться к новому списку. Записи страницы
+     * старше уже показанных и приклеиваются в конец. Дубли отсекаются по идентификатору:
+     * живое событие могло успеть добавить вызов раньше, чем доехала страница.
      */
     fun page(page: HostMessage.ToolCallPage) {
         _log.update { log ->
-            val base = if (log.runId == page.runId) log.calls else emptyList()
+            if (log.scope != page.scope || log.tool != page.tool) return@update log
             log.copy(
-                runId = page.runId,
-                calls = (base + page.calls).distinctBy { it.id },
+                calls = (log.calls + page.calls).distinctBy { it.id },
                 cursor = page.nextCursor,
                 hasMore = page.hasMore,
+                availableTools = page.tools,
                 loading = false,
                 loaded = true,
                 failed = false,
@@ -69,13 +86,19 @@ class ToolCallLogStore {
     /**
      * Вставляет живую запись в начало журнала.
      *
-     * Событие другого прогона игнорируется: пока открыт журнал одного прогона, чужой вызов
-     * в нём — посторонняя запись. Дубли отсекаются по идентификатору: событие может прийти
-     * для вызова, который уже попал в подгруженную страницу.
+     * Событие применяется только если область и фильтр совпадают с текущими. Для [ToolCallScope.Task]
+     * клиент разрешает `runId → taskId` через [runToTask]; неизвестный run не добавляется, чтобы
+     * событие чужой задачи не появилось в журнале. Дубли отсекаются по идентификатору.
      */
-    fun recorded(call: ToolCall) {
+    fun recorded(call: ToolCall, runToTask: (RunId) -> TaskId?) {
         _log.update { log ->
-            if (log.runId != call.runId) return@update log
+            val scope = log.scope ?: return@update log
+            val matchesScope = when (scope) {
+                is ToolCallScope.Run -> scope.runId == call.runId
+                is ToolCallScope.Task -> runToTask(call.runId) == scope.taskId
+            }
+            if (!matchesScope) return@update log
+            if (log.tool != null && log.tool != call.tool) return@update log
             val summary = ToolCallSummary.of(call)
             if (log.calls.any { it.id == summary.id }) log else log.copy(calls = listOf(summary) + log.calls)
         }
@@ -101,17 +124,24 @@ class ToolCallLogStore {
         return expanding
     }
 
-    /** Принимает полное содержимое раскрытой записи; ответ на неё же игнорируется после сворачивания. */
-    fun detailLoaded(call: ToolCall) {
+    /**
+     * Принимает результат загрузки полного содержимого раскрытой записи.
+     *
+     * Успех кладёт запись в деталь только если она всё ещё раскрыта; ошибка видна только
+     * у раскрытой записи. Ответ на свёрнутую запись игнорируется.
+     */
+    fun detailResult(result: Result<ToolCall>) {
         _log.update { log ->
-            if (log.expanded == call.id) log.copy(detail = call, detailLoading = false, detailFailed = false) else log
-        }
-    }
+            val call = result.getOrNull()
+            when {
+                call != null && log.expanded == call.id ->
+                    log.copy(detail = call, detailLoading = false, detailFailed = false)
 
-    /** Ошибка загрузки полного содержимого: видна только у раскрытой записи. */
-    fun detailFailed() {
-        _log.update { log ->
-            if (log.expanded == null) log else log.copy(detailLoading = false, detailFailed = true)
+                result.isFailure && log.expanded != null ->
+                    log.copy(detailLoading = false, detailFailed = true)
+
+                else -> log
+            }
         }
     }
 
@@ -120,13 +150,14 @@ class ToolCallLogStore {
         _log.update { it.copy(loading = false, failed = true) }
     }
 
-    /** Потеря связи: журнал помечается, но показанные записи не стираются (§ 3.5). */
-    fun offline() {
-        _log.update { it.copy(offline = true) }
-    }
-
-    /** Связь восстановлена: пометка «нет связи» снимается. */
-    fun online() {
-        _log.update { it.copy(offline = false) }
+    /**
+     * Пометка «нет связи» (§ 3.5).
+     *
+     * true — связь потеряна, показанные записи не стираются; false — связь восстановлена,
+     * пометка снимается. Одна функция вместо пары, чтобы не превышать порог
+     * `TooManyFunctions` линтера.
+     */
+    fun setOffline(offline: Boolean) {
+        _log.update { it.copy(offline = offline) }
     }
 }

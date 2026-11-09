@@ -9,20 +9,25 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
 import dev.aide.client.state.ToolCallLog
+import dev.aide.client.ui.screens.CallLogActions
 import dev.aide.client.ui.screens.CallLogScreen
 import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.Cost
 import dev.aide.domain.RunId
+import dev.aide.domain.Task
+import dev.aide.domain.TaskId
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
+import dev.aide.protocol.ToolCallScope
 import dev.aide.protocol.ToolCallSummary
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.datetime.Instant
 
 /**
- * T-1.3: список журнала рисует страницу, а не весь лог; состояния § 6.1 и раскрытие записи.
+ * T-1.3, T-1.14: список журнала рисует страницу, состояния § 6.1, раскрытие записи
+ * и фильтры по задаче/инструменту.
  *
  * «Не строится целиком» проверяется на 500 записях: LazyColumn компонует только видимые
  * строки, поэтому последняя запись в дереве отсутствует, а первая — есть. Раскрытие
@@ -36,7 +41,7 @@ class CallLogScreenTest {
     fun `список по 500 записям рисует только видимую часть`() = runComposeUiTest {
         val calls = (0 until 500).map { summary(it) }
 
-        show(log(RUN, calls).copy(loaded = true, hasMore = true))
+        show(log(RUN_SCOPE, calls).copy(loaded = true, hasMore = true))
 
         onNodeWithTag("call-log-row-tc-0").assertExists()
         onNodeWithTag("call-log-row-tc-499").assertDoesNotExist()
@@ -44,7 +49,7 @@ class CallLogScreenTest {
 
     @Test
     fun `загруженный пустой журнал объясняет, что вызовов нет`() = runComposeUiTest {
-        show(log(RUN).copy(loaded = true))
+        show(log(RUN_SCOPE).copy(loaded = true))
 
         onNodeWithText("Вызовов пока нет").assertIsDisplayed()
     }
@@ -52,14 +57,14 @@ class CallLogScreenTest {
     @Test
     fun `незагруженный журнал показывается загрузкой, а не пустотой`() = runComposeUiTest {
         // `loaded = false`: страницу ещё не запрашивали — это загрузка, а не «пусто».
-        show(log(RUN))
+        show(log(RUN_SCOPE))
 
         onNodeWithText("Загрузка").assertIsDisplayed()
         onNodeWithText("Вызовов пока нет").assertDoesNotExist()
     }
 
     @Test
-    fun `без прогона журнал говорит об этом`() = runComposeUiTest {
+    fun `без области журнал говорит об этом`() = runComposeUiTest {
         show(log())
 
         onNodeWithText("Прогона пока нет — журнал пуст").assertIsDisplayed()
@@ -67,14 +72,14 @@ class CallLogScreenTest {
 
     @Test
     fun `ошибка загрузки показывается состоянием ошибки`() = runComposeUiTest {
-        show(log(RUN).copy(failed = true))
+        show(log(RUN_SCOPE).copy(failed = true))
 
         onNodeWithText("Не удалось загрузить журнал: хост не ответил").assertIsDisplayed()
     }
 
     @Test
     fun `сводка показывает признак «требовал подтверждения»`() = runComposeUiTest {
-        show(log(RUN, listOf(summary(0, requiredApproval = true))).copy(loaded = true))
+        show(log(RUN_SCOPE, listOf(summary(0, requiredApproval = true))).copy(loaded = true))
 
         onNodeWithText("Требовал подтверждения").assertIsDisplayed()
     }
@@ -83,7 +88,7 @@ class CallLogScreenTest {
     fun `сводка показывает решение разрешить один раз`() = runComposeUiTest {
         show(
             log(
-                RUN,
+                RUN_SCOPE,
                 listOf(summary(0, requiredApproval = true, approval = ApprovalDecision.ALLOW_ONCE)),
             ).copy(loaded = true),
         )
@@ -95,7 +100,7 @@ class CallLogScreenTest {
     fun `сводка показывает решение запретить`() = runComposeUiTest {
         show(
             log(
-                RUN,
+                RUN_SCOPE,
                 listOf(summary(0, requiredApproval = true, approval = ApprovalDecision.DENY)),
             ).copy(loaded = true),
         )
@@ -105,7 +110,7 @@ class CallLogScreenTest {
 
     @Test
     fun `свёрнутая запись показывает превью и пометку обрезки`() = runComposeUiTest {
-        show(log(RUN, listOf(summary(0, resultTruncated = true))).copy(loaded = true))
+        show(log(RUN_SCOPE, listOf(summary(0, resultTruncated = true))).copy(loaded = true))
 
         onNodeWithText("read_file · успех · 5 мс · 0 мк").assertIsDisplayed()
         onNodeWithText("показано не всё").assertIsDisplayed()
@@ -113,21 +118,21 @@ class CallLogScreenTest {
 
     @Test
     fun `кнопка догрузки есть, когда есть что догружать`() = runComposeUiTest {
-        show(log(RUN, listOf(summary(0))).copy(loaded = true, hasMore = true))
+        show(log(RUN_SCOPE, listOf(summary(0))).copy(loaded = true, hasMore = true))
 
         onNodeWithTag("call-log-load-older").assertExists()
     }
 
     @Test
     fun `кнопки догрузки нет, когда догружать нечего`() = runComposeUiTest {
-        show(log(RUN, listOf(summary(0))).copy(loaded = true, hasMore = false))
+        show(log(RUN_SCOPE, listOf(summary(0))).copy(loaded = true, hasMore = false))
 
         onNodeWithTag("call-log-load-older").assertDoesNotExist()
     }
 
     @Test
     fun `нет связи показывается баннером над журналом`() = runComposeUiTest {
-        show(log(RUN).copy(loaded = true, offline = true))
+        show(log(RUN_SCOPE).copy(loaded = true, offline = true))
 
         onNodeWithTag("offline-banner").assertExists()
     }
@@ -135,7 +140,7 @@ class CallLogScreenTest {
     @Test
     fun `тап по строке просит раскрыть именно эту запись`() = runComposeUiTest {
         var toggled: ToolCallId? = null
-        show(log(RUN, listOf(summary(0), summary(1))).copy(loaded = true)) { toggled = it }
+        show(log(RUN_SCOPE, listOf(summary(0), summary(1))).copy(loaded = true), onToggleRow = { toggled = it })
 
         onNodeWithTag("call-log-row-tc-1").performClick()
 
@@ -144,7 +149,10 @@ class CallLogScreenTest {
 
     @Test
     fun `раскрытая запись во время загрузки показывает загрузку`() = runComposeUiTest {
-        show(log(RUN, listOf(summary(0))).copy(loaded = true, expanded = ToolCallId("tc-0"), detailLoading = true))
+        show(
+            log(RUN_SCOPE, listOf(summary(0)))
+                .copy(loaded = true, expanded = ToolCallId("tc-0"), detailLoading = true),
+        )
 
         // Строка кликабельна и объединяет семантику детей — тег ищем в несведённом дереве.
         onNodeWithTag("call-log-detail-loading", useUnmergedTree = true).assertExists()
@@ -152,7 +160,7 @@ class CallLogScreenTest {
 
     @Test
     fun `ошибка загрузки полного содержимого видна у записи`() = runComposeUiTest {
-        show(log(RUN, listOf(summary(0))).copy(loaded = true, expanded = ToolCallId("tc-0"), detailFailed = true))
+        show(log(RUN_SCOPE, listOf(summary(0))).copy(loaded = true, expanded = ToolCallId("tc-0"), detailFailed = true))
 
         onNodeWithText("Не удалось загрузить вызов").assertIsDisplayed()
     }
@@ -160,24 +168,116 @@ class CallLogScreenTest {
     @Test
     fun `раскрытая запись показывает полные аргументы и результат`() = runComposeUiTest {
         val full = detailCall(0)
-        show(log(RUN, listOf(summary(0))).copy(loaded = true, expanded = ToolCallId("tc-0"), detail = full))
+        show(log(RUN_SCOPE, listOf(summary(0))).copy(loaded = true, expanded = ToolCallId("tc-0"), detail = full))
 
         onNodeWithText(full.arguments).assertIsDisplayed()
         onNodeWithText(full.result.orEmpty()).assertIsDisplayed()
     }
 
-    private fun ComposeUiTest.show(log: ToolCallLog, onToggleRow: (ToolCallId) -> Unit = {}) {
-        setContent { TestCallLog(log, onToggleRow) }
+    @Test
+    fun `выбор задачи зовёт колбэк`() = runComposeUiTest {
+        var selected: TaskId? = null
+        val task = Task(
+            id = TaskId("t-1"),
+            title = "Авторизация",
+            prompt = "Сделай",
+            branch = "ai/t-1",
+            status = dev.aide.domain.TaskStatus.RUNNING,
+            createdAt = Instant.fromEpochMilliseconds(BASE_MILLIS),
+        )
+        show(
+            log = log(TASK_SCOPE).copy(loaded = true),
+            tasks = listOf(task),
+            onSelectTask = { selected = it },
+        )
+
+        onNodeWithTag("call-log-task-dropdown").performClick()
+        onNodeWithTag("call-log-task-t-1").performClick()
+
+        assertEquals(TaskId("t-1"), selected)
+    }
+
+    @Test
+    fun `выбор инструмента зовёт колбэк с именем`() = runComposeUiTest {
+        var selected: String? = null
+        show(
+            log = log(RUN_SCOPE).copy(loaded = true, availableTools = listOf("read_file", "write_file")),
+            onSelectTool = { selected = it },
+        )
+
+        onNodeWithTag("call-log-tool-dropdown").performClick()
+        onNodeWithTag("call-log-tool-write_file").performClick()
+
+        assertEquals("write_file", selected)
+    }
+
+    @Test
+    fun `выбор всех инструментов зовёт колбэк с null`() = runComposeUiTest {
+        var selected: String? = "unchanged"
+        show(
+            log = log(RUN_SCOPE).copy(loaded = true, availableTools = listOf("read_file")),
+            onSelectTool = { selected = it },
+        )
+
+        onNodeWithTag("call-log-tool-dropdown").performClick()
+        onNodeWithTag("call-log-tool-__all__").performClick()
+
+        assertEquals(null, selected)
+    }
+
+    @Test
+    fun `пустой отфильтрованный журнал отличается от ещё не загруженного`() = runComposeUiTest {
+        show(log(RUN_SCOPE, tool = "write_file").copy(loaded = true))
+
+        onNodeWithText("Вызовов пока нет").assertIsDisplayed()
+        onNodeWithText("Загрузка").assertDoesNotExist()
+    }
+
+    private fun ComposeUiTest.show(
+        log: ToolCallLog,
+        tasks: List<Task> = emptyList(),
+        onToggleRow: (ToolCallId) -> Unit = {},
+        onSelectTask: (TaskId) -> Unit = {},
+        onSelectTool: (String?) -> Unit = {},
+    ) {
+        setContent {
+            TestCallLog(
+                log = log,
+                tasks = tasks,
+                onToggleRow = onToggleRow,
+                onSelectTask = onSelectTask,
+                onSelectTool = onSelectTool,
+            )
+        }
     }
 
     /** Вызов экрана с колбэками-заглушками: тест проверяет показ, а не навигацию. */
     @Composable
-    private fun TestCallLog(log: ToolCallLog, onToggleRow: (ToolCallId) -> Unit) {
-        CallLogScreen(log = log, onLoadPage = {}, onBack = {}, onToggleRow = onToggleRow)
+    private fun TestCallLog(
+        log: ToolCallLog,
+        tasks: List<Task>,
+        onToggleRow: (ToolCallId) -> Unit,
+        onSelectTask: (TaskId) -> Unit = {},
+        onSelectTool: (String?) -> Unit = {},
+    ) {
+        CallLogScreen(
+            log = log,
+            tasks = tasks,
+            actions = CallLogActions(
+                onLoadPage = {},
+                onBack = {},
+                onToggleRow = onToggleRow,
+                onSelectTask = onSelectTask,
+                onSelectTool = onSelectTool,
+            ),
+        )
     }
 
-    private fun log(runId: RunId? = null, calls: List<ToolCallSummary> = emptyList()): ToolCallLog =
-        ToolCallLog(runId = runId, calls = calls)
+    private fun log(
+        scope: ToolCallScope? = null,
+        calls: List<ToolCallSummary> = emptyList(),
+        tool: String? = null,
+    ): ToolCallLog = ToolCallLog(scope = scope, calls = calls, tool = tool)
 
     /** Полная запись для раскрытия: текст длиннее превью, по нему видно, что показано всё. */
     private fun detailCall(index: Int): ToolCall = ToolCall(
@@ -216,6 +316,8 @@ class CallLogScreenTest {
 
     private companion object {
         val RUN: RunId = RunId("r-1")
+        val RUN_SCOPE: ToolCallScope.Run = ToolCallScope.Run(RUN)
+        val TASK_SCOPE: ToolCallScope.Task = ToolCallScope.Task(TaskId("t-1"))
         const val BASE_MILLIS: Long = 1_758_535_200_000
     }
 }

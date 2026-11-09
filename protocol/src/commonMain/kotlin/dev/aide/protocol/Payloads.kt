@@ -5,6 +5,7 @@ import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.Cost
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
+import dev.aide.domain.TaskId
 import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
@@ -172,6 +173,26 @@ data class ToolCallCursor(
     /** Идентификатор последней отданной записи. */
     val id: ToolCallId,
 )
+
+/**
+ * Область журнала вызовов: один прогон или все прогоны задачи (T-1.14).
+ *
+ * Типизированная, а не пара nullable-полей: запрос обязан выбрать ровно одну область
+ * по построению, и четыре состояния «оба / ни одного» не появляются в рантайме.
+ */
+@Serializable
+sealed interface ToolCallScope {
+
+    /** Журнал одного прогона. */
+    @Serializable
+    @SerialName("run")
+    data class Run(val runId: RunId) : ToolCallScope
+
+    /** Журнал всех прогонов задачи. */
+    @Serializable
+    @SerialName("task")
+    data class Task(val taskId: TaskId) : ToolCallScope
+}
 
 /** Событие хоста, приходящее клиенту без запроса. */
 @Serializable

@@ -123,6 +123,10 @@
     <string name="call_log_outcome_failure">ошибка</string>
     <string name="call_log_outcome_denied">отказ</string>
     <string name="call_log_outcome_timeout">таймаут</string>
+    <string name="call_log_task_label">Задача</string>
+    <string name="call_log_tool_label">Инструмент</string>
+    <string name="call_log_task_all">Все задачи</string>
+    <string name="call_log_tool_all">Все инструменты</string>
 
     <string name="settings_title">Настройки</string>
     <string name="settings_repository_path">Путь к репозиторию</string>

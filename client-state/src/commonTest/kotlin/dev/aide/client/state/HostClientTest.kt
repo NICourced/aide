@@ -129,8 +129,9 @@ class HostClientTest {
         runBlocking {
             val runId = RunId("r-1")
 
-            client.toolLogClient.toolCalls(runId)
-            client.toolLogClient.toolCalls(runId, ToolCallCursor(TOOL_CALL_AT, ToolCallId("tc-1")), limit = 50)
+            val scope = dev.aide.protocol.ToolCallScope.Run(runId)
+            client.toolLogClient.toolCalls(scope)
+            client.toolLogClient.toolCalls(scope, cursor = ToolCallCursor(TOOL_CALL_AT, ToolCallId("tc-1")), limit = 50)
 
             val pages = connection.takeRequests().filterIsInstance<ClientMessage.ToolCalls>()
             assertEquals(2, pages.size, "оба запроса журнала обязаны дойти до хоста")
@@ -141,6 +142,7 @@ class HostClientTest {
             )
             assertEquals(ToolCallId("tc-1"), pages[1].cursor?.id, "курсор обязан уехать на хост")
             assertEquals(50, pages[1].limit)
+            assertEquals(scope, pages[0].scope)
         }
     }
 

@@ -77,6 +77,24 @@ class HostStoreTest {
     }
 
     @Test
+    fun `удаление задачи не удаляет вызовы её прогонов`() {
+        store.tasks.save(StoreFixtures.task)
+        store.runs.save(StoreFixtures.run)
+        store.toolCalls.save(StoreFixtures.toolCall)
+
+        store.tasks.delete(StoreFixtures.task.id)
+
+        val page = store.toolCalls.page(
+            scope = dev.aide.protocol.ToolCallScope.Task(StoreFixtures.task.id),
+            tool = null,
+            before = null,
+            limit = 20,
+        )
+        assertEquals(1, page.calls.size)
+        assertEquals(StoreFixtures.toolCall.id, page.calls.single().id)
+    }
+
+    @Test
     fun `прогон переживает запись и чтение`() {
         store.runs.save(StoreFixtures.run)
         assertEquals(StoreFixtures.run, store.runs.load(StoreFixtures.run.id))

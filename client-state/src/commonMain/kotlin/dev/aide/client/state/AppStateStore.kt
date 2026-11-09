@@ -154,14 +154,14 @@ class AppStateStore {
             is ConnectionState.Reconnecting -> {
                 _treeState.value = _treeState.value.toOffline()
                 _fileState.value = _fileState.value.toOffline()
-                toolCallLog.offline()
+                toolCallLog.setOffline(true)
             }
 
             is ConnectionState.Connected -> {
                 if (previous is ConnectionState.Reconnecting) {
                     _treeState.value = _treeState.value.fromOffline()
                     _fileState.value = _fileState.value.fromOffline()
-                    toolCallLog.online()
+                    toolCallLog.setOffline(false)
                 }
             }
 
@@ -179,7 +179,7 @@ class AppStateStore {
     fun onHostShuttingDown() {
         _treeState.value = _treeState.value.toOffline()
         _fileState.value = _fileState.value.toOffline()
-        toolCallLog.offline()
+        toolCallLog.setOffline(true)
     }
 }
 
