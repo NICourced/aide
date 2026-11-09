@@ -32,7 +32,7 @@ class EmbeddedHost internal constructor(
     private val workerJob: Job,
     private val store: HostStore,
     private val handler: StageZeroHandler,
-    private val graph: KoinApplication,
+    internal val graph: KoinApplication,
     /** HTTP-клиент провайдеров; null, если модель подставлена тестом и транспорта нет. */
     private val httpClient: HttpClient?,
 ) : AutoCloseable {

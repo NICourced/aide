@@ -25,7 +25,9 @@ import dev.aide.client.state.HostCallException
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.HostConnection
 import dev.aide.client.state.HostSession
+import dev.aide.client.state.answerApproval
 import dev.aide.client.state.decidePlan
+import dev.aide.client.state.requestPendingApprovals
 import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.ui.screens.AgentActions
 import dev.aide.client.ui.screens.AgentScreen
@@ -33,10 +35,12 @@ import dev.aide.client.ui.screens.CallLogScreen
 import dev.aide.client.ui.screens.ModelSettingsState
 import dev.aide.client.ui.screens.RepoScreen
 import dev.aide.client.ui.screens.SettingsScreen
+import dev.aide.client.ui.screens.ToolApprovalDialog
 import dev.aide.client.ui.strings.Strings
 import dev.aide.client.ui.strings.incompatibleMessage
 import dev.aide.client.ui.strings.stateMessageText
 import dev.aide.client.ui.theme.AideTheme
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.RunCommand
@@ -100,21 +104,13 @@ fun App(
 
     var destination by remember { mutableStateOf(Destination.REPOSITORY) }
 
+    val pendingApproval by state.pendingApproval.collectAsState()
+
     AideTheme(preference = settings.theme) {
         Surface(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Header(hostState?.branch, connectionState)
-                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                    Button(onClick = { destination = Destination.REPOSITORY }) {
-                        Text(Strings.text(Strings.repoTreeTitle))
-                    }
-                    Button(onClick = { destination = Destination.AGENT }) {
-                        Text(Strings.text(Strings.agentTitle))
-                    }
-                    Button(onClick = { destination = Destination.SETTINGS }) {
-                        Text(Strings.text(Strings.actionSettings))
-                    }
-                }
+                NavigationBar { destination = it }
 
                 when (destination) {
                     Destination.AGENT -> AgentDestination(
@@ -161,6 +157,14 @@ fun App(
                             client.closeFile()
                         },
                     )
+                }
+            }
+
+            pendingApproval?.let { request ->
+                ToolApprovalDialog(request) { decision: ApprovalDecision ->
+                    coroutineScope.launch {
+                        client.answerApproval(request.runId, request.callId, decision)
+                    }
                 }
             }
         }
@@ -383,5 +387,22 @@ private suspend fun loadFile(client: HostClient, state: AppStateStore, path: Str
     client.fileContent(path).onFailure { error ->
         val protocolError = (error as? HostCallException)?.error
         if (protocolError != null) state.onFileFailed(protocolError)
+    }
+}
+
+@Composable
+private fun NavigationBar(
+    onDestination: (Destination) -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Button(onClick = { onDestination(Destination.REPOSITORY) }) {
+            Text(Strings.text(Strings.repoTreeTitle))
+        }
+        Button(onClick = { onDestination(Destination.AGENT) }) {
+            Text(Strings.text(Strings.agentTitle))
+        }
+        Button(onClick = { onDestination(Destination.SETTINGS) }) {
+            Text(Strings.text(Strings.actionSettings))
+        }
     }
 }

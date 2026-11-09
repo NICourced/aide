@@ -1,6 +1,7 @@
 package dev.aide.agent
 
 import dev.aide.agent.tools.StepTools
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.Permission
 import dev.aide.domain.RunId
 import dev.aide.domain.SnapshotRef
@@ -18,10 +19,12 @@ import dev.aide.tools.file.WriteFileTool
 import dev.aide.tools.limits.HardLimitViolation
 import dev.aide.tools.permission.DenyReason
 import dev.aide.tools.permission.PermissionResolver
+import dev.aide.tools.permission.SessionPermissions
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.StepCommit
 import dev.aide.tools.ports.StepCommits
+import dev.aide.tools.ports.ToolApproval
 import dev.aide.tools.ports.ToolCallRecorder
 import dev.aide.tools.sandbox.RunLintTool
 import dev.aide.tools.sandbox.RunTestsTool
@@ -82,14 +85,16 @@ fun stepToolsIn(
     commits: FakeStepCommits = FakeStepCommits(),
     snapshots: ChangeSnapshots = EngineChangeSnapshots(),
 ): StepTools {
+    val sessionPermissions = SessionPermissions()
     val registry = ToolRegistry(defaultTools(commits))
     return StepTools.of(
         registry = registry,
         invoker = ToolInvoker(
             registry = registry,
-            permissions = PermissionResolver(stored),
+            permissions = PermissionResolver(stored, sessionPermissions::load),
             recorder = recorder,
             snapshots = snapshots,
+            approval = ToolApproval { _, _ -> ApprovalDecision.DENY },
         ),
         context = TestToolContext(workspace),
     )

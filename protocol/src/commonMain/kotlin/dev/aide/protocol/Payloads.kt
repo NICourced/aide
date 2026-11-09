@@ -5,6 +5,7 @@ import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.Cost
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
+import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
@@ -249,6 +250,20 @@ sealed interface HostEvent {
     data class ToolCallRecorded(
         /** Записанный вызов целиком. */
         val call: ToolCall,
+    ) : HostEvent
+
+    /**
+     * Хост просит пользователя подтвердить вызов инструмента (T-1.13).
+     *
+     * Событие без запроса: как только точка вызова упирается в `Ask`, клиент видит
+     * диалог. Подключившийся позже клиент не получит прошедшие события, поэтому он
+     * спрашивает ожидающие запросы отдельным сообщением [ClientMessage.PendingApprovals].
+     */
+    @Serializable
+    @SerialName("approvalRequested")
+    data class ApprovalRequested(
+        /** Что именно просят подтвердить. */
+        val request: ToolApprovalRequest,
     ) : HostEvent
 
     /** Хост завершает работу; клиенту нужно показать состояние «нет связи» (§ 6.1). */

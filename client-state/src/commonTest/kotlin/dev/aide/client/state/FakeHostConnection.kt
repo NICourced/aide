@@ -53,7 +53,12 @@ internal class FakeHostConnection : HostConnection {
     override fun start() {
         // Первое подключение, а не восстановление после обрыва: дозапрос состояния
         // по признаку `reconnected` проверяется сквозным тестом этапа.
-        _state.value = ConnectionState.Connected(sessionId = SessionId("session-fake"), reconnected = false)
+        setConnected(reconnected = false)
+    }
+
+    /** Переводит соединение в состояние подключено с нужным признаком реконнекта. */
+    fun setConnected(reconnected: Boolean) {
+        _state.value = ConnectionState.Connected(sessionId = SessionId("session-fake"), reconnected = reconnected)
     }
 
     override suspend fun stop() {
@@ -117,6 +122,17 @@ internal class FakeHostConnection : HostConnection {
                 uptimeMillis = 1,
                 mode = HostMode.LOCAL,
             ),
+        )
+
+        is ClientMessage.ApprovalAnswer -> HostMessage.ApprovalAnswered(
+            requestId = message.requestId,
+            runId = message.runId,
+            callId = message.callId,
+        )
+
+        is ClientMessage.PendingApprovals -> HostMessage.PendingApprovalsSnapshot(
+            requestId = message.requestId,
+            requests = emptyList(),
         )
 
         else -> agentOrModelResponse(message)

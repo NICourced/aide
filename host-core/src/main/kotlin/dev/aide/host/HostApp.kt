@@ -21,6 +21,7 @@ import dev.aide.host.agent.AgentRunHandler
 import dev.aide.host.agent.ChangeSnapshotGuard
 import dev.aide.host.agent.ClientMessageRouter
 import dev.aide.host.agent.ModelSecretHandler
+import dev.aide.host.agent.PendingApprovals
 import dev.aide.host.agent.RunWorker
 import dev.aide.host.agent.ServerRunEventSink
 import dev.aide.host.agent.StashRecovery
@@ -33,6 +34,7 @@ import dev.aide.host.agent.TaskSnapshotGuard
 import dev.aide.host.agent.WorkStashGuard
 import dev.aide.host.agent.WorkspaceRestoreGuard
 import dev.aide.host.config.AgentConfigStore
+import dev.aide.host.server.ApprovalHandler
 import dev.aide.host.server.ClientMessageHandler
 import dev.aide.host.server.ClientSessions
 import dev.aide.host.server.ProtocolServer
@@ -129,13 +131,13 @@ object HostApp {
         single(versionQualifier) { ProtocolVersion.CURRENT }
         single { storage.databasePath?.let(DatabaseFactory::open) ?: DatabaseFactory.open() }
         single { ClientSessions() }
-        // Рассылка журнала (T-1.3): очередь живёт в графе, чтобы точка вызова инструментов
-        // публиковала событие, не дожидаясь отправки. Отдельная корутина рассылки
-        // запускается в open() тем же job'ом, что и воркер очереди.
+        // Рассылка журнала (T-1.3): очередь живёт в графе, а отдельная корутина запускается
+        // в open(); точка вызова публикует событие, не дожидаясь отправки.
         // bind: точка вызова получает порт `ToolCallEvents`, а open() — реализацию, чтобы
-        // запустить рассылку. Koin разрешает по точному типу, и без bind одной из двух
+        // запустить рассылку. Koin разрешает по точному типу: без bind одной из двух
         // зависимостей не нашлось бы (T-1.18).
         single { ToolCallBroadcaster(sessions = get()) } bind ToolCallEvents::class
+        single { PendingApprovals(sessions = get()) }
         // Открытые воркспейсы — одна точка правды и для обработчика клиента, и для
         // инструментов агента: воркспейс открывает клиент, а читает его агент (T-1.7).
         single { OpenWorkspaces() }
@@ -162,7 +164,7 @@ object HostApp {
         // Фиксация шага (T-1.11): внутренний инструмент, порт разрешается по типу интерфейса.
         single<StepCommits> { StepCommitGuard(workspaces = get()) }
         single { StashRecovery(stashes = get(), store = get(), events = ServerRunEventSink(get())) }
-        single { stepToolsOf(get(), get(), get(), WorkspaceToolContext(get()), get()) }
+        single { stepToolsOf(get(), get(), get(), WorkspaceToolContext(get()), StepToolPorts(get(), get())) }
         single {
             AgentRunEngine(
                 ports = RunPorts(
@@ -207,6 +209,7 @@ object HostApp {
             ClientMessageRouter(
                 stageZero = get<StageZeroHandler>(),
                 agent = get<AgentRunHandler>(),
+                approvals = ApprovalHandler(get()),
                 modelConfig = get<AgentConfigHandler>(),
                 modelSecrets = get<ModelSecretHandler>(),
                 toolLog = get<ToolLogHandler>(),
@@ -321,12 +324,18 @@ private fun hostTools(commits: StepCommits, network: NetworkPolicy): List<AgentT
  * не знает. Настройки прав — из хранилища хоста (§ 9), точка отката — хостовое знание
  * (T-1.8): модуль инструментов ни того, ни другого не знает.
  */
+/** Порты точки вызова, которые нужны инструментам шага. */
+private data class StepToolPorts(
+    val events: ToolCallEvents,
+    val approvals: PendingApprovals,
+)
+
 private fun stepToolsOf(
     store: HostStore,
     commits: StepCommits,
     snapshots: ChangeSnapshots,
     context: ToolContext,
-    events: ToolCallEvents,
+    ports: StepToolPorts,
 ): StepTools {
     // Предел сети создаётся здесь, а не приходит из настроек: в этапе 1 список разрешённых
     // хостов задавать негде (интерфейс — этап 3), поэтому по умолчанию пуст и это отказ.
@@ -335,9 +344,10 @@ private fun stepToolsOf(
         registry = registry,
         invoker = ToolInvoker(
             registry = registry,
-            permissions = PermissionResolver(store.permissions::load),
-            recorder = StoreToolCallRecorder(store.toolCalls, events),
+            permissions = PermissionResolver(store.permissions::load, ports.approvals::sessionPermission),
+            recorder = StoreToolCallRecorder(store.toolCalls, ports.events),
             snapshots = snapshots,
+            approval = ports.approvals,
         ),
         context = context,
     )

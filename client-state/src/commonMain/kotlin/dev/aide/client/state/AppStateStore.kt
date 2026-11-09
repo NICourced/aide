@@ -1,5 +1,6 @@
 package dev.aide.client.state
 
+import dev.aide.domain.ToolApprovalRequest
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreePayload
 import dev.aide.protocol.HostEvent
@@ -46,6 +47,11 @@ class AppStateStore {
      * `TooManyFunctions`.
      */
     val toolCallLog: ToolCallLogStore = ToolCallLogStore()
+
+    private val _pendingApproval = MutableStateFlow<ToolApprovalRequest?>(null)
+
+    /** Ожидающий запрос подтверждения вызова; null, если сейчас спрашивать нечего (T-1.13). */
+    val pendingApproval: StateFlow<ToolApprovalRequest?> = _pendingApproval.asStateFlow()
 
     /** Последнее достоверное состояние связи; нужно, чтобы вернуться из [ScreenState.Offline]. */
     private var lastConnection: ConnectionState = ConnectionState.Idle
@@ -118,6 +124,7 @@ class AppStateStore {
             appliedHostState = host
             onHostState(host)
         }
+        _pendingApproval.value = session.pendingApproval
     }
 
     /**

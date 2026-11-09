@@ -10,6 +10,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
 import dev.aide.client.state.ToolCallLog
 import dev.aide.client.ui.screens.CallLogScreen
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.Cost
 import dev.aide.domain.RunId
 import dev.aide.domain.ToolCall
@@ -76,6 +77,30 @@ class CallLogScreenTest {
         show(log(RUN, listOf(summary(0, requiredApproval = true))).copy(loaded = true))
 
         onNodeWithText("Требовал подтверждения").assertIsDisplayed()
+    }
+
+    @Test
+    fun `сводка показывает решение разрешить один раз`() = runComposeUiTest {
+        show(
+            log(
+                RUN,
+                listOf(summary(0, requiredApproval = true, approval = ApprovalDecision.ALLOW_ONCE)),
+            ).copy(loaded = true),
+        )
+
+        onNodeWithText("Разрешено один раз").assertIsDisplayed()
+    }
+
+    @Test
+    fun `сводка показывает решение запретить`() = runComposeUiTest {
+        show(
+            log(
+                RUN,
+                listOf(summary(0, requiredApproval = true, approval = ApprovalDecision.DENY)),
+            ).copy(loaded = true),
+        )
+
+        onNodeWithText("Запрещено").assertIsDisplayed()
     }
 
     @Test
@@ -172,6 +197,7 @@ class CallLogScreenTest {
         index: Int,
         requiredApproval: Boolean = false,
         resultTruncated: Boolean = false,
+        approval: ApprovalDecision? = null,
     ): ToolCallSummary = ToolCallSummary(
         id = ToolCallId("tc-$index"),
         runId = RUN,
@@ -180,6 +206,7 @@ class CallLogScreenTest {
         durationMillis = 5,
         cost = Cost(amountMicros = 0, known = true),
         requiredApproval = requiredApproval,
+        approval = approval,
         at = Instant.fromEpochMilliseconds(BASE_MILLIS + index),
         argumentsPreview = """{"path":"file-$index"}""",
         argumentsTruncated = false,

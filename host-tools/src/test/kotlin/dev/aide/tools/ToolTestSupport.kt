@@ -1,5 +1,6 @@
 package dev.aide.tools
 
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.RunId
 import dev.aide.domain.SnapshotRef
 import dev.aide.domain.ToolCall
@@ -7,8 +8,10 @@ import dev.aide.domain.ToolPermission
 import dev.aide.tools.limits.HardLimitViolation
 import dev.aide.tools.permission.DenyReason
 import dev.aide.tools.permission.PermissionResolver
+import dev.aide.tools.permission.SessionPermissions
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
+import dev.aide.tools.ports.ToolApproval
 import dev.aide.tools.ports.ToolCallRecorder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -152,14 +155,21 @@ class FakeChangeSnapshots(
  * [stored] — настройки прав пользователя: null означает «настроек нет», и инструмент
  * работает по объявленному умолчанию (у чтения это `ALLOW`, см. О-4).
  */
+data class TestApprovals(
+    val approval: ToolApproval = ToolApproval { _, _ -> ApprovalDecision.DENY },
+    val sessionPermissions: SessionPermissions = SessionPermissions(),
+)
+
 fun testInvoker(
     registry: ToolRegistry,
     recorder: ToolCallRecorder = RecordingToolCalls(),
     stored: (String) -> ToolPermission? = { null },
     snapshots: ChangeSnapshots = FakeChangeSnapshots(),
+    approvals: TestApprovals = TestApprovals(),
 ): ToolInvoker = ToolInvoker(
     registry = registry,
-    permissions = PermissionResolver(stored),
+    permissions = PermissionResolver(stored, approvals.sessionPermissions::load),
     recorder = recorder,
     snapshots = snapshots,
+    approval = approvals.approval,
 )

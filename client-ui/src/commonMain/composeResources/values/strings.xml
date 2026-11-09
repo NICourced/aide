@@ -88,6 +88,17 @@
     <string name="agent_resume_run">Продолжить</string>
     <string name="agent_stop_run">Стоп</string>
 
+    <string name="tool_approval_title">Подтверждение вызова</string>
+    <string name="tool_approval_tool">Инструмент: %1$s</string>
+    <string name="tool_approval_arguments">Аргументы: %1$s</string>
+    <string name="tool_approval_what_read">Будет выполнено чтение</string>
+    <string name="tool_approval_what_write">Будет изменён файл</string>
+    <string name="tool_approval_what_execute">Будет выполнена команда</string>
+    <string name="tool_approval_rollback">Перед изменением будет создана точка отката</string>
+    <string name="tool_approval_allow_once">Разрешить один раз</string>
+    <string name="tool_approval_allow_session">Разрешить на сессию</string>
+    <string name="tool_approval_deny">Запретить</string>
+
     <string name="call_log_title">Журнал вызовов</string>
     <string name="agent_open_log">Логи</string>
     <string name="call_log_empty">Вызовов пока нет</string>
@@ -99,6 +110,10 @@
     <string name="call_log_no_result">Результата нет</string>
     <string name="call_log_truncated">показано не всё</string>
     <string name="call_log_approval">Требовал подтверждения</string>
+    <string name="call_log_approval_allowed_once">Разрешено один раз</string>
+    <string name="call_log_approval_allowed_session">Разрешено на сессию</string>
+    <string name="call_log_approval_allowed_always">Разрешено навсегда</string>
+    <string name="call_log_approval_denied">Запрещено</string>
     <string name="call_log_summary">%1$s · %2$s · %3$s · %4$s</string>
     <string name="call_log_detail_error">Не удалось загрузить вызов</string>
     <string name="call_log_duration">%1$d мс</string>

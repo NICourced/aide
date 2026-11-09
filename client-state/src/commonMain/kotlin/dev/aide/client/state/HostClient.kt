@@ -2,6 +2,7 @@ package dev.aide.client.state
 
 import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelSecretStatus
@@ -11,7 +12,9 @@ import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
+import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
+import dev.aide.domain.ToolCallId
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreePayload
@@ -60,6 +63,8 @@ data class HostSession(
     val modelError: ModelConfigError? = null,
     /** Последняя ошибка запроса; null, если ошибок нет. */
     val lastError: ProtocolError? = null,
+    /** Ожидающий запрос подтверждения вызова; null, если сейчас спрашивать нечего (T-1.13). */
+    val pendingApproval: ToolApprovalRequest? = null,
 )
 
 /**
@@ -86,8 +91,8 @@ class HostClient(
     requestIdPrefix: String = newRequestIdPrefix(),
 ) {
 
-    private val _session = MutableStateFlow(HostSession())
-    val session: StateFlow<HostSession> = _session.asStateFlow()
+    internal val sessionState = MutableStateFlow(HostSession())
+    val session: StateFlow<HostSession> = sessionState.asStateFlow()
 
     private val _hostShuttingDown = MutableStateFlow(false)
 
@@ -146,9 +151,14 @@ class HostClient(
         connection.start()
         scope.launch {
             connection.state.collect { state ->
-                if (state is ConnectionState.Connected && state.reconnected) {
-                    refreshWorkspace()
-                    agentStatus()
+                if (state is ConnectionState.Connected) {
+                    if (state.reconnected) {
+                        refreshWorkspace()
+                        agentStatus()
+                    }
+                    // Запрос мог появиться до подключения: событие ушло в пустоту,
+                    // и без явного запроса прогон ждал бы решения без видимой причины.
+                    requestPendingApprovals()
                 }
             }
         }
@@ -160,7 +170,7 @@ class HostClient(
                         // Событие могло прийти раньше ответа на открытие: тогда воркспейса клиент
                         // ещё не знает, и обновление обязан выполнить открывающий — см. openWorkspace.
                         val aboutOpenWorkspace = workspaceChangeLock.withLock {
-                            val open = _session.value.workspaceId
+                            val open = sessionState.value.workspaceId
                             if (open == null) {
                                 pendingWorkspaceChange = event.workspaceId
                                 false
@@ -171,15 +181,17 @@ class HostClient(
                         if (aboutOpenWorkspace) refreshWorkspace()
                     }
 
-                    is HostEvent.RunStateChanged -> _session.update { it.withRun(event.run) }
+                    is HostEvent.RunStateChanged -> sessionState.update { it.withRun(event.run) }
 
-                    is HostEvent.RunProgress -> _session.update {
+                    is HostEvent.RunProgress -> sessionState.update {
                         it.withRunProgress(event.runId, event.elapsedMillis, event.cost)
                     }
 
-                    is HostEvent.TaskStateChanged -> _session.update { it.withTask(event.task) }
+                    is HostEvent.TaskStateChanged -> sessionState.update { it.withTask(event.task) }
 
                     is HostEvent.ToolCallRecorded -> _toolCallEvents.emit(event.call)
+
+                    is HostEvent.ApprovalRequested -> sessionState.update { it.copy(pendingApproval = event.request) }
 
                     HostEvent.HostShuttingDown -> _hostShuttingDown.value = true
                 }
@@ -194,7 +206,7 @@ class HostClient(
         return when (response) {
             is HostMessage.WorkspaceOpened -> {
                 val announced = workspaceChangeLock.withLock {
-                    _session.update { it.copy(workspaceId = response.workspaceId, lastError = null) }
+                    sessionState.update { it.copy(workspaceId = response.workspaceId, lastError = null) }
                     val pending = pendingWorkspaceChange
                     pendingWorkspaceChange = null
                     pending
@@ -209,7 +221,7 @@ class HostClient(
             }
 
             is HostMessage.Failure -> {
-                _session.update { it.copy(lastError = response.error) }
+                sessionState.update { it.copy(lastError = response.error) }
                 null
             }
 
@@ -218,39 +230,39 @@ class HostClient(
     }
 
     /** Запрашивает дерево файлов открытого воркспейса; результат сохраняется в [session]. */
-    suspend fun fileTree(): Result<FileTreePayload> = _session.call { workspaceId ->
+    suspend fun fileTree(): Result<FileTreePayload> = sessionState.call { workspaceId ->
         val requestId = requestIds.next()
         when (val response = connection.request(ClientMessage.FileTree(requestId, workspaceId))) {
             is HostMessage.Tree -> Result.success(response.tree)
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос дерева")))
         }
-    }.onSuccess { tree -> _session.update { it.copy(tree = tree) } }
+    }.onSuccess { tree -> sessionState.update { it.copy(tree = tree) } }
 
     /** Запрашивает содержимое файла; результат сохраняется в [session] как открытый файл. */
-    suspend fun fileContent(path: String): Result<FileContentPayload> = _session.call { workspaceId ->
+    suspend fun fileContent(path: String): Result<FileContentPayload> = sessionState.call { workspaceId ->
         val requestId = requestIds.next()
         when (val response = connection.request(ClientMessage.FileContent(requestId, workspaceId, path))) {
             is HostMessage.Content -> Result.success(response.content)
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос файла")))
         }
-    }.onSuccess { content -> _session.update { it.copy(openFile = content) } }
+    }.onSuccess { content -> sessionState.update { it.copy(openFile = content) } }
 
     /** Закрывает выбранный файл: после этого реконнект его уже не перезапрашивает. */
     fun closeFile() {
-        _session.update { it.copy(openFile = null) }
+        sessionState.update { it.copy(openFile = null) }
     }
 
     /** Запрашивает состояние хоста: ветку, корень, режим; результат сохраняется в [session]. */
-    suspend fun hostState(): Result<HostStatePayload> = _session.call { workspaceId ->
+    suspend fun hostState(): Result<HostStatePayload> = sessionState.call { workspaceId ->
         val requestId = requestIds.next()
         when (val response = connection.request(ClientMessage.HostState(requestId, workspaceId))) {
             is HostMessage.State -> Result.success(response.state)
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на запрос состояния")))
         }
-    }.onSuccess { state -> _session.update { it.copy(hostState = state, lastError = null) } }
+    }.onSuccess { state -> sessionState.update { it.copy(hostState = state, lastError = null) } }
 
     /** Ставит задачу в очередь на выполнение агентом (T-1.1). */
     suspend fun postTask(prompt: String, mode: AutonomyMode): Result<TaskId> {
@@ -272,7 +284,7 @@ class HostClient(
         val requestId = requestIds.next()
         return when (val response = connection.request(ClientMessage.AgentStatus(requestId))) {
             is HostMessage.AgentSnapshot -> {
-                _session.update { it.copy(runs = response.runs, tasks = response.tasks) }
+                sessionState.update { it.copy(runs = response.runs, tasks = response.tasks) }
                 Result.success(Unit)
             }
 
@@ -303,7 +315,7 @@ class HostClient(
      * прогоны, а настройка моделей — про конфигурацию, которую правят руками. Общий у них
      * только транспорт, поэтому идентификаторы запросов и сессия передаются сюда.
      */
-    val models: ModelConfigClient = ModelConfigClient(connection, requestIds::next, _session)
+    val models: ModelConfigClient = ModelConfigClient(connection, requestIds::next, sessionState)
 
     /**
      * Запросы журнала вызовов (T-1.3): страницы и полное содержимое.
@@ -321,11 +333,11 @@ class HostClient(
      * и экран показал бы старый кэш (T-0.10).
      */
     private suspend fun refreshWorkspace() {
-        if (_session.value.workspaceId == null) return
+        if (sessionState.value.workspaceId == null) return
         _hostShuttingDown.value = false
         hostState()
         fileTree()
-        _session.value.openFile?.path?.let { path -> fileContent(path) }
+        sessionState.value.openFile?.path?.let { path -> fileContent(path) }
     }
 
     companion object {
@@ -425,4 +437,41 @@ internal class RequestIdSequence(private val prefix: String) {
 
     /** Следующий уникальный идентификатор запроса. */
     suspend fun next(): RequestId = lock.withLock { RequestId("$prefix-${++sequence}") }
+}
+
+/**
+ * Ответ на запрос подтверждения вызова (T-1.13).
+ *
+ * Расширение, а не метод [HostClient]: одиннадцатый метод класса перешагнул бы предел
+ * `TooManyFunctions`, который проект ослаблять не разрешает. Диалог закрывается сразу,
+ * чтобы пользователь не нажал дважды; если ответ не дошёл, запрос вернётся при реконнекте.
+ */
+suspend fun HostClient.answerApproval(runId: RunId, callId: ToolCallId, decision: ApprovalDecision): Result<Unit> {
+    sessionState.update { it.copy(pendingApproval = null) }
+    val requestId = requestIds.next()
+    return when (val response = connection.request(ClientMessage.ApprovalAnswer(requestId, runId, callId, decision))) {
+        is HostMessage.ApprovalAnswered -> Result.success(Unit)
+        is HostMessage.Failure -> Result.failure(HostCallException(response.error))
+        else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на подтверждение вызова")))
+    }
+}
+
+/**
+ * Запрашивает ожидающие подтверждения при реконнекте (T-1.13).
+ *
+ * Событие [HostEvent.ApprovalRequested] ушло до переподключения, поэтому клиент
+ * спрашивает текущие ожидания явно. Движок вызывает инструменты последовательно,
+ * поэтому показывается первый запрос из снимка.
+ */
+suspend fun HostClient.requestPendingApprovals(): Result<Unit> {
+    val requestId = requestIds.next()
+    return when (val response = connection.request(ClientMessage.PendingApprovals(requestId))) {
+        is HostMessage.PendingApprovalsSnapshot -> {
+            sessionState.update { it.copy(pendingApproval = response.requests.firstOrNull()) }
+            Result.success(Unit)
+        }
+
+        is HostMessage.Failure -> Result.failure(HostCallException(response.error))
+        else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на ожидающие подтверждения")))
+    }
 }

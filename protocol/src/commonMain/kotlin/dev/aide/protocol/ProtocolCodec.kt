@@ -54,6 +54,8 @@ object ClientMessageType {
     const val MODEL_SECRETS = "modelSecrets"
     const val TOOL_CALLS = "toolCalls"
     const val TOOL_CALL_DETAIL = "toolCallDetail"
+    const val APPROVAL_ANSWER = "approvalAnswer"
+    const val PENDING_APPROVALS = "pendingApprovals"
 }
 
 /** Имена типов сообщений хоста. */
@@ -77,6 +79,8 @@ object HostMessageType {
     const val TOOL_CALL_PAGE = "toolCallPage"
     const val TOOL_CALL_CONTENT = "toolCallContent"
     const val EVENT = "event"
+    const val APPROVAL_ANSWERED = "approvalAnswered"
+    const val PENDING_APPROVALS_SNAPSHOT = "pendingApprovalsSnapshot"
 }
 
 /**
@@ -115,6 +119,8 @@ object ProtocolCodec {
             encodeModelSecrets(message)
 
         is ClientMessage.ToolCalls, is ClientMessage.ToolCallDetail -> encodeToolLog(message)
+
+        is ClientMessage.ApprovalAnswer, is ClientMessage.PendingApprovals -> encodeAgent(message)
     }
 
     /** Кодирует сообщение хоста; полнота таблицы гарантируется исчерпывающим `when`. */
@@ -132,6 +138,8 @@ object ProtocolCodec {
         is HostMessage.ModelSecretChanged, is HostMessage.ModelSecretsSnapshot -> encodeModelSecrets(message)
 
         is HostMessage.ToolCallPage, is HostMessage.ToolCallContent -> encodeToolLog(message)
+
+        is HostMessage.ApprovalAnswered, is HostMessage.PendingApprovalsSnapshot -> encodeAgent(message)
     }
 
     fun decodeClientMessage(bytes: ByteArray): DecodeResult<ClientMessage> {
@@ -255,6 +263,12 @@ private fun encodeAgent(message: ClientMessage): ByteArray = when (message) {
     is ClientMessage.PlanDecision ->
         envelope(ClientMessageType.PLAN_DECISION, ClientMessage.PlanDecision.serializer(), message)
 
+    is ClientMessage.ApprovalAnswer ->
+        envelope(ClientMessageType.APPROVAL_ANSWER, ClientMessage.ApprovalAnswer.serializer(), message)
+
+    is ClientMessage.PendingApprovals ->
+        envelope(ClientMessageType.PENDING_APPROVALS, ClientMessage.PendingApprovals.serializer(), message)
+
     else -> wrongGroup(message)
 }
 
@@ -271,6 +285,16 @@ private fun encodeAgent(message: HostMessage): ByteArray = when (message) {
     is HostMessage.PlanDecided ->
         envelope(HostMessageType.PLAN_DECIDED, HostMessage.PlanDecided.serializer(), message)
 
+    is HostMessage.ApprovalAnswered ->
+        envelope(HostMessageType.APPROVAL_ANSWERED, HostMessage.ApprovalAnswered.serializer(), message)
+
+    is HostMessage.PendingApprovalsSnapshot ->
+        envelope(
+            HostMessageType.PENDING_APPROVALS_SNAPSHOT,
+            HostMessage.PendingApprovalsSnapshot.serializer(),
+            message,
+        )
+
     else -> wrongGroup(message)
 }
 
@@ -279,6 +303,8 @@ private fun decodeAgentClient(env: WireEnvelope): DecodeResult<ClientMessage>? =
     ClientMessageType.AGENT_STATUS -> decode(env, ClientMessage.AgentStatus.serializer())
     ClientMessageType.RUN_CONTROL -> decode(env, ClientMessage.RunControl.serializer())
     ClientMessageType.PLAN_DECISION -> decode(env, ClientMessage.PlanDecision.serializer())
+    ClientMessageType.APPROVAL_ANSWER -> decode(env, ClientMessage.ApprovalAnswer.serializer())
+    ClientMessageType.PENDING_APPROVALS -> decode(env, ClientMessage.PendingApprovals.serializer())
     else -> null
 }
 
@@ -287,6 +313,8 @@ private fun decodeAgentHost(env: WireEnvelope): DecodeResult<HostMessage>? = whe
     HostMessageType.AGENT_SNAPSHOT -> decode(env, HostMessage.AgentSnapshot.serializer())
     HostMessageType.RUN_CONTROLLED -> decode(env, HostMessage.RunControlled.serializer())
     HostMessageType.PLAN_DECIDED -> decode(env, HostMessage.PlanDecided.serializer())
+    HostMessageType.APPROVAL_ANSWERED -> decode(env, HostMessage.ApprovalAnswered.serializer())
+    HostMessageType.PENDING_APPROVALS_SNAPSHOT -> decode(env, HostMessage.PendingApprovalsSnapshot.serializer())
     else -> null
 }
 

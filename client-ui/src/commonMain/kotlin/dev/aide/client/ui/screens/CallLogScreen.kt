@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.aide.client.state.ToolCallLog
 import dev.aide.client.ui.strings.Strings
+import dev.aide.client.ui.strings.callLogApprovalResource
 import dev.aide.client.ui.strings.callLogOutcomeResource
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
@@ -132,8 +133,14 @@ private fun CallLogRow(call: ToolCallSummary, log: ToolCallLog, onToggle: () -> 
         }
         Text(Strings.text(Strings.callLogSummary, call.tool, outcome, duration, cost))
         if (call.requiredApproval) {
+            val approval = call.approval
+            val approvalText = if (approval != null) {
+                Strings.text(callLogApprovalResource(approval))
+            } else {
+                Strings.text(Strings.callLogApproval)
+            }
             Text(
-                text = Strings.text(Strings.callLogApproval),
+                text = approvalText,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.testTag("call-log-approval-${call.id.value}"),

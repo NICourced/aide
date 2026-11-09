@@ -9,6 +9,16 @@ import dev.aide.client.ui.resources.agent_pause_run
 import dev.aide.client.ui.resources.agent_post_task
 import dev.aide.client.ui.resources.agent_resume_run
 import dev.aide.client.ui.resources.agent_stop_run
+import dev.aide.client.ui.resources.tool_approval_allow_once
+import dev.aide.client.ui.resources.tool_approval_allow_session
+import dev.aide.client.ui.resources.tool_approval_arguments
+import dev.aide.client.ui.resources.tool_approval_deny
+import dev.aide.client.ui.resources.tool_approval_rollback
+import dev.aide.client.ui.resources.tool_approval_title
+import dev.aide.client.ui.resources.tool_approval_tool
+import dev.aide.client.ui.resources.tool_approval_what_execute
+import dev.aide.client.ui.resources.tool_approval_what_read
+import dev.aide.client.ui.resources.tool_approval_what_write
 import dev.aide.client.ui.resources.agent_plan_approve
 import dev.aide.client.ui.resources.agent_plan_comment_hint
 import dev.aide.client.ui.resources.agent_plan_replan
@@ -19,6 +29,10 @@ import dev.aide.client.ui.resources.agent_title
 import dev.aide.client.ui.resources.app_name
 import dev.aide.client.ui.resources.call_log_arguments
 import dev.aide.client.ui.resources.call_log_approval
+import dev.aide.client.ui.resources.call_log_approval_allowed_always
+import dev.aide.client.ui.resources.call_log_approval_allowed_once
+import dev.aide.client.ui.resources.call_log_approval_allowed_session
+import dev.aide.client.ui.resources.call_log_approval_denied
 import dev.aide.client.ui.resources.call_log_cost
 import dev.aide.client.ui.resources.call_log_cost_unknown
 import dev.aide.client.ui.resources.call_log_detail_error
@@ -221,6 +235,18 @@ object Strings {
     val agentPauseRun: StringResource = Res.string.agent_pause_run
     val agentResumeRun: StringResource = Res.string.agent_resume_run
     val agentStopRun: StringResource = Res.string.agent_stop_run
+
+    val toolApprovalTitle: StringResource = Res.string.tool_approval_title
+    val toolApprovalTool: StringResource = Res.string.tool_approval_tool
+    val toolApprovalArguments: StringResource = Res.string.tool_approval_arguments
+    val toolApprovalWhatRead: StringResource = Res.string.tool_approval_what_read
+    val toolApprovalWhatWrite: StringResource = Res.string.tool_approval_what_write
+    val toolApprovalWhatExecute: StringResource = Res.string.tool_approval_what_execute
+    val toolApprovalRollback: StringResource = Res.string.tool_approval_rollback
+    val toolApprovalAllowOnce: StringResource = Res.string.tool_approval_allow_once
+    val toolApprovalAllowSession: StringResource = Res.string.tool_approval_allow_session
+    val toolApprovalDeny: StringResource = Res.string.tool_approval_deny
+
     val agentPlanTitle: StringResource = Res.string.agent_plan_title
     val agentPlanApprove: StringResource = Res.string.agent_plan_approve
     val agentPlanCommentHint: StringResource = Res.string.agent_plan_comment_hint
@@ -270,6 +296,10 @@ object Strings {
     val callLogNoResult: StringResource = Res.string.call_log_no_result
     val callLogTruncated: StringResource = Res.string.call_log_truncated
     val callLogApproval: StringResource = Res.string.call_log_approval
+    val callLogApprovalAllowedOnce: StringResource = Res.string.call_log_approval_allowed_once
+    val callLogApprovalAllowedSession: StringResource = Res.string.call_log_approval_allowed_session
+    val callLogApprovalAllowedAlways: StringResource = Res.string.call_log_approval_allowed_always
+    val callLogApprovalDenied: StringResource = Res.string.call_log_approval_denied
     val callLogSummary: StringResource = Res.string.call_log_summary
     val callLogDetailError: StringResource = Res.string.call_log_detail_error
     val callLogDuration: StringResource = Res.string.call_log_duration

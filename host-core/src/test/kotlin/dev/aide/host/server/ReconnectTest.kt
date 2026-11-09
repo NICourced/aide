@@ -85,6 +85,11 @@ class ReconnectTest {
                 )
             }
 
+            is ClientMessage.PendingApprovals -> HostMessage.PendingApprovalsSnapshot(
+                requestId = message.requestId,
+                requests = emptyList(),
+            )
+
             is ClientMessage.Hello -> HostMessage.Failure(
                 requestId = RequestId("x"),
                 error = ProtocolError.Internal("приветствие обрабатывает сессия"),

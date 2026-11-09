@@ -100,9 +100,9 @@ class WorkspaceBoundaryAdapterTest {
         sibling.writeText("секрет\n")
         assertTrue(Files.isReadable(sibling), "Цель атаки должна быть реально читаемой — иначе проверка вырождена")
         try {
-            val resolver = PermissionResolver {
+            val resolver = PermissionResolver(stored = {
                 ToolPermission(tool = "write_file", read = Permission.ALLOW, write = Permission.ALLOW)
-            }
+            })
             assertEquals(
                 PermissionDecision.Allow,
                 resolver.resolve("write_file", ToolKind.WRITE),

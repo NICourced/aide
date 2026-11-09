@@ -1,9 +1,11 @@
 package dev.aide.tools
 
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.RunId
 import dev.aide.domain.SnapshotRef
 import dev.aide.domain.TestReport
 import dev.aide.domain.TestState
+import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
@@ -12,6 +14,7 @@ import dev.aide.tools.permission.PermissionDecision
 import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
+import dev.aide.tools.ports.ToolApproval
 import dev.aide.tools.ports.ToolCallRecorder
 import dev.aide.tools.schema.ArgumentsSchema
 import java.util.UUID
@@ -51,6 +54,7 @@ class ToolInvoker(
     private val permissions: PermissionResolver,
     private val recorder: ToolCallRecorder,
     private val snapshots: ChangeSnapshots,
+    private val approval: ToolApproval,
     private val clock: () -> Instant = Clock.System::now,
 ) {
 
@@ -68,8 +72,12 @@ class ToolInvoker(
      * @param arguments аргументы строкой, как их прислала модель: формат у протоколов
      *   разный, и разбирает их здесь тот, кто проверяет их по схеме.
      */
-    suspend fun invoke(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult =
-        journaled(runId, tool, arguments) { attempt(runId, tool, arguments, context, Origin.MODEL) }
+    suspend fun invoke(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult {
+        val callId = ToolCallId(UUID.randomUUID().toString())
+        return journaled(runId, callId, tool, arguments) {
+            attempt(CallFrame(runId, callId, tool, arguments, context), Origin.MODEL)
+        }
+    }
 
     /**
      * Вызывает инструмент от имени хоста (T-1.11): так движок прогона зовёт `commit_step`.
@@ -79,12 +87,17 @@ class ToolInvoker(
      * Обычный инструмент, позванный этим путём, проходит общий порядок — права и снапшот
      * не обходятся: облегчён вход только для внутренних, а не для любого, кого назовёт хост.
      */
-    suspend fun invokeInternal(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult =
-        journaled(runId, tool, arguments) { attempt(runId, tool, arguments, context, Origin.INTERNAL) }
+    suspend fun invokeInternal(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult {
+        val callId = ToolCallId(UUID.randomUUID().toString())
+        return journaled(runId, callId, tool, arguments) {
+            attempt(CallFrame(runId, callId, tool, arguments, context), Origin.INTERNAL)
+        }
+    }
 
     /** Замеряет длительность, выполняет попытку и записывает её в журнал — с любым исходом. */
     private suspend fun journaled(
         runId: RunId,
+        callId: ToolCallId,
         tool: String,
         arguments: String,
         body: suspend () -> Attempt,
@@ -92,12 +105,12 @@ class ToolInvoker(
         val startedNanos = System.nanoTime()
         val attempt = body()
         val elapsedMillis = (System.nanoTime() - startedNanos) / NANOS_PER_MILLI
-        // Идентификатор вызова генерирует хост, а не берёт у провайдера: у того он
-        // уникален только внутри диалога, а журнал — таблица на весь хост, и совпавший
-        // идентификатор двух провайдеров потерял бы одну запись.
+        // Идентификатор вызова генерирует хост до выполнения: по нему адресуется
+        // подтверждение (T-1.13), а журнал — таблица на весь хост, и совпавший
+        // идентификатор двух вызовов потерял бы одну запись.
         recorder.record(
             ToolCall(
-                id = ToolCallId(UUID.randomUUID().toString()),
+                id = callId,
                 runId = runId,
                 tool = tool,
                 arguments = arguments,
@@ -106,6 +119,7 @@ class ToolInvoker(
                 durationMillis = elapsedMillis,
                 cost = attempt.result.cost,
                 requiredApproval = attempt.requiredApproval,
+                approval = attempt.approval,
                 at = clock(),
             ),
         )
@@ -119,19 +133,13 @@ class ToolInvoker(
      * потом права. Спрашивать разрешение на вызов с негодными аргументами значило бы
      * показывать пользователю диалог о том, чего модель не собиралась делать.
      */
-    private suspend fun attempt(
-        runId: RunId,
-        tool: String,
-        arguments: String,
-        context: ToolContext,
-        origin: Origin,
-    ): Attempt {
-        val definition = registry.find(tool)
-        val parsed = if (definition == null) null else parseArguments(arguments)
+    private suspend fun attempt(frame: CallFrame, origin: Origin): Attempt {
+        val definition = registry.find(frame.tool)
+        val parsed = if (definition == null) null else parseArguments(frame.toolArguments)
         return when {
-            definition == null -> refused("инструмента «$tool» агент не знает", ToolOutcome.FAILURE)
-            parsed == null -> refused("аргументы вызова «$tool» не являются JSON-объектом", ToolOutcome.FAILURE)
-            else -> decide(runId, definition, parsed, context, origin)
+            definition == null -> refused("инструмента «${frame.tool}» агент не знает", ToolOutcome.FAILURE)
+            parsed == null -> refused("аргументы вызова «${frame.tool}» не являются JSON-объектом", ToolOutcome.FAILURE)
+            else -> decide(frame, definition, parsed, origin)
         }
     }
 
@@ -150,10 +158,9 @@ class ToolInvoker(
      * этом идёт через эту точку — ради журнала, таймаута и замера времени (О-3).
      */
     private suspend fun decide(
-        runId: RunId,
+        frame: CallFrame,
         definition: AgentTool,
         arguments: JsonObject,
-        context: ToolContext,
         origin: Origin,
     ): Attempt {
         val complaint = ArgumentsSchema.check(definition.argumentsSchema, arguments)
@@ -163,35 +170,62 @@ class ToolInvoker(
                 "инструмент «${definition.name}» внутренний: модель его вызывать не может",
                 ToolOutcome.FAILURE,
             )
-            definition.visibility == ToolVisibility.INTERNAL -> execute(definition, arguments, context)
-            else -> permitted(runId, definition, arguments, context)
+            definition.visibility == ToolVisibility.INTERNAL -> execute(definition, arguments, frame.context)
+            else -> permitted(frame, definition, arguments)
         }
     }
 
     /** Вызов, аргументы которого приняты; остаётся спросить права и выполнить. */
     private suspend fun permitted(
-        runId: RunId,
+        frame: CallFrame,
         definition: AgentTool,
         arguments: JsonObject,
-        context: ToolContext,
-    ): Attempt =
-        when (val decision = permissions.resolve(definition.name, definition.kind, definition.declaredPermission)) {
-            PermissionDecision.Allow -> guarded(runId, definition, arguments, context)
+    ): Attempt {
+        val decision = permissions.resolve(definition.name, definition.kind, definition.declaredPermission)
+        return when (decision) {
+            PermissionDecision.Allow -> guarded(frame, definition, arguments)
 
             is PermissionDecision.Deny -> refused(
                 "вызов «${definition.name}» запрещён настройками (${decision.reason.name})",
                 ToolOutcome.DENIED,
             )
 
-            // Подтверждения спрашивает диалог (T-1.13), а не точка вызова: пока диалога
-            // нет, «нужно спросить у пользователя» — это отказ, и в журнале он помечен
-            // как требовавший подтверждения.
-            PermissionDecision.Ask -> refused(
-                "вызов «${definition.name}» требует подтверждения пользователя, а спросить его пока нечем",
+            PermissionDecision.Ask -> requestApproval(frame, definition, arguments)
+        }
+    }
+
+    /**
+     * Спрашивает у пользователя разрешение на вызов (T-1.13).
+     *
+     * «Разрешить один раз» не запоминается нигде; «на сессию» запоминает реализация порта;
+     * «запретить» — отказ, в журнале `approval = DENY`. Отмена ожидания прерывает корутину,
+     * вызов не выполняется, и прогон завершается как остановленный.
+     */
+    private suspend fun requestApproval(
+        frame: CallFrame,
+        definition: AgentTool,
+        arguments: JsonObject,
+    ): Attempt {
+        val request = ToolApprovalRequest(
+            callId = frame.callId,
+            runId = frame.runId,
+            tool = definition.name,
+            arguments = frame.toolArguments,
+            kind = definition.kind,
+            changesRepository = definition.changesRepository,
+        )
+        return when (val decision = approval.request(frame.runId, request)) {
+            ApprovalDecision.ALLOW_ONCE, ApprovalDecision.ALLOW_SESSION, ApprovalDecision.ALLOW_ALWAYS ->
+                guarded(frame, definition, arguments).copy(requiredApproval = true, approval = decision)
+
+            ApprovalDecision.DENY -> refused(
+                "вызов «${definition.name}» запрещён пользователем",
                 ToolOutcome.DENIED,
                 requiredApproval = true,
+                approval = ApprovalDecision.DENY,
             )
         }
+    }
 
     /**
      * Вызов, которому разрешено выполняться; изменяющий репозиторий обязан получить точку отката (T-1.8).
@@ -207,16 +241,15 @@ class ToolInvoker(
      * прогон из-за него не ломается (О-9).
      */
     private suspend fun guarded(
-        runId: RunId,
+        frame: CallFrame,
         definition: AgentTool,
         arguments: JsonObject,
-        context: ToolContext,
     ): Attempt =
         if (!definition.changesRepository) {
-            execute(definition, arguments, context)
+            execute(definition, arguments, frame.context)
         } else {
-            when (val snapshot = snapshots.beforeChange(runId)) {
-                is ChangeSnapshot.Taken -> withSnapshot(execute(definition, arguments, context), snapshot.ref)
+            when (val snapshot = snapshots.beforeChange(frame.runId)) {
+                is ChangeSnapshot.Taken -> withSnapshot(execute(definition, arguments, frame.context), snapshot.ref)
 
                 ChangeSnapshot.NoHead -> refused(
                     "вызов «${definition.name}» не выполнен: в репозитории нет коммита, " +
@@ -253,17 +286,42 @@ class ToolInvoker(
         logger.warn("Инструмент «${definition.name}» завершился ошибкой", error)
         refused("инструмент «${definition.name}» завершился ошибкой: ${error.message}", ToolOutcome.FAILURE)
     }
-
-    private fun parseArguments(arguments: String): JsonObject? =
-        runCatching { Json.parseToJsonElement(arguments) }.getOrNull() as? JsonObject
-
-    private fun refused(
-        text: String,
-        outcome: ToolOutcome,
-        requiredApproval: Boolean = false,
-        testReport: TestReport? = null,
-    ): Attempt = Attempt(ToolResult(text = text, outcome = outcome, testReport = testReport), requiredApproval)
 }
+
+/**
+ * Что нужно знать о вызове на каждом этапе обработки.
+ *
+ * Параметры собраны в один объект, чтобы не тащить пять аргументов через каждую
+ * функцию точки вызова: detekt считает параметры, а поля data class — нет.
+ */
+private data class CallFrame(
+    val runId: RunId,
+    val callId: ToolCallId,
+    val tool: String,
+    val toolArguments: String,
+    val context: ToolContext,
+)
+
+/** Разбирает аргументы модели как JSON-объект; null, если не похоже. */
+private fun parseArguments(arguments: String): JsonObject? =
+    runCatching { Json.parseToJsonElement(arguments) }.getOrNull() as? JsonObject
+
+/**
+ * Неудача инструмента или отказ: прогон от этого не ломается (решение 3, О-4).
+ *
+ * Вынесена из [ToolInvoker], чтобы класс не перешагивал порог `TooManyFunctions`.
+ */
+private fun refused(
+    text: String,
+    outcome: ToolOutcome,
+    requiredApproval: Boolean = false,
+    approval: ApprovalDecision? = null,
+    testReport: TestReport? = null,
+): Attempt = Attempt(
+    result = ToolResult(text = text, outcome = outcome, testReport = testReport),
+    requiredApproval = requiredApproval,
+    approval = approval,
+)
 
 /**
  * Отчёт, который несёт исход таймаута (T-1.10).
@@ -276,8 +334,12 @@ class ToolInvoker(
 private fun timeoutReport(definition: AgentTool): TestReport? =
     if (definition.producesTestReport) TestReport(state = TestState.TIMEOUT) else null
 
-/** Исход попытки и то, спрашивали ли подтверждение: и то и другое едет в журнал. */
-private data class Attempt(val result: ToolResult, val requiredApproval: Boolean = false)
+/** Исход попытки, признак подтверждения и само решение: всё едет в журнал. */
+private data class Attempt(
+    val result: ToolResult,
+    val requiredApproval: Boolean = false,
+    val approval: ApprovalDecision? = null,
+)
 
 /**
  * Кто просит вызов — модель или хост (T-1.11).
@@ -297,5 +359,8 @@ private enum class Origin { MODEL, INTERNAL }
  * о нём не подозревает.
  */
 private fun withSnapshot(attempt: Attempt, ref: SnapshotRef): Attempt =
-    Attempt(attempt.result.copy(snapshotRef = ref), attempt.requiredApproval)
-
+    Attempt(
+        result = attempt.result.copy(snapshotRef = ref),
+        requiredApproval = attempt.requiredApproval,
+        approval = attempt.approval,
+    )

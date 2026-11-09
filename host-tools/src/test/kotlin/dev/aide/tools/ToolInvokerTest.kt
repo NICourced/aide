@@ -1,14 +1,19 @@
 package dev.aide.tools
 
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.Permission
 import dev.aide.domain.RunId
+import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
 import dev.aide.tools.file.ReadFileTool
+import dev.aide.tools.permission.SessionPermissions
 import dev.aide.tools.permission.ToolKind
+import dev.aide.tools.ports.ToolApproval
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -49,8 +54,15 @@ class ToolInvokerTest {
         tool: AgentTool,
         recorder: RecordingToolCalls = RecordingToolCalls(),
         stored: (String) -> ToolPermission? = { null },
+        approval: ToolApproval = ToolApproval { _, _ -> ApprovalDecision.DENY },
+        sessionPermissions: SessionPermissions = SessionPermissions(),
     ): Pair<ToolInvoker, RecordingToolCalls> =
-        testInvoker(ToolRegistry(listOf(tool)), recorder, stored) to recorder
+        testInvoker(
+            registry = ToolRegistry(listOf(tool)),
+            recorder = recorder,
+            stored = stored,
+            approvals = TestApprovals(approval, sessionPermissions),
+        ) to recorder
 
     @Test
     fun `недостающий аргумент не доходит до инструмента`() {
@@ -225,6 +237,131 @@ class ToolInvokerTest {
             assertIs<CancellationException>(outcome.await())
         }
     }
+
+    @Test
+    fun `ALLOW_ONCE выполняет вызов и сохраняет решение в журнале`() {
+        val tool = SpyTool()
+        val request = CompletableDeferred<ToolApprovalRequest>()
+        val (call, recorder) = invoker(
+            tool,
+            stored = { ask(it) },
+            approval = ToolApproval { _, req ->
+                request.complete(req)
+                ApprovalDecision.ALLOW_ONCE
+            },
+        )
+
+        val result = runBlocking { call.invoke(runId, tool.name, ARGUMENTS, workspace.context) }
+
+        assertEquals(ToolOutcome.SUCCESS, result.outcome)
+        assertEquals(1, tool.calls)
+        val recorded = recorder.calls.single()
+        assertTrue(recorded.requiredApproval)
+        assertEquals(ApprovalDecision.ALLOW_ONCE, recorded.approval)
+        val req = runBlocking { request.await() }
+        assertEquals(tool.name, req.tool)
+        assertEquals(ARGUMENTS, req.arguments)
+        assertEquals(req.callId, recorded.id, "подтверждение адресует тот же вызов, что попал в журнал")
+    }
+
+    @Test
+    fun `ALLOW_ONCE не запоминается и следующий вызов спрашивает снова`() {
+        var approvalCalls = 0
+        val tool = SpyTool(declaredPermission = ToolPermission(ToolPermissionName.SPY, Permission.ASK, Permission.ASK))
+        val (call, recorder) = invoker(
+            tool,
+            approval = ToolApproval { _, _ ->
+                approvalCalls++
+                ApprovalDecision.ALLOW_ONCE
+            },
+        )
+
+        runBlocking {
+            call.invoke(runId, tool.name, ARGUMENTS, workspace.context)
+            call.invoke(runId, tool.name, ARGUMENTS, workspace.context)
+        }
+
+        assertEquals(2, approvalCalls, "разрешение на один раз не должно запоминаться")
+        assertEquals(
+            listOf(ApprovalDecision.ALLOW_ONCE, ApprovalDecision.ALLOW_ONCE),
+            recorder.calls.map { it.approval },
+        )
+    }
+
+    @Test
+    fun `ALLOW_SESSION запоминается и следующий вызов не спрашивает`() {
+        val sessionPermissions = SessionPermissions()
+        // Объявленное умолчание ASK: первый вызов спрашивает и запоминает разрешение на сессию.
+        val tool = SpyTool(declaredPermission = ToolPermission(ToolPermissionName.SPY, Permission.ASK, Permission.ASK))
+        val (first, firstRecorder) = invoker(
+            tool,
+            approval = ToolApproval { _, request ->
+                sessionPermissions.allow(request.tool, request.kind)
+                ApprovalDecision.ALLOW_SESSION
+            },
+            sessionPermissions = sessionPermissions,
+        )
+
+        runBlocking { first.invoke(runId, tool.name, ARGUMENTS, workspace.context) }
+
+        val firstCall = firstRecorder.calls.single()
+        assertTrue(firstCall.requiredApproval)
+        assertEquals(ApprovalDecision.ALLOW_SESSION, firstCall.approval)
+
+        val (second, secondRecorder) = invoker(
+            tool,
+            approval = ToolApproval { _, _ -> error("сессионное разрешение должно было сработать") },
+            sessionPermissions = sessionPermissions,
+        )
+        val result = runBlocking { second.invoke(runId, tool.name, ARGUMENTS, workspace.context) }
+
+        assertEquals(ToolOutcome.SUCCESS, result.outcome)
+        assertFalse(secondRecorder.calls.single().requiredApproval)
+    }
+
+    @Test
+    fun `DENY отклоняет вызов и пишет решение в журнал`() {
+        val tool = SpyTool()
+        val (call, recorder) = invoker(tool, stored = { ask(it) })
+
+        val result = runBlocking { call.invoke(runId, tool.name, ARGUMENTS, workspace.context) }
+
+        assertEquals(ToolOutcome.DENIED, result.outcome)
+        assertEquals(0, tool.calls)
+        val recorded = recorder.calls.single()
+        assertTrue(recorded.requiredApproval)
+        assertEquals(ApprovalDecision.DENY, recorded.approval)
+    }
+
+    @Test
+    fun `отмена ожидания подтверждения не выполняет вызов`() = runBlocking {
+        val tool = SpyTool()
+        val approvalStarted = CompletableDeferred<Unit>()
+        val call = invoker(
+            tool,
+            stored = { ask(it) },
+            approval = ToolApproval { _, _ ->
+                approvalStarted.complete(Unit)
+                awaitCancellation()
+            },
+        ).first
+        val outcome = CompletableDeferred<Any>()
+        val job = launch {
+            try {
+                outcome.complete(call.invoke(runId, tool.name, ARGUMENTS, workspace.context))
+            } catch (error: CancellationException) {
+                outcome.complete(error)
+                throw error
+            }
+        }
+        approvalStarted.await()
+        job.cancel()
+
+        assertIs<CancellationException>(outcome.await())
+        assertEquals(0, tool.calls)
+    }
+
+    private fun ask(tool: String) = ToolPermission(tool, Permission.ASK, Permission.ASK)
 
     private companion object {
 

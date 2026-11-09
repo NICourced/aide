@@ -5,6 +5,7 @@ import dev.aide.domain.SnapshotRef
 import dev.aide.host.workspace.Workspace
 import dev.aide.host.workspace.WorkspaceBoundaryAdapter
 import dev.aide.host.workspace.WorkspaceFileSystem
+import dev.aide.domain.ApprovalDecision
 import dev.aide.tools.ToolContext
 import dev.aide.tools.ToolInvoker
 import dev.aide.tools.ToolRegistry
@@ -15,6 +16,7 @@ import dev.aide.tools.file.WriteFileTool
 import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
+import dev.aide.tools.ports.ToolApproval
 import dev.aide.tools.ports.ToolCallRecorder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -48,7 +50,7 @@ internal fun testStepTools(
         registry = registry,
         invoker = ToolInvoker(
             registry = registry,
-            permissions = PermissionResolver { null },
+            permissions = PermissionResolver(stored = { null }),
             // Журнал не проверяется этим тестом: вызовов инструментов здесь не бывает.
             recorder = ToolCallRecorder { },
             // Точка отката: реестр обязан совпадать с хостовым, а изменяющий инструмент
@@ -56,6 +58,7 @@ internal fun testStepTools(
             snapshots = ChangeSnapshots {
                 ChangeSnapshot.Taken(SnapshotRef("refs/ai/snap/0-before-agent-step"))
             },
+            approval = ToolApproval { _, _ -> ApprovalDecision.DENY },
         ),
         context = TestToolContext(workspace),
     )

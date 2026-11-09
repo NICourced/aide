@@ -1,10 +1,8 @@
 package dev.aide.tools.permission
 
 import dev.aide.domain.Permission
+import dev.aide.domain.ToolKind
 import dev.aide.domain.ToolPermission
-
-/** Ось разрешения: FR-TOOLS-8 требует отдельно чтение и отдельно запись. */
-enum class ToolKind { READ, WRITE }
 
 /**
  * Почему отказано. Код, а не текст: строку для экрана «нет прав» строит UI из ресурсов (NFR-13).
@@ -38,15 +36,22 @@ sealed interface PermissionDecision {
  * [stored] возвращает настройку инструмента или null, если её нет: источник настройки
  * (хранилище хоста) остаётся снаружи, чтобы таблица решений проверялась без базы.
  */
-class PermissionResolver(private val stored: (String) -> ToolPermission?) {
+class PermissionResolver(
+    private val stored: (String) -> ToolPermission?,
+    private val session: (String) -> ToolPermission? = { null },
+) {
 
-    /** Разрешение обеих осей: настройка перекрывает умолчание по каждой оси отдельно (FR-TOOLS-8). */
+    /**
+     * Разрешение обеих осей: настройка из базы важнее сессионного, сессионное — объявленного
+     * умолчания; оси независимы (FR-TOOLS-8, T-1.13).
+     */
     fun effective(tool: String, declared: ToolPermission = newToolDefaults(tool)): ToolPermission {
         val saved = stored(tool)
+        val sess = session(tool)
         return ToolPermission(
             tool = tool,
-            read = saved?.read ?: declared.read,
-            write = saved?.write ?: declared.write,
+            read = saved?.read ?: sess?.read ?: declared.read,
+            write = saved?.write ?: sess?.write ?: declared.write,
         )
     }
 

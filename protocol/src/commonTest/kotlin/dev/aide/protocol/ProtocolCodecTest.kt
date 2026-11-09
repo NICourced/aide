@@ -2,6 +2,7 @@ package dev.aide.protocol
 
 import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
@@ -17,8 +18,10 @@ import dev.aide.domain.RunState
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
+import dev.aide.domain.ToolKind
 import dev.aide.domain.ToolOutcome
 import kotlinx.datetime.Instant
 import kotlin.test.Test
@@ -238,6 +241,10 @@ class ProtocolCodecTest {
             ClientMessage.ToolCalls(requestId, RunId("r-1")),
             ClientMessage.ToolCalls(requestId, RunId("r-1"), ToolCallCursor(toolCallAt, ToolCallId("tc-1")), 50),
             ClientMessage.ToolCallDetail(requestId, ToolCallId("tc-1")),
+            ClientMessage.ApprovalAnswer(requestId, RunId("r-1"), ToolCallId("tc-1"), ApprovalDecision.ALLOW_ONCE),
+            ClientMessage.ApprovalAnswer(requestId, RunId("r-1"), ToolCallId("tc-1"), ApprovalDecision.ALLOW_SESSION),
+            ClientMessage.ApprovalAnswer(requestId, RunId("r-1"), ToolCallId("tc-1"), ApprovalDecision.DENY),
+            ClientMessage.PendingApprovals(requestId),
         )
         messages.forEach { message ->
             assertEquals(message, clientMessage(ProtocolCodec.encode(message)))
@@ -307,6 +314,9 @@ class ProtocolCodecTest {
             ),
             HostMessage.ToolCallPage(requestId, RunId("r-1"), emptyList(), null, false),
             HostMessage.ToolCallContent(requestId, toolCall()),
+            HostMessage.ApprovalAnswered(requestId, RunId("r-1"), ToolCallId("tc-1")),
+            HostMessage.PendingApprovalsSnapshot(requestId, emptyList()),
+            HostMessage.PendingApprovalsSnapshot(requestId, listOf(approvalRequest())),
         )
         messages.forEach { message ->
             assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
@@ -371,6 +381,16 @@ class ProtocolCodecTest {
         val config = agentConfig()
         return ProviderCatalogEntry(config.providers.first(), config.models)
     }
+
+    /** Запрос подтверждения вызова для round-trip. */
+    private fun approvalRequest(): ToolApprovalRequest = ToolApprovalRequest(
+        callId = ToolCallId("tc-1"),
+        runId = RunId("r-1"),
+        tool = "write_file",
+        arguments = """{"path":"src/App.kt","content":"x"}""",
+        kind = ToolKind.WRITE,
+        changesRepository = true,
+    )
 
     /** Вызов журнала для round-trip: страница, полное содержимое и событие. */
     private fun toolCall(): ToolCall = ToolCall(
@@ -440,6 +460,7 @@ class ProtocolCodecTest {
             HostEvent.WorkspaceChanged(workspaceId),
             HostEvent.RunStateChanged(agentRun().copy(state = RunState.PAUSED)),
             HostEvent.RunProgress(RunId("r-1"), 1_500, Cost(amountMicros = 25, known = false)),
+            HostEvent.ApprovalRequested(approvalRequest()),
             HostEvent.HostShuttingDown,
         )
         events.forEach { event ->

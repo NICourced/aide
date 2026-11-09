@@ -11,7 +11,9 @@ import dev.aide.agent.provider.ConfiguredModel
 import dev.aide.client.state.ConnectionState
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.KtorHostConnection
+import dev.aide.client.state.answerApproval
 import dev.aide.domain.AgentRun
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
@@ -47,6 +49,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -262,7 +265,18 @@ class ToolCallEndToEndTest {
             val run = try {
                 val client = openClient(host)
                 assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+
+                val approver = launch {
+                    val request = withTimeoutOrNull(10_000) {
+                        while (client.session.value.pendingApproval == null) delay(20)
+                        client.session.value.pendingApproval
+                    }
+                    assertNotNull(request, "запрос подтверждения обязан появиться у клиента")
+                    client.answerApproval(request.runId, request.callId, ApprovalDecision.DENY)
+                }
+
                 client.postTaskApprovingPlan("Выполни команду", AutonomyMode.ASK_BEFORE_CHANGES).getOrThrow()
+                approver.join()
                 finish(client)
             } finally {
                 host.close()

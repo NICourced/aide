@@ -87,9 +87,36 @@ class PermissionResolverTest {
         assertEquals(PermissionDecision.Ask, resolver.resolve("write_file", ToolKind.WRITE))
     }
 
-    private fun resolver(vararg saved: ToolPermission): PermissionResolver {
+    @Test
+    fun `настройка важнее сессионного разрешения`() {
+        val resolver = resolver(
+            tool("task", read = Permission.DENY, write = Permission.ALLOW),
+            session = tool("task", read = Permission.ALLOW, write = Permission.ALLOW),
+        )
+        assertEquals(PermissionDecision.Deny(DenyReason.DENIED_BY_SETTINGS), resolver.resolve("task", ToolKind.READ))
+        assertEquals(PermissionDecision.Allow, resolver.resolve("task", ToolKind.WRITE))
+    }
+
+    @Test
+    fun `сессионное разрешение важнее объявленного умолчания`() {
+        val declared = tool("task", read = Permission.ASK, write = Permission.ASK)
+        val resolver = resolver(
+            session = tool("task", read = Permission.ALLOW, write = Permission.DENY),
+        )
+        assertEquals(PermissionDecision.Allow, resolver.resolve("task", ToolKind.READ, declared))
+        val expected = PermissionDecision.Deny(DenyReason.DENIED_BY_SETTINGS)
+        assertEquals(expected, resolver.resolve("task", ToolKind.WRITE, declared))
+    }
+
+    private fun resolver(
+        vararg saved: ToolPermission = emptyArray(),
+        session: ToolPermission? = null,
+    ): PermissionResolver {
         val byTool = saved.associateBy { it.tool }
-        return PermissionResolver { byTool[it] }
+        return PermissionResolver(
+            stored = { byTool[it] },
+            session = { if (it == session?.tool) session else null },
+        )
     }
 
     private fun tool(name: String, read: Permission, write: Permission) =

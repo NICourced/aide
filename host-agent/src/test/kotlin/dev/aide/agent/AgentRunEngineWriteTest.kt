@@ -99,7 +99,8 @@ class AgentRunEngineWriteTest {
             file("src/App.kt", "старое\n")
             val llm = ScriptedLlmClient(listOf(call("write_file", APP_ARGUMENTS), text("ладно")))
 
-            // Настроек нет: у записи объявленное умолчание ASK, а диалога подтверждения (T-1.13) ещё нет.
+            // Настроек нет: у записи объявленное умолчание ASK, а тестовый порт подтверждения
+            // по умолчанию отвечает DENY (T-1.13).
             run(llm, stored = { null })
 
             assertEquals(
@@ -109,7 +110,7 @@ class AgentRunEngineWriteTest {
             )
             val tool = llm.requests[1].messages.last { it.role == LlmRole.TOOL }
             assertTrue(
-                tool.content.contains("подтверждени"),
+                tool.content.contains("запрещён"),
                 "модель обязана увидеть причину отказа: ${tool.content}",
             )
             assertEquals(

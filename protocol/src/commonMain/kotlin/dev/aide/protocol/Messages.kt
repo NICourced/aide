@@ -2,6 +2,7 @@ package dev.aide.protocol
 
 import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelSecretStatus
@@ -10,6 +11,7 @@ import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
+import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import kotlinx.serialization.SerialName
@@ -286,6 +288,38 @@ sealed interface ClientMessage {
         /** Вызов, полное содержимое которого нужно. */
         val callId: ToolCallId,
     ) : ClientMessage, RequestIdCarrier
+
+    /**
+     * Ответ на запрос подтверждения вызова (T-1.13).
+     *
+     * Решение адресуется конкретному вызову по [callId]: событие [HostEvent.ApprovalRequested]
+     * уже показало пользователю, какой инструмент и с какими аргументами зовётся.
+     */
+    @Serializable
+    @SerialName("approvalAnswer")
+    data class ApprovalAnswer(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Прогон, к которому относится решение. */
+        val runId: RunId,
+        /** Идентификатор вызова, на который отвечают. */
+        val callId: ToolCallId,
+        /** Что решил пользователь. */
+        val decision: ApprovalDecision,
+    ) : ClientMessage, RequestIdCarrier
+
+    /**
+     * Запросить ожидающие подтверждения вызовы (T-1.13).
+     *
+     * Подключившийся позже клиент не видел событий, которые ушли до него, поэтому он
+     * спрашивает текущие ожидания при подключении и после реконнекта.
+     */
+    @Serializable
+    @SerialName("pendingApprovals")
+    data class PendingApprovals(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+    ) : ClientMessage, RequestIdCarrier
 }
 
 /** Сообщение хоста клиенту. */
@@ -511,4 +545,37 @@ sealed interface HostMessage {
         /** Что произошло на хосте. */
         val event: HostEvent,
     ) : HostMessage
+
+    /**
+     * Решение по подтверждению вызова принято (T-1.13).
+     *
+     * Само состояние запроса не меняется ответом: клиент закрывает диалог сразу,
+     * а выполнение вызова увидит по событию журнала.
+     */
+    @Serializable
+    @SerialName("approvalAnswered")
+    data class ApprovalAnswered(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Прогон, к которому отнесено решение. */
+        val runId: RunId,
+        /** Идентификатор вызова, на который ответили. */
+        val callId: ToolCallId,
+    ) : HostMessage, RequestIdCarrier
+
+    /**
+     * Снимок ожидающих подтверждения вызовов (T-1.13).
+     *
+     * Ответ на [ClientMessage.PendingApprovals]: клиент показывает первый запрос,
+     * потому что движок вызывает инструменты последовательно и одновременно ждать
+     * может только один вызов.
+     */
+    @Serializable
+    @SerialName("pendingApprovalsSnapshot")
+    data class PendingApprovalsSnapshot(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Ожидающие запросы; пустой список означает, что сейчас спрашивать нечего. */
+        val requests: List<ToolApprovalRequest>,
+    ) : HostMessage, RequestIdCarrier
 }

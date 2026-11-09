@@ -1,6 +1,7 @@
 package dev.aide.client.state
 
 import dev.aide.domain.AgentRun
+import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.PlanDecision
@@ -8,8 +9,10 @@ import dev.aide.domain.RunId
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunState
 import dev.aide.domain.TaskId
+import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
+import dev.aide.domain.ToolKind
 import dev.aide.domain.ToolOutcome
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.HostEvent
@@ -354,6 +357,85 @@ class HostClientTest {
         cost = Cost(amountMicros = 0, known = true),
         requiredApproval = false,
         at = TOOL_CALL_AT,
+    )
+
+    @Test
+    fun `событие ApprovalRequested ставит pendingApproval в сессию`() = runBlocking {
+        val request = approvalRequest()
+
+        connection.emit(HostEvent.ApprovalRequested(request))
+
+        assertTrue(
+            awaitProcessed { client.session.value.pendingApproval == request },
+            "запрос подтверждения обязан появиться в сессии",
+        )
+    }
+
+    @Test
+    fun `answerApproval уходит с новым RequestId и очищает pendingApproval`() = runBlocking {
+        val request = approvalRequest()
+        connection.emit(HostEvent.ApprovalRequested(request))
+        awaitProcessed { client.session.value.pendingApproval == request }
+
+        client.answerApproval(request.runId, request.callId, ApprovalDecision.ALLOW_ONCE)
+
+        val answers = connection.takeRequests().filterIsInstance<ClientMessage.ApprovalAnswer>()
+        assertEquals(1, answers.size, "ответ обязан уйти на хост")
+        assertEquals(request.runId, answers.single().runId)
+        assertEquals(request.callId, answers.single().callId)
+        assertEquals(ApprovalDecision.ALLOW_ONCE, answers.single().decision)
+        assertEquals(
+            1,
+            answers.map { it.requestId }.distinct().size,
+            "повтор с тем же RequestId хост принял бы за повтор и вернул прежний ответ",
+        )
+        assertEquals(null, client.session.value.pendingApproval, "диалог обязан закрыться сразу")
+    }
+
+    @Test
+    fun `при реконнекте клиент запрашивает ожидающие подтверждения`() = runBlocking {
+        val request = approvalRequest()
+        connection.emit(HostEvent.ApprovalRequested(request))
+        awaitProcessed { client.session.value.pendingApproval == request }
+        connection.takeRequests()
+
+        connection.setConnected(reconnected = true)
+
+        val pending = mutableListOf<ClientMessage.PendingApprovals>()
+        val found = withTimeoutOrNull(WAIT_MILLIS) {
+            while (pending.isEmpty()) {
+                pending.addAll(connection.takeRequests().filterIsInstance<ClientMessage.PendingApprovals>())
+                delay(POLL_MILLIS)
+            }
+            true
+        } == true
+        assertTrue(found, "после реконнекта обязан уйти запрос ожидающих подтверждений")
+        assertEquals(1, pending.size, "запрос ожидающих подтверждений обязан уйти ровно один раз")
+    }
+
+    @Test
+    fun `при первом подключении клиент запрашивает ожидающие подтверждения`() = runBlocking {
+        val initialConnection = FakeHostConnection()
+        val initialClient = HostClient(initialConnection, scope, requestIdPrefix = "initial")
+        initialClient.start()
+
+        val found = withTimeoutOrNull(WAIT_MILLIS) {
+            while (initialConnection.takeRequests().none { it is ClientMessage.PendingApprovals }) {
+                delay(POLL_MILLIS)
+            }
+            true
+        } == true
+
+        assertTrue(found, "первое подключение тоже обязано спросить ожидающие подтверждения")
+    }
+
+    private fun approvalRequest(): ToolApprovalRequest = ToolApprovalRequest(
+        callId = ToolCallId("tc-approval-1"),
+        runId = RunId("r-1"),
+        tool = "write_file",
+        arguments = """{"path":"src/App.kt","content":"x"}""",
+        kind = ToolKind.WRITE,
+        changesRepository = true,
     )
 
     private companion object {
