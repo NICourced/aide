@@ -43,6 +43,7 @@ class PendingApprovalsTest {
         val resolver = PermissionResolver(stored = { null }, session = sessionPermissions::load)
         val effective = resolver.resolve(WriteFileTool.TOOL_NAME, ToolKind.WRITE)
         assertIs<PermissionDecision.Allow>(effective)
+        Unit
     }
 
     @Test
