@@ -210,12 +210,18 @@ class ToolCallStoreTest {
     fun `журнал переживает закрытие и повторное открытие файла БД`() {
         val dbFile = java.nio.file.Files.createTempFile("aide-tool-call-", ".db").toFile()
         val url = "jdbc:sqlite:${dbFile.absolutePath}"
+        val saved = call(0, runId = RUN, tool = "read_file").copy(
+            durationMillis = 42,
+            cost = Cost(amountMicros = 125, known = true),
+            requiredApproval = true,
+            approval = dev.aide.domain.ApprovalDecision.ALLOW_ONCE,
+        )
         try {
             JdbcSqliteDriver(url).let { driver ->
                 HostDatabase.Schema.create(driver)
                 val store = HostStore(HostDatabase(driver))
                 store.runs.save(run(runId = RUN, taskId = TASK))
-                store.toolCalls.save(call(0, runId = RUN, tool = "read_file"))
+                store.toolCalls.save(saved)
                 driver.close()
             }
 
@@ -223,9 +229,7 @@ class ToolCallStoreTest {
             try {
                 val store = HostStore(HostDatabase(driver))
                 val page = store.toolCalls.page(ToolCallScope.Task(TASK), tool = null, before = null, limit = 20)
-                assertEquals(1, page.calls.size)
-                assertEquals("tc-0", page.calls.single().id.value)
-                assertEquals("read_file", page.calls.single().tool)
+                assertEquals(listOf(saved), page.calls)
             } finally {
                 driver.close()
             }

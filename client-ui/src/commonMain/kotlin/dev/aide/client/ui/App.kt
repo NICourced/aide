@@ -238,7 +238,7 @@ private fun AgentDestination(
  * а полное содержимое запрашивается здесь — состояние лога не знает про транспорт.
  */
 @Composable
-private fun CallLogDestination(
+internal fun CallLogDestination(
     state: AppStateStore,
     client: HostClient,
     session: HostSession,
@@ -247,12 +247,14 @@ private fun CallLogDestination(
 ) {
     val log by state.toolCallLog.log.collectAsState()
     val tasks = session.tasks
+    var initialized by remember { mutableStateOf(false) }
     val initialTaskId = remember(tasks, session.runs) {
         session.runs.lastOrNull()?.taskId ?: tasks.lastOrNull()?.id
     }
 
     LaunchedEffect(initialTaskId) {
-        if (initialTaskId != null) {
+        if (!initialized && initialTaskId != null) {
+            initialized = true
             state.toolCallLog.selectTask(initialTaskId)
             loadToolCallPage(state, client, ToolCallScope.Task(initialTaskId), tool = null, cursor = null)
         }

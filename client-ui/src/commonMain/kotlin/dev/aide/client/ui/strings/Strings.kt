@@ -48,7 +48,6 @@ import dev.aide.client.ui.resources.call_log_outcome_success
 import dev.aide.client.ui.resources.call_log_outcome_timeout
 import dev.aide.client.ui.resources.call_log_result
 import dev.aide.client.ui.resources.call_log_summary
-import dev.aide.client.ui.resources.call_log_task_all
 import dev.aide.client.ui.resources.call_log_task_label
 import dev.aide.client.ui.resources.call_log_title
 import dev.aide.client.ui.resources.call_log_tool_all
@@ -315,7 +314,6 @@ object Strings {
     val callLogOutcomeTimeout: StringResource = Res.string.call_log_outcome_timeout
     val callLogTaskLabel: StringResource = Res.string.call_log_task_label
     val callLogToolLabel: StringResource = Res.string.call_log_tool_label
-    val callLogTaskAll: StringResource = Res.string.call_log_task_all
     val callLogToolAll: StringResource = Res.string.call_log_tool_all
 
     val stateLoadingTitle: StringResource = Res.string.state_loading_title
