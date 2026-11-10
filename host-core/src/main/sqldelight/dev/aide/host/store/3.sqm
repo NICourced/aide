@@ -1,0 +1,15 @@
+-- Таблица неприменённых файловых предложений (T-1.15).
+-- Полный объект хранится в payload; индексируемые поля — run_id и call_id,
+-- чтобы искать предложения прогона и вызова без разбора CBOR.
+CREATE TABLE change_proposal (
+    id TEXT NOT NULL PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    payload BLOB NOT NULL
+);
+
+CREATE INDEX change_proposal_run ON change_proposal(run_id);
+CREATE INDEX change_proposal_call ON change_proposal(call_id);

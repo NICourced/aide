@@ -58,6 +58,7 @@ object DomainFixtures {
         title = "Авторизация",
         prompt = "Сделай выдачу токена через сервис",
         branch = "ai/t-1",
+        requestedMode = AutonomyMode.SUGGEST_ONLY,
         status = TaskStatus.REVIEW,
         createdAt = t0,
         runIds = listOf(RunId("r-1")),
@@ -186,4 +187,14 @@ object DomainFixtures {
     )
 
     val packetLevelDecision = decision.copy(scope = DecisionScope.PACKET, targetHunkId = null, comment = null)
+
+    val changeProposal = ChangeProposal(
+        id = ProposalId("cp-1"),
+        runId = RunId("r-1"),
+        callId = ToolCallId("tc-1"),
+        tool = "write_file",
+        files = listOf(fileChange),
+        risk = RiskLevel.NORMAL,
+        createdAt = t1,
+    )
 }

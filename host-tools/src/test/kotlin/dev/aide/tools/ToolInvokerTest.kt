@@ -1,14 +1,18 @@
 package dev.aide.tools
 
 import dev.aide.domain.ApprovalDecision
+import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Permission
+import dev.aide.domain.RiskLevel
 import dev.aide.domain.RunId
 import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
 import dev.aide.tools.file.ReadFileTool
+import dev.aide.tools.file.WriteFileTool
 import dev.aide.tools.permission.SessionPermissions
 import dev.aide.tools.permission.ToolKind
+import dev.aide.tools.ports.ChangeRisk
 import dev.aide.tools.ports.ToolApproval
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -17,6 +21,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.io.path.exists
+import kotlin.io.path.readText
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
@@ -61,7 +67,7 @@ class ToolInvokerTest {
             registry = ToolRegistry(listOf(tool)),
             recorder = recorder,
             stored = stored,
-            approvals = TestApprovals(approval, sessionPermissions),
+            autonomy = TestAutonomy(approvals = TestApprovals(approval, sessionPermissions)),
         ) to recorder
 
     @Test
@@ -359,6 +365,192 @@ class ToolInvokerTest {
 
         assertIs<CancellationException>(outcome.await())
         assertEquals(0, tool.calls)
+    }
+
+    @Test
+    fun `SUGGEST_ONLY сохраняет write_file как предложение и не трогает диск`() {
+        val proposals = RecordingChangeProposals()
+        val call = testInvoker(
+            registry = ToolRegistry(listOf(WriteFileTool)),
+            recorder = RecordingToolCalls(),
+            stored = writeAllowed,
+            snapshots = FakeChangeSnapshots(),
+            autonomy = dev.aide.tools.TestAutonomy(proposals = proposals),
+        )
+
+        val result = runBlocking {
+            call.invoke(
+                runId,
+                WriteFileTool.name,
+                """{"path":"src/App.kt","content":"fun main() = Unit\n"}""",
+                workspace.context,
+                mode = AutonomyMode.SUGGEST_ONLY,
+            )
+        }
+
+        assertEquals(ToolOutcome.PROPOSED, result.outcome, result.text)
+        assertFalse(workspace.root.resolve("src/App.kt").exists(), "файл не должен быть создан в режиме предложений")
+        assertEquals(1, proposals.saved.size, "предложение обязано попасть в очередь")
+        val proposal = proposals.saved.single()
+        assertEquals(runId, proposal.runId)
+        assertEquals(WriteFileTool.name, proposal.tool)
+        assertEquals("src/App.kt", proposal.files.single().path)
+    }
+
+    @Test
+    fun `AUTO_APPLY_SAFE применяет SAFE изменение самостоятельно`() {
+        val call = testInvoker(
+            registry = ToolRegistry(listOf(WriteFileTool)),
+            recorder = RecordingToolCalls(),
+            stored = writeAllowed,
+            snapshots = FakeChangeSnapshots(),
+            autonomy = dev.aide.tools.TestAutonomy(
+                risk = ChangeRisk { _, _, _, _ -> RiskLevel.SAFE },
+            ),
+        )
+
+        val result = runBlocking {
+            call.invoke(
+                runId,
+                WriteFileTool.name,
+                """{"path":"src/App.kt","content":"fun main() = Unit\n"}""",
+                workspace.context,
+                mode = AutonomyMode.AUTO_APPLY_SAFE,
+            )
+        }
+
+        assertEquals(ToolOutcome.SUCCESS, result.outcome, result.text)
+        assertEquals("fun main() = Unit\n", workspace.root.resolve("src/App.kt").readText())
+    }
+
+    @Test
+    fun `AUTO_APPLY_SAFE для не-SAFE изменения возвращает PROPOSED`() {
+        val proposals = RecordingChangeProposals()
+        val call = testInvoker(
+            registry = ToolRegistry(listOf(WriteFileTool)),
+            recorder = RecordingToolCalls(),
+            stored = writeAllowed,
+            snapshots = FakeChangeSnapshots(),
+            autonomy = dev.aide.tools.TestAutonomy(
+                risk = ChangeRisk { _, _, _, _ -> RiskLevel.NORMAL },
+                proposals = proposals,
+            ),
+        )
+
+        val result = runBlocking {
+            call.invoke(
+                runId,
+                WriteFileTool.name,
+                """{"path":"src/App.kt","content":"fun main() = Unit\n"}""",
+                workspace.context,
+                mode = AutonomyMode.AUTO_APPLY_SAFE,
+            )
+        }
+
+        assertEquals(ToolOutcome.PROPOSED, result.outcome, result.text)
+        assertFalse(workspace.root.resolve("src/App.kt").exists())
+        assertEquals(1, proposals.saved.size)
+    }
+
+    @Test
+    fun `FULL_AUTO исполняет изменяющий вызов без подтверждения`() {
+        val call = testInvoker(
+            registry = ToolRegistry(listOf(WriteFileTool)),
+            recorder = RecordingToolCalls(),
+            stored = writeAllowed,
+            snapshots = FakeChangeSnapshots(),
+        )
+
+        val result = runBlocking {
+            call.invoke(
+                runId,
+                WriteFileTool.name,
+                """{"path":"src/App.kt","content":"fun main() = Unit\n"}""",
+                workspace.context,
+                mode = AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
+        }
+
+        assertEquals(ToolOutcome.SUCCESS, result.outcome, result.text)
+        assertTrue(workspace.root.resolve("src/App.kt").exists())
+    }
+
+    @Test
+    fun `сбой очереди не выдаёт предложение за сохранённое и не меняет файл`() {
+        val call = testInvoker(
+            registry = ToolRegistry(listOf(WriteFileTool)),
+            recorder = RecordingToolCalls(),
+            stored = writeAllowed,
+            autonomy = dev.aide.tools.TestAutonomy(
+                proposals = dev.aide.tools.ports.ChangeProposals { error("db unavailable") },
+            ),
+        )
+
+        val result = runBlocking {
+            call.invoke(
+                runId = runId,
+                tool = WriteFileTool.name,
+                arguments = """{"path":"src/App.kt","content":"new"}""",
+                context = workspace.context,
+                mode = AutonomyMode.SUGGEST_ONLY,
+            )
+        }
+
+        assertEquals(ToolOutcome.FAILURE, result.outcome, result.text)
+        assertTrue(result.text.contains("db unavailable"), result.text)
+        assertFalse(workspace.root.resolve("src/App.kt").exists())
+    }
+
+    @Test
+    fun `предложение за пределами воркспейса отклоняется без записи в очередь`() {
+        val proposals = RecordingChangeProposals()
+        val outside = workspace.root.parent.resolve("aide-outside-${System.nanoTime()}.txt")
+        val call = testInvoker(
+            registry = ToolRegistry(listOf(WriteFileTool)),
+            stored = writeAllowed,
+            autonomy = dev.aide.tools.TestAutonomy(proposals = proposals),
+        )
+
+        val result = runBlocking {
+            call.invoke(
+                runId = runId,
+                tool = WriteFileTool.name,
+                arguments = """{"path":"../${outside.fileName}","content":"secret"}""",
+                context = workspace.context,
+                mode = AutonomyMode.SUGGEST_ONLY,
+            )
+        }
+
+        assertEquals(ToolOutcome.DENIED, result.outcome, result.text)
+        assertFalse(outside.exists())
+        assertTrue(proposals.saved.isEmpty())
+    }
+
+    @Test
+    fun `DENY не вызывает классификатор и не создаёт предложение`() {
+        val proposals = RecordingChangeProposals()
+        val call = testInvoker(
+            registry = ToolRegistry(listOf(WriteFileTool)),
+            stored = { name -> ToolPermission(name, Permission.DENY, Permission.DENY) },
+            autonomy = dev.aide.tools.TestAutonomy(
+                risk = ChangeRisk { _, _, _, _ -> error("риск при DENY вычисляться не должен") },
+                proposals = proposals,
+            ),
+        )
+
+        val result = runBlocking {
+            call.invoke(
+                runId = runId,
+                tool = WriteFileTool.name,
+                arguments = """{"path":"src/App.kt","content":"new"}""",
+                context = workspace.context,
+                mode = AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
+        }
+
+        assertEquals(ToolOutcome.DENIED, result.outcome)
+        assertTrue(proposals.saved.isEmpty())
+        assertFalse(workspace.root.resolve("src/App.kt").exists())
     }
 
     private fun ask(tool: String) = ToolPermission(tool, Permission.ASK, Permission.ASK)

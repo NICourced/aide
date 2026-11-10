@@ -209,6 +209,17 @@ import dev.aide.client.ui.resources.test_status_red
 import dev.aide.client.ui.resources.test_status_red_truncated
 import dev.aide.client.ui.resources.test_status_skipped
 import dev.aide.client.ui.resources.test_status_timeout
+import dev.aide.client.ui.resources.call_log_outcome_proposed
+import dev.aide.client.ui.resources.run_mode_ask_before_changes
+import dev.aide.client.ui.resources.run_mode_auto_apply_safe
+import dev.aide.client.ui.resources.run_mode_full_auto
+import dev.aide.client.ui.resources.run_mode_label
+import dev.aide.client.ui.resources.run_mode_suggest_only
+import dev.aide.client.ui.resources.settings_autonomy_mode
+import dev.aide.client.ui.resources.settings_autonomy_mode_ask_before_changes
+import dev.aide.client.ui.resources.settings_autonomy_mode_auto_apply_safe
+import dev.aide.client.ui.resources.settings_autonomy_mode_full_auto
+import dev.aide.client.ui.resources.settings_autonomy_mode_suggest_only
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -267,6 +278,11 @@ object Strings {
     val runStateFailed: StringResource = Res.string.run_state_failed
     val runStateStopped: StringResource = Res.string.run_state_stopped
     val runStateInterrupted: StringResource = Res.string.run_state_interrupted
+    val runModeLabel: StringResource = Res.string.run_mode_label
+    val runModeSuggestOnly: StringResource = Res.string.run_mode_suggest_only
+    val runModeAskBeforeChanges: StringResource = Res.string.run_mode_ask_before_changes
+    val runModeAutoApplySafe: StringResource = Res.string.run_mode_auto_apply_safe
+    val runModeFullAuto: StringResource = Res.string.run_mode_full_auto
     val runMetricsDuration: StringResource = Res.string.run_metrics_duration
     val runMetricsLine: StringResource = Res.string.run_metrics_line
     val runMetricsCost: StringResource = Res.string.run_metrics_cost
@@ -312,6 +328,7 @@ object Strings {
     val callLogOutcomeFailure: StringResource = Res.string.call_log_outcome_failure
     val callLogOutcomeDenied: StringResource = Res.string.call_log_outcome_denied
     val callLogOutcomeTimeout: StringResource = Res.string.call_log_outcome_timeout
+    val callLogOutcomeProposed: StringResource = Res.string.call_log_outcome_proposed
     val callLogTaskLabel: StringResource = Res.string.call_log_task_label
     val callLogToolLabel: StringResource = Res.string.call_log_tool_label
     val callLogToolAll: StringResource = Res.string.call_log_tool_all
@@ -349,6 +366,12 @@ object Strings {
     val settingsControlModeGestures: StringResource = Res.string.settings_control_mode_gestures
     val settingsControlModeButtons: StringResource = Res.string.settings_control_mode_buttons
     val settingsControlModeHybrid: StringResource = Res.string.settings_control_mode_hybrid
+
+    val settingsAutonomyMode: StringResource = Res.string.settings_autonomy_mode
+    val settingsAutonomyModeSuggestOnly: StringResource = Res.string.settings_autonomy_mode_suggest_only
+    val settingsAutonomyModeAskBeforeChanges: StringResource = Res.string.settings_autonomy_mode_ask_before_changes
+    val settingsAutonomyModeAutoApplySafe: StringResource = Res.string.settings_autonomy_mode_auto_apply_safe
+    val settingsAutonomyModeFullAuto: StringResource = Res.string.settings_autonomy_mode_full_auto
 
     val settingsModelTitle: StringResource = Res.string.settings_model_title
     val settingsModelLoading: StringResource = Res.string.settings_model_loading

@@ -58,7 +58,9 @@ internal fun testStepTools(
             snapshots = ChangeSnapshots {
                 ChangeSnapshot.Taken(SnapshotRef("refs/ai/snap/0-before-agent-step"))
             },
-            approval = ToolApproval { _, _ -> ApprovalDecision.DENY },
+            autonomy = dev.aide.tools.ports.AutonomyPorts(
+                approval = ToolApproval { _, _ -> ApprovalDecision.DENY },
+            ),
         ),
         context = TestToolContext(workspace),
     )

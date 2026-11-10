@@ -6,14 +6,14 @@ import dev.aide.host.store.db.HostDatabase
 /**
  * Точка входа в хранилище метаданных хоста (§ 8.3, § 9).
  *
- * Задачи, прогоны, вызовы инструментов, решения ревью и права хранятся в SQLite.
+ * Задачи, прогоны, вызовы инструментов, решения ревью, предложения и права хранятся в SQLite.
  * Код репозитория в базе не хранится — он живёт в git. Модули `client-*` к базе
  * не обращаются: им это запрещено правилом границ из задачи 4, а единственный
  * путь к этим данным для клиента — сообщения протокола.
  *
  * Доступ сгруппирован по сущностям — [tasks], [runs], [toolCalls], [decisions],
- * [permissions]: пять небольших наборов операций читаются лучше, чем класс на
- * шестнадцать разнородных методов.
+ * [proposals], [permissions]: шесть небольших наборов операций читаются лучше,
+ * чем класс на шестнадцать разнородных методов.
  */
 class HostStore internal constructor(
     database: HostDatabase,
@@ -31,6 +31,9 @@ class HostStore internal constructor(
 
     /** Решения ревью: по пакету, по ревизии и по платформе клиента. */
     val decisions: DecisionStore = DecisionStore(database)
+
+    /** Очередь неприменённых файловых предложений (T-1.15). */
+    val proposals: ChangeProposalStore = ChangeProposalStore(database)
 
     /** Права на инструменты. */
     val permissions: PermissionStore = PermissionStore(database)

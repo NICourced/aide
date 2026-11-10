@@ -46,7 +46,13 @@ class RunLintToolTest {
                 registry = ToolRegistry(listOf(tool)),
                 stored = allowAll,
                 snapshots = snapshots,
-            ).invoke(runId, RunLintTool.TOOL_NAME, "{}", workspace.context)
+            ).invoke(
+                runId = runId,
+                tool = RunLintTool.TOOL_NAME,
+                arguments = "{}",
+                context = workspace.context,
+                mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
 
             assertEquals(ToolOutcome.SUCCESS, result.outcome, result.text)
             val report = assertNotNull(result.testReport, "разобранный отчёт обязан вернуться точкой вызова")
@@ -66,7 +72,13 @@ class RunLintToolTest {
             val result = testInvoker(
                 registry = ToolRegistry(listOf(RunLintTool(timeoutMillis = TIMEOUT_MILLIS))),
                 stored = allowAll,
-            ).invoke(runId, RunLintTool.TOOL_NAME, "{}", workspace.context)
+            ).invoke(
+                runId = runId,
+                tool = RunLintTool.TOOL_NAME,
+                arguments = "{}",
+                context = workspace.context,
+                mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
 
             assertEquals(ToolOutcome.TIMEOUT, result.outcome, result.text)
             assertEquals(TestState.TIMEOUT, result.testReport?.state, "отчёт обязан назвать исход таймаута")
@@ -81,7 +93,13 @@ class RunLintToolTest {
             val result = testInvoker(
                 registry = ToolRegistry(listOf(tool)),
                 stored = allowAll,
-            ).invoke(runId, RunLintTool.TOOL_NAME, "{}", workspace.context)
+            ).invoke(
+                runId = runId,
+                tool = RunLintTool.TOOL_NAME,
+                arguments = "{}",
+                context = workspace.context,
+                mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
 
             assertEquals(ToolOutcome.FAILURE, result.outcome, result.text)
             assertTrue(result.text.contains("run_command"), "модель обязана получить подсказку: ${result.text}")

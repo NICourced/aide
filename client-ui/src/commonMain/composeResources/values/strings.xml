@@ -40,6 +40,11 @@
     <string name="run_state_failed">Ошибка прогона</string>
     <string name="run_state_stopped">Остановлен</string>
     <string name="run_state_interrupted">Прерван перезапуском хоста</string>
+    <string name="run_mode_label">Режим: %1$s</string>
+    <string name="run_mode_suggest_only">только предлагать</string>
+    <string name="run_mode_ask_before_changes">спрашивать перед изменениями</string>
+    <string name="run_mode_auto_apply_safe">авто-применять безопасное</string>
+    <string name="run_mode_full_auto">полный автомат с чекпоинтами</string>
     <string name="run_metrics_duration">%1$d ч %2$d мин %3$d с</string>
     <string name="run_metrics_line">Время: %1$s · Стоимость: %2$s</string>
     <string name="run_metrics_cost">%1$d мк</string>
@@ -123,6 +128,7 @@
     <string name="call_log_outcome_failure">ошибка</string>
     <string name="call_log_outcome_denied">отказ</string>
     <string name="call_log_outcome_timeout">таймаут</string>
+    <string name="call_log_outcome_proposed">предложение</string>
     <string name="call_log_task_label">Задача</string>
     <string name="call_log_tool_label">Инструмент</string>
     <string name="call_log_tool_all">Все инструменты</string>
@@ -143,6 +149,11 @@
     <string name="settings_control_mode_gestures">Жесты</string>
     <string name="settings_control_mode_buttons">Кнопки</string>
     <string name="settings_control_mode_hybrid">Гибрид</string>
+    <string name="settings_autonomy_mode">Режим автономности новых прогонов</string>
+    <string name="settings_autonomy_mode_suggest_only">Только предлагать</string>
+    <string name="settings_autonomy_mode_ask_before_changes">Спрашивать перед изменениями</string>
+    <string name="settings_autonomy_mode_auto_apply_safe">Авто-применять безопасное</string>
+    <string name="settings_autonomy_mode_full_auto">Полный автомат с чекпоинтами</string>
 
     <string name="settings_model_title">Модель</string>
     <string name="settings_model_loading">Загрузка настроек моделей…</string>

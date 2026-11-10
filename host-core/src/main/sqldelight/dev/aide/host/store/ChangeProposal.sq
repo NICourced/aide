@@ -1,0 +1,36 @@
+CREATE TABLE change_proposal (
+    id TEXT NOT NULL PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    payload BLOB NOT NULL
+);
+
+CREATE INDEX change_proposal_run ON change_proposal(run_id);
+CREATE INDEX change_proposal_call ON change_proposal(call_id);
+
+insert:
+INSERT INTO change_proposal(id, run_id, call_id, tool, risk, created_at, payload)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+byId:
+SELECT * FROM change_proposal WHERE id = ?;
+
+byRun:
+SELECT * FROM change_proposal WHERE run_id = ? ORDER BY created_at, id;
+
+byTask:
+SELECT change_proposal.* FROM change_proposal
+JOIN agent_run ON agent_run.id = change_proposal.run_id
+WHERE agent_run.task_id = ? ORDER BY change_proposal.created_at, change_proposal.id;
+
+byCall:
+SELECT * FROM change_proposal WHERE call_id = ?;
+
+all:
+SELECT * FROM change_proposal ORDER BY created_at, id;
+
+count:
+SELECT count(*) FROM change_proposal;

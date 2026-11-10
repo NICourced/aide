@@ -1,5 +1,7 @@
 package dev.aide.client.state.settings
 
+import dev.aide.domain.AutonomyMode
+
 /** Как приложение выбирает тему. */
 enum class ThemePreference {
     /** Следовать системной теме — значение по умолчанию (FR-EDITOR-11). */
@@ -49,6 +51,18 @@ class SettingsStore(private val backend: KeyValueStore) {
             ?: ControlMode.GESTURES
         set(value) = backend.putString(KEY_CONTROL_MODE, value.name)
 
+    /**
+     * Режим автономности новых прогонов (T-1.15).
+     *
+     * Неизвестное или повреждённое значение даёт самый безопасный режим
+     * «спрашивать перед изменениями».
+     */
+    var autonomyMode: AutonomyMode
+        get() = backend.getString(KEY_AUTONOMY_MODE)
+            ?.let { raw -> AutonomyMode.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } }
+            ?: AutonomyMode.ASK_BEFORE_CHANGES
+        set(value) = backend.putString(KEY_AUTONOMY_MODE, value.name)
+
     /** Адрес хоста вида `ws://host:port/ws`; null, если адрес не задан. */
     var hostEndpoint: String?
         get() = backend.getString(KEY_HOST_ENDPOINT)?.takeIf { it.isNotBlank() }
@@ -65,6 +79,9 @@ class SettingsStore(private val backend: KeyValueStore) {
 
         /** Ключ режима управления. */
         const val KEY_CONTROL_MODE: String = "controlMode"
+
+        /** Ключ режима автономности новых прогонов (T-1.15). */
+        const val KEY_AUTONOMY_MODE: String = "autonomyMode"
 
         /** Ключ адреса хоста. */
         const val KEY_HOST_ENDPOINT: String = "hostEndpoint"

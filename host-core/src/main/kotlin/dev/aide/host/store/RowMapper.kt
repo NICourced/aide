@@ -2,6 +2,7 @@ package dev.aide.host.store
 
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ChangeProposal
 import dev.aide.domain.ClientPlatform
 import dev.aide.domain.Cost
 import dev.aide.domain.DecisionScope
@@ -9,7 +10,9 @@ import dev.aide.domain.DecisionValue
 import dev.aide.domain.HunkId
 import dev.aide.domain.PacketId
 import dev.aide.domain.Permission
+import dev.aide.domain.ProposalId
 import dev.aide.domain.ReviewDecision
+import dev.aide.domain.RiskLevel
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.Task as DomainTask
@@ -20,6 +23,7 @@ import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
 import dev.aide.host.store.Agent_run as AgentRunRow
+import dev.aide.host.store.Change_proposal as ChangeProposalRow
 import dev.aide.host.store.Review_decision as ReviewDecisionRow
 import dev.aide.host.store.Tool_call as ToolCallRow
 import dev.aide.host.store.Tool_permission as ToolPermissionRow
@@ -89,6 +93,17 @@ internal object RowMapper {
             tool = row.tool,
             read = Permission.valueOf(row.read_permission),
             write = Permission.valueOf(row.write_permission),
+        )
+
+    fun changeProposal(row: ChangeProposalRow): ChangeProposal =
+        decode(row.payload, ChangeProposal.serializer()) ?: ChangeProposal(
+            id = ProposalId(row.id),
+            runId = RunId(row.run_id),
+            callId = ToolCallId(row.call_id),
+            tool = row.tool,
+            files = emptyList(),
+            risk = RiskLevel.valueOf(row.risk),
+            createdAt = Instant.fromEpochMilliseconds(row.created_at),
         )
 
     private fun <T> decode(bytes: ByteArray, deserializer: DeserializationStrategy<T>): T? =

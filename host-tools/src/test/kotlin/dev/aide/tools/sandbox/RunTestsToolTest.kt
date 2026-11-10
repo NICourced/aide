@@ -44,7 +44,10 @@ class RunTestsToolTest {
         runBlocking {
             gradlew()
 
-            val result = invoke(stored = { null })
+            val result = invoke(
+                stored = { null },
+                mode = dev.aide.domain.AutonomyMode.ASK_BEFORE_CHANGES,
+            )
 
             assertEquals(ToolOutcome.DENIED, result.outcome, result.text)
             assertFalse(ran(), "при ASK команда не должна запускаться: $MARKER")
@@ -91,7 +94,13 @@ class RunTestsToolTest {
             val result = testInvoker(
                 registry = ToolRegistry(listOf(command)),
                 stored = allowAll,
-            ).invoke(runId, RunCommandTool.TOOL_NAME, """{"command":["sleep","30"]}""", workspace.context)
+            ).invoke(
+                runId = runId,
+                tool = RunCommandTool.TOOL_NAME,
+                arguments = """{"command":["sleep","30"]}""",
+                context = workspace.context,
+                mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
 
             assertEquals(ToolOutcome.TIMEOUT, result.outcome, result.text)
             assertNull(result.testReport, "у инструмента без отчёта таймаут отчёта не порождает")
@@ -116,12 +125,13 @@ class RunTestsToolTest {
         journal: RecordingToolCalls = RecordingToolCalls(),
         snapshots: FakeChangeSnapshots = FakeChangeSnapshots(),
         tool: RunTestsTool = this.tool,
+        mode: dev.aide.domain.AutonomyMode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
     ) = testInvoker(
         registry = ToolRegistry(listOf(tool)),
         recorder = journal,
         stored = stored,
         snapshots = snapshots,
-    ).invoke(runId, RunTestsTool.TOOL_NAME, "{}", workspace.context)
+    ).invoke(runId, RunTestsTool.TOOL_NAME, "{}", workspace.context, mode)
 
     /** Исполняемая «обёртка Gradle»; по умолчанию помечает запуск и пишет зелёный отчёт. */
     private fun gradlew(body: String = GREEN_SCRIPT) {

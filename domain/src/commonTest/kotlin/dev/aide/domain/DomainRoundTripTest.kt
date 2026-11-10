@@ -126,6 +126,16 @@ class DomainRoundTripTest {
     }
 
     @Test
+    fun `ChangeProposal переживает round-trip`() {
+        assertEquals(DomainFixtures.changeProposal, roundTrip(DomainFixtures.changeProposal))
+    }
+
+    @Test
+    fun `ToolOutcome PROPOSED переживает round-trip`() {
+        assertEquals(ToolOutcome.PROPOSED, roundTrip(ToolOutcome.PROPOSED))
+    }
+
+    @Test
     fun `AgentRun помнит свои снапшоты`() {
         // По этому списку хост отличает снапшоты незакрытой задачи от вытесняемых,
         // поэтому он обязан доехать до базы и обратно, а не потеряться в сериализации.

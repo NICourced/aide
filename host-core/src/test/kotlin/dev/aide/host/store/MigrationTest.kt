@@ -111,6 +111,46 @@ class MigrationTest {
     }
 
     @Test
+    fun `миграция с версии 3 на версию 4 добавляет таблицу предложений`() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+
+        // 1. База после второй миграции — состояние версии 3.
+        StoreTestSupport.createLegacyDatabase(driver)
+        HostDatabase.Schema.migrate(driver, 1, 2, *arrayOf<AfterVersion>())
+        HostDatabase.Schema.migrate(driver, 2, 3, *arrayOf<AfterVersion>())
+        assertFalse(
+            StoreTestSupport.columns(driver, "change_proposal").contains("id"),
+            "до миграции таблицы предложений быть не должно",
+        )
+
+        // 2. Миграция до версии 4.
+        HostDatabase.Schema.migrate(driver, 3, 4, *arrayOf<AfterVersion>())
+
+        // 3. Появилась таблица с нужными индексами.
+        val database = HostDatabase(driver)
+        database.changeProposalQueries.insert(
+            id = "cp-1",
+            run_id = "r-1",
+            call_id = "tc-1",
+            tool = "write_file",
+            risk = "NORMAL",
+            created_at = 1_758_535_200_000,
+            payload = byteArrayOf(1, 2, 3),
+        )
+        assertEquals(1, database.changeProposalQueries.count().executeAsOne())
+        assertTrue(
+            StoreTestSupport.indexes(driver, "change_proposal").contains("change_proposal_run"),
+            "версия 4 обязана добавить индекс по run_id",
+        )
+        assertTrue(
+            StoreTestSupport.indexes(driver, "change_proposal").contains("change_proposal_call"),
+            "версия 4 обязана добавить индекс по call_id",
+        )
+
+        driver.close()
+    }
+
+    @Test
     fun `чистая база создаётся в текущей версии и принимает записи`() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         HostDatabase.Schema.create(driver)

@@ -1,5 +1,6 @@
 package dev.aide.client.state.settings
 
+import dev.aide.domain.AutonomyMode
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.name
@@ -26,6 +27,7 @@ class FileKeyValueStoreTest {
             repositoryPath = "/projects/aide"
             theme = ThemePreference.DARK
             controlMode = ControlMode.BUTTONS
+            autonomyMode = AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS
         }
         assertTrue(file.toFile().isFile, "После записи настройки файл должен появиться на диске: $file")
 
@@ -34,6 +36,7 @@ class FileKeyValueStoreTest {
         assertEquals("/projects/aide", afterRestart.repositoryPath)
         assertEquals(ThemePreference.DARK, afterRestart.theme)
         assertEquals(ControlMode.BUTTONS, afterRestart.controlMode)
+        assertEquals(AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS, afterRestart.autonomyMode)
     }
 
     @Test

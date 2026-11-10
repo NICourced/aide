@@ -144,7 +144,13 @@ class RunCommandToolTest {
             val invoker = invokerFor(tool)
             val arguments = """{"command":["sh","-c","$KILL_SCRIPT"]}"""
 
-            val result = invoker.invoke(runId, RunCommandTool.TOOL_NAME, arguments, workspace.context)
+            val result = invoker.invoke(
+                runId = runId,
+                tool = RunCommandTool.TOOL_NAME,
+                arguments = arguments,
+                context = workspace.context,
+                mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
 
             assertEquals(ToolOutcome.TIMEOUT, result.outcome, result.text)
             val parent = assertNotNull(readPid(PARENT_PID_FILE), "скрипт обязан записать pid оболочки")
@@ -155,7 +161,13 @@ class RunCommandToolTest {
     }
 
     private suspend fun invoke(arguments: String, network: NetworkPolicy = NetworkPolicy()) =
-        invokerFor(RunCommandTool(network)).invoke(runId, RunCommandTool.TOOL_NAME, arguments, workspace.context)
+        invokerFor(RunCommandTool(network)).invoke(
+                runId = runId,
+                tool = RunCommandTool.TOOL_NAME,
+                arguments = arguments,
+                context = workspace.context,
+                mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
 
     /** Точка вызова с разрешением записи: права здесь не проверяются, проверяются отказы инструмента. */
     private fun invokerFor(tool: RunCommandTool): ToolInvoker = testInvoker(

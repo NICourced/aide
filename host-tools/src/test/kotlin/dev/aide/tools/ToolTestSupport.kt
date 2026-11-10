@@ -1,6 +1,8 @@
 package dev.aide.tools
 
 import dev.aide.domain.ApprovalDecision
+import dev.aide.domain.ChangeProposal
+import dev.aide.domain.Permission
 import dev.aide.domain.RunId
 import dev.aide.domain.SnapshotRef
 import dev.aide.domain.ToolCall
@@ -9,6 +11,8 @@ import dev.aide.tools.limits.HardLimitViolation
 import dev.aide.tools.permission.DenyReason
 import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.permission.SessionPermissions
+import dev.aide.tools.ports.ChangeProposals
+import dev.aide.tools.ports.ChangeRisk
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.ToolApproval
@@ -117,6 +121,21 @@ fun argumentsOf(vararg pairs: Pair<String, String>): JsonObject = JsonObject(
     pairs.associate { (name, value) -> name to JsonPrimitive(value) },
 )
 
+/** Права, разрешающие запись: без них изменяющий вызов упрётся в объявленное умолчание ASK. */
+val writeAllowed: (String) -> ToolPermission? = { name ->
+    ToolPermission(tool = name, read = Permission.ALLOW, write = Permission.ALLOW)
+}
+
+/** Порт очереди предложений в тестах: запоминает сохранённые предложения. */
+class RecordingChangeProposals : ChangeProposals {
+
+    val saved: MutableList<ChangeProposal> = mutableListOf()
+
+    override fun save(proposal: ChangeProposal) {
+        saved += proposal
+    }
+}
+
 /** Ссылка точки отката в тестах: по ней видно, что снапшот из результата дошёл до вызова. */
 const val TEST_SNAPSHOT_REF: String = "refs/ai/snap/1758535200000-before-agent-step"
 
@@ -160,16 +179,29 @@ data class TestApprovals(
     val sessionPermissions: SessionPermissions = SessionPermissions(),
 )
 
+/** Тестовые порты автономности вместе с памятью сессионных разрешений. */
+data class TestAutonomy(
+    val approvals: TestApprovals = TestApprovals(),
+    val risk: ChangeRisk = ChangeRisk { _, _, _, _ -> dev.aide.domain.RiskLevel.NORMAL },
+    val proposals: ChangeProposals = ChangeProposals { error("Очередь предложений не подключена") },
+) {
+    fun ports(): dev.aide.tools.ports.AutonomyPorts = dev.aide.tools.ports.AutonomyPorts(
+        approval = approvals.approval,
+        risk = risk,
+        proposals = proposals,
+    )
+}
+
 fun testInvoker(
     registry: ToolRegistry,
     recorder: ToolCallRecorder = RecordingToolCalls(),
     stored: (String) -> ToolPermission? = { null },
     snapshots: ChangeSnapshots = FakeChangeSnapshots(),
-    approvals: TestApprovals = TestApprovals(),
+    autonomy: TestAutonomy = TestAutonomy(),
 ): ToolInvoker = ToolInvoker(
     registry = registry,
-    permissions = PermissionResolver(stored, approvals.sessionPermissions::load),
+    permissions = PermissionResolver(stored, autonomy.approvals.sessionPermissions::load),
     recorder = recorder,
     snapshots = snapshots,
-    approval = approvals.approval,
+    autonomy = autonomy.ports(),
 )

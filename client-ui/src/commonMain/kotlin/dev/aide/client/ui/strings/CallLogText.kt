@@ -15,6 +15,7 @@ fun callLogOutcomeResource(outcome: ToolOutcome): StringResource = when (outcome
     ToolOutcome.FAILURE -> Strings.callLogOutcomeFailure
     ToolOutcome.DENIED -> Strings.callLogOutcomeDenied
     ToolOutcome.TIMEOUT -> Strings.callLogOutcomeTimeout
+    ToolOutcome.PROPOSED -> Strings.callLogOutcomeProposed
 }
 
 /**

@@ -2,6 +2,7 @@ package dev.aide.agent.tools
 
 import dev.aide.agent.llm.LlmToolCall
 import dev.aide.agent.llm.LlmToolDefinition
+import dev.aide.domain.AutonomyMode
 import dev.aide.domain.RunId
 import dev.aide.domain.ToolOutcome
 import dev.aide.tools.AgentTool
@@ -37,11 +38,19 @@ class StepTools private constructor(
     /**
      * Выполняет вызов, предложенный моделью; идентификатор вызова берётся у неё.
      *
+     * [mode] — режим автономности прогона, зафиксированный на старте. Переключение
+     * настройки во время прогона его не меняет (FR-AGENT-5, T-1.15).
+     *
      * Результат, а не исключение: отказ инструмента — такое же окончание вызова,
      * как и успех, и диалог продолжается в обоих случаях (О-3).
      */
-    suspend fun invoke(runId: RunId, call: LlmToolCall): ToolResult =
-        invoker.invoke(runId = runId, tool = call.name, arguments = call.arguments, context = context)
+    suspend fun invoke(runId: RunId, call: LlmToolCall, mode: AutonomyMode): ToolResult = invoker.invoke(
+        runId = runId,
+        tool = call.name,
+        arguments = call.arguments,
+        context = context,
+        mode = mode,
+    )
 
     /**
      * Выполняет внутренний инструмент, которого модель не видит (T-1.11).

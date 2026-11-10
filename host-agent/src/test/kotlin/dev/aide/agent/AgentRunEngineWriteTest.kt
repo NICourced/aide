@@ -58,17 +58,32 @@ class AgentRunEngineWriteTest {
     private fun engine(
         llm: LlmClient,
         stored: (String) -> ToolPermission? = writeAllowed,
+        approve: Boolean = true,
     ): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, sink),
         models = fixedModel(llm),
         planner = RunPlanner { _, _, _ -> plan("шаг") },
-        tools = stepToolsIn(workspace, journal, stored, snapshots = snapshots),
+        tools = stepToolsIn(
+            workspace = workspace,
+            recorder = journal,
+            stored = stored,
+            snapshots = snapshots,
+            options = StepToolOptions(
+                approval = dev.aide.tools.ports.ToolApproval { _, _ ->
+                    if (approve) dev.aide.domain.ApprovalDecision.ALLOW_ONCE else dev.aide.domain.ApprovalDecision.DENY
+                },
+            ),
+        ),
         repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
 
-    private suspend fun run(llm: LlmClient, stored: (String) -> ToolPermission? = writeAllowed) {
-        val engine = engine(llm, stored)
+    private suspend fun run(
+        llm: LlmClient,
+        stored: (String) -> ToolPermission? = writeAllowed,
+        approve: Boolean = true,
+    ) {
+        val engine = engine(llm, stored, approve)
         engine.postTask("Поправь файл", AutonomyMode.ASK_BEFORE_CHANGES)
         assertTrue(engine.processNextApproved(runs))
     }
@@ -99,9 +114,8 @@ class AgentRunEngineWriteTest {
             file("src/App.kt", "старое\n")
             val llm = ScriptedLlmClient(listOf(call("write_file", APP_ARGUMENTS), text("ладно")))
 
-            // Настроек нет: у записи объявленное умолчание ASK, а тестовый порт подтверждения
-            // по умолчанию отвечает DENY (T-1.13).
-            run(llm, stored = { null })
+            // Настроек нет: у записи объявленное ASK, пользователь отклоняет подтверждение.
+            run(llm, stored = { null }, approve = false)
 
             assertEquals(
                 "старое\n",

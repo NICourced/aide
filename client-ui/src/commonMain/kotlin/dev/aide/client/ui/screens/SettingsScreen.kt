@@ -26,6 +26,7 @@ import dev.aide.client.state.settings.SettingsStore
 import dev.aide.client.state.settings.ThemePreference
 import dev.aide.client.ui.strings.Strings
 import dev.aide.domain.AgentConfig
+import dev.aide.domain.AutonomyMode
 import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 
@@ -53,6 +54,7 @@ fun SettingsScreen(
 ) {
     var path by remember { mutableStateOf(settings.repositoryPath.orEmpty()) }
     var hostEndpoint by remember { mutableStateOf(settings.hostEndpoint.orEmpty()) }
+    var autonomyMode by remember { mutableStateOf(settings.autonomyMode) }
 
     // Настройки прокручиваются: разделов стало больше, и без прокрутки нижние —
     // раздел «Модель» с двумя таблицами — оказались бы недостижимы на телефоне.
@@ -114,6 +116,16 @@ fun SettingsScreen(
             onSelect = { settings.controlMode = it },
         )
 
+        Text(Strings.text(Strings.settingsAutonomyMode), style = MaterialTheme.typography.titleMedium)
+        ChoiceRow(
+            options = AutonomyMode.entries.map { it to autonomyLabel(it) },
+            selected = autonomyMode,
+            onSelect = {
+                autonomyMode = it
+                settings.autonomyMode = it
+            },
+        )
+
         ModelSettingsScreen(state = modelConfig)
     }
 }
@@ -156,7 +168,7 @@ private fun <T> ChoiceRow(
             Button(
                 onClick = { onSelect(value) },
                 enabled = value != selected,
-                modifier = Modifier.fillMaxWidth().testTag("choice-$label"),
+                modifier = Modifier.fillMaxWidth().testTag("choice-$value"),
             ) {
                 Text(label)
             }
@@ -176,4 +188,12 @@ private fun controlLabel(mode: ControlMode): String = when (mode) {
     ControlMode.GESTURES -> Strings.text(Strings.settingsControlModeGestures)
     ControlMode.BUTTONS -> Strings.text(Strings.settingsControlModeButtons)
     ControlMode.HYBRID -> Strings.text(Strings.settingsControlModeHybrid)
+}
+
+@Composable
+private fun autonomyLabel(mode: AutonomyMode): String = when (mode) {
+    AutonomyMode.SUGGEST_ONLY -> Strings.text(Strings.settingsAutonomyModeSuggestOnly)
+    AutonomyMode.ASK_BEFORE_CHANGES -> Strings.text(Strings.settingsAutonomyModeAskBeforeChanges)
+    AutonomyMode.AUTO_APPLY_SAFE -> Strings.text(Strings.settingsAutonomyModeAutoApplySafe)
+    AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS -> Strings.text(Strings.settingsAutonomyModeFullAuto)
 }

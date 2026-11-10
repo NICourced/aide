@@ -57,13 +57,6 @@ import kotlinx.coroutines.launch
 /** Куда приложение может перейти. Один экран — одна задача (FR-LAYOUT-5). */
 private enum class Destination { REPOSITORY, AGENT, CALL_LOG, SETTINGS }
 
-/**
- * Режим автономности по умолчанию для поставленной задачи.
- *
- * Выбор режима в настройках — T-1.15; до него задача ставится в самом безопасном
- * режиме «спрашивать перед изменениями», а не в полном автомате.
- */
-private val DEFAULT_AUTONOMY_MODE = AutonomyMode.ASK_BEFORE_CHANGES
 
 @Composable
 fun App(
@@ -120,6 +113,7 @@ fun App(
                     Destination.AGENT -> AgentDestination(
                         session = session,
                         client = client,
+                        settings = settings,
                         scope = coroutineScope,
                         onOpenLog = { destination = Destination.CALL_LOG },
                     )
@@ -187,6 +181,7 @@ fun App(
 private fun AgentDestination(
     session: HostSession,
     client: HostClient,
+    settings: SettingsStore,
     scope: CoroutineScope,
     onOpenLog: () -> Unit,
 ) {
@@ -202,9 +197,11 @@ private fun AgentDestination(
         actions = AgentActions(
             postTask = { prompt ->
                 // Compose-скоуп: запись в состояние идёт на главном диспетчере.
+                // Режим читается в момент постановки: смена настроек не ретроактивна
+                // для уже идущих прогонов (FR-AGENT-5, T-1.15).
                 scope.launch {
                     requestFailed = false
-                    client.postTask(prompt, DEFAULT_AUTONOMY_MODE).onFailure { requestFailed = true }
+                    client.postTask(prompt, settings.autonomyMode).onFailure { requestFailed = true }
                 }
             },
             openLog = onOpenLog,

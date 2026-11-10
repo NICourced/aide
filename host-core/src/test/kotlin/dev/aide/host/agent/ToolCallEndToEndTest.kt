@@ -329,6 +329,63 @@ class ToolCallEndToEndTest {
         }
     }
 
+    @Test
+    fun `SUGGEST_ONLY не меняет файл и коммит, а предложение читается после закрытия хоста`() {
+        runBlocking {
+            val repo = cleanRepoWithFile("aide-suggest-repo", "hello.txt", CONTENT)
+            val database = Files.createTempFile("aide-suggest", ".db")
+            val model = ToolCallingModel("write_file", """{"path":"hello.txt","content":"$WRITTEN"}""")
+            val host = host(database, model)
+            val run = try {
+                val client = openClient(host)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTask("Только предложи", AutonomyMode.SUGGEST_ONLY).getOrThrow()
+                finish(client)
+            } finally {
+                host.close()
+            }
+
+            assertEquals(CONTENT, repo.resolve("hello.txt").toFile().readText(), "файл обязан остаться прежним")
+            assertTrue(
+                gitLog(repo, "--format=%s", "ai/${run.taskId.value}").none { it.startsWith("Шаг 1") },
+                "неприменённое предложение не должно коммититься",
+            )
+            assertEquals(ToolOutcome.PROPOSED, journal(database, run, WRITE_FILE).outcome)
+            DatabaseFactory.open(database).use { store ->
+                val proposal = store.proposals.byRun(run.id).single()
+                val change = proposal.files.single()
+                assertEquals("hello.txt", change.path)
+                assertEquals(listOf(CONTENT, WRITTEN), change.hunks.single().lines.map { it.text })
+                assertEquals(proposal, store.proposals.byTask(run.taskId).single())
+                assertTrue(store.toolCalls.forRun(run.id).none { it.tool == COMMIT_STEP })
+            }
+        }
+    }
+
+    @Test
+    fun `FULL_AUTO при исходном ASK пишет после снапшота без подтверждения`() {
+        runBlocking {
+            val repo = cleanRepoWithFile("aide-full-auto-repo", "hello.txt", CONTENT)
+            val database = Files.createTempFile("aide-full-auto", ".db")
+            val model = ToolCallingModel("write_file", """{"path":"hello.txt","content":"$WRITTEN"}""")
+            val host = host(database, model)
+            val run = try {
+                val client = openClient(host)
+                assertNotNull(client.openWorkspace(repo.toString()), "воркспейс обязан открыться")
+                client.postTaskApprovingPlan("Запиши файл", AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS).getOrThrow()
+                finish(client)
+            } finally {
+                host.close()
+            }
+
+            assertEquals(WRITTEN, repo.resolve("hello.txt").toFile().readText())
+            assertEquals(2, run.snapshots.size, "стартовый и предшествующий записи снапшоты обязаны быть")
+            val recorded = journal(database, run, WRITE_FILE)
+            assertEquals(ToolOutcome.SUCCESS, recorded.outcome)
+            assertFalse(recorded.requiredApproval, "полный автомат не должен спрашивать подтверждение")
+        }
+    }
+
     /** Ветка задачи на чистом дереве: иначе правки пользователя уехали бы в отложенные (T-1.59). */
     private fun cleanRepoWithFile(prefix: String, name: String, content: String): Path {
         val repo = GitCliFixture.createRepo(Files.createTempDirectory(prefix))

@@ -26,6 +26,7 @@ import dev.aide.client.ui.strings.taskFailureResource
 import dev.aide.client.ui.strings.taskStatusResource
 import dev.aide.client.ui.strings.testStateResource
 import dev.aide.domain.AgentRun
+import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
@@ -76,6 +77,7 @@ fun AgentScreen(
     ) {
         Text(Strings.text(Strings.agentTitle), style = MaterialTheme.typography.titleLarge)
         RunStateLine(run = run)
+        RunModeLine(run = run)
         RunMetricsLine(run = run, taskCost = taskCost)
         TestStatusLine(report = run?.testReport)
         TaskStatusLine(task = session.tasks.lastOrNull())
@@ -117,6 +119,25 @@ fun AgentScreen(
             Text(Strings.text(Strings.agentPostTask))
         }
     }
+}
+
+/** Строка режима текущего прогона: показывает режим, зафиксированный на старте (T-1.15). */
+@Composable
+fun RunModeLine(run: AgentRun?, modifier: Modifier = Modifier) {
+    if (run == null) return
+    Text(
+        Strings.text(Strings.runModeLabel, autonomyModeLabel(run.mode)),
+        modifier = modifier.testTag("run-mode"),
+        style = MaterialTheme.typography.bodyMedium,
+    )
+}
+
+@Composable
+private fun autonomyModeLabel(mode: AutonomyMode): String = when (mode) {
+    AutonomyMode.SUGGEST_ONLY -> Strings.text(Strings.runModeSuggestOnly)
+    AutonomyMode.ASK_BEFORE_CHANGES -> Strings.text(Strings.runModeAskBeforeChanges)
+    AutonomyMode.AUTO_APPLY_SAFE -> Strings.text(Strings.runModeAutoApplySafe)
+    AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS -> Strings.text(Strings.runModeFullAuto)
 }
 
 /** Строка состояния прогона: знает все значения `RunState` (NFR-13). */

@@ -386,6 +386,20 @@ class AgentScreenTest {
             onNodeWithText("Задача: 100 мк").assertIsDisplayed()
         }
 
+    @Test
+    fun `экран показывает режим, зафиксированный у текущего прогона`() = runComposeUiTest {
+        setContent {
+            AgentScreen(
+                session = HostSession(runs = listOf(planRun(RunState.RUNNING, AutonomyMode.SUGGEST_ONLY))),
+                requestFailed = false,
+                actions = AgentActions(postTask = {}),
+            )
+        }
+
+        onNodeWithTag("run-mode").assertIsDisplayed()
+        onNodeWithText("Режим: только предлагать").assertIsDisplayed()
+    }
+
     /** Прогон с заданной стоимостью: для суммы по задаче важны задача, старт и цена. */
     private fun pricedRun(id: String, taskId: TaskId, startedAt: Long, amountMicros: Long): AgentRun = AgentRun(
         id = RunId(id),

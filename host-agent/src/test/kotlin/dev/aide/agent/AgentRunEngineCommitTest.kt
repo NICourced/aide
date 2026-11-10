@@ -61,11 +61,23 @@ class AgentRunEngineCommitTest {
         llm: LlmClient,
         plan: List<PlanStep> = plan("шаг"),
         stored: (String) -> ToolPermission? = writeAllowed,
+        approve: Boolean = true,
     ): AgentRunEngine = AgentRunEngine(
         ports = RunPorts(runs, tasks, sink),
         models = fixedModel(llm),
         planner = RunPlanner { _, _, _ -> plan },
-        tools = stepToolsIn(workspace, journal, stored, commits, snapshots = snapshots),
+        tools = stepToolsIn(
+            workspace = workspace,
+            recorder = journal,
+            stored = stored,
+            snapshots = snapshots,
+            options = StepToolOptions(
+                commits = commits,
+                approval = dev.aide.tools.ports.ToolApproval { _, _ ->
+                    if (approve) dev.aide.domain.ApprovalDecision.ALLOW_ONCE else dev.aide.domain.ApprovalDecision.DENY
+                },
+            ),
+        ),
         repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
         clock = { Instant.fromEpochMilliseconds(1_000) },
     )
@@ -74,8 +86,9 @@ class AgentRunEngineCommitTest {
         llm: LlmClient,
         plan: List<PlanStep> = plan("шаг"),
         stored: (String) -> ToolPermission? = writeAllowed,
+        approve: Boolean = true,
     ) {
-        val engine = engine(llm, plan, stored)
+        val engine = engine(llm, plan, stored, approve)
         engine.postTask("Поправь файл", AutonomyMode.ASK_BEFORE_CHANGES)
         assertTrue(engine.processNextApproved(runs))
     }
@@ -175,8 +188,8 @@ class AgentRunEngineCommitTest {
             file("src/App.kt", "старое\n")
             val llm = ScriptedLlmClient(listOf(call("write_file", APP_ARGUMENTS), text("готово")))
 
-            // Настроек нет: у записи объявленное умолчание ASK, и вызов отклоняется (T-1.13 ещё нет).
-            run(llm, stored = { null })
+            // Настроек нет: у записи объявленное ASK, пользователь отклоняет подтверждение.
+            run(llm, stored = { null }, approve = false)
 
             assertTrue(commits.calls.isEmpty(), "шаг без состоявшегося изменения коммитить нечего")
             assertTrue(

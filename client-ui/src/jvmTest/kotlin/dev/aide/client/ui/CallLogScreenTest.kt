@@ -273,6 +273,14 @@ class CallLogScreenTest {
         )
     }
 
+    @Test
+    fun `неприменённое предложение показано отдельным исходом`() = runComposeUiTest {
+        val proposed = summary(0).copy(outcome = ToolOutcome.PROPOSED)
+        show(log(RUN_SCOPE, listOf(proposed)).copy(loaded = true))
+
+        onNodeWithText("предложение", substring = true).assertIsDisplayed()
+    }
+
     private fun log(
         scope: ToolCallScope? = null,
         calls: List<ToolCallSummary> = emptyList(),

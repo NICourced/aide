@@ -1,6 +1,8 @@
 package dev.aide.tools
 
 import dev.aide.domain.ApprovalDecision
+import dev.aide.domain.AutonomyMode
+import dev.aide.domain.RiskLevel
 import dev.aide.domain.RunId
 import dev.aide.domain.SnapshotRef
 import dev.aide.domain.TestReport
@@ -8,13 +10,15 @@ import dev.aide.domain.TestState
 import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
+import dev.aide.domain.ToolKind
 import dev.aide.domain.ToolOutcome
+import dev.aide.tools.file.ProposableTool
 import dev.aide.tools.limits.HardLimitViolation
 import dev.aide.tools.permission.PermissionDecision
 import dev.aide.tools.permission.PermissionResolver
+import dev.aide.tools.ports.AutonomyPorts
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
-import dev.aide.tools.ports.ToolApproval
 import dev.aide.tools.ports.ToolCallRecorder
 import dev.aide.tools.schema.ArgumentsSchema
 import java.util.UUID
@@ -47,21 +51,26 @@ private const val NANOS_PER_MILLI: Long = 1_000_000
  * @param clock источник времени для отметки в журнале; подменяется в тестах.
  * @param snapshots точка отката перед изменяющим вызовом (T-1.8): она здесь, а не
  *   в инструменте, потому что без неё изменять нельзя — а изменять можно только
- *   через эту точку вызова, и гарантию надо ставить там же, где права и журнал.
+ *   через эту точку, и гарантию надо ставить там же, где права и журнал.
+ * @param autonomy доверенная оценка риска и очередь неприменённых предложений (T-1.15).
  */
 class ToolInvoker(
     private val registry: ToolRegistry,
     private val permissions: PermissionResolver,
     private val recorder: ToolCallRecorder,
     private val snapshots: ChangeSnapshots,
-    private val approval: ToolApproval,
     private val clock: () -> Instant = Clock.System::now,
+    private val autonomy: AutonomyPorts = AutonomyPorts(),
 ) {
 
     private val logger = LoggerFactory.getLogger(ToolInvoker::class.java)
+    private val proposalExecutor = ProposalExecutor(autonomy.risk, autonomy.proposals, clock)
 
     /**
      * Вызывает инструмент, предложенный моделью, и пишет вызов в журнал — с любым исходом.
+     *
+     * [mode] — режим автономности конкретного прогона, зафиксированный на старте.
+     * Переключение настройки во время прогона его не меняет (FR-AGENT-5, T-1.15).
      *
      * Внутренний инструмент ([ToolVisibility.INTERNAL]) отсюда исполнить нельзя: он адресован
      * движку, а не модели, и «не показывать определение» ещё не значит «нельзя позвать по
@@ -71,11 +80,18 @@ class ToolInvoker(
      *
      * @param arguments аргументы строкой, как их прислала модель: формат у протоколов
      *   разный, и разбирает их здесь тот, кто проверяет их по схеме.
+     * @param mode режим автономности прогона; по умолчанию самый консервативный.
      */
-    suspend fun invoke(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult {
+    suspend fun invoke(
+        runId: RunId,
+        tool: String,
+        arguments: String,
+        context: ToolContext,
+        mode: AutonomyMode = AutonomyMode.ASK_BEFORE_CHANGES,
+    ): ToolResult {
         val callId = ToolCallId(UUID.randomUUID().toString())
         return journaled(runId, callId, tool, arguments) {
-            attempt(CallFrame(runId, callId, tool, arguments, context), Origin.MODEL)
+            attempt(CallFrame(runId, callId, tool, arguments, context), Origin.MODEL, mode)
         }
     }
 
@@ -90,7 +106,11 @@ class ToolInvoker(
     suspend fun invokeInternal(runId: RunId, tool: String, arguments: String, context: ToolContext): ToolResult {
         val callId = ToolCallId(UUID.randomUUID().toString())
         return journaled(runId, callId, tool, arguments) {
-            attempt(CallFrame(runId, callId, tool, arguments, context), Origin.INTERNAL)
+            attempt(
+                CallFrame(runId, callId, tool, arguments, context),
+                Origin.INTERNAL,
+                AutonomyMode.ASK_BEFORE_CHANGES,
+            )
         }
     }
 
@@ -133,13 +153,17 @@ class ToolInvoker(
      * потом права. Спрашивать разрешение на вызов с негодными аргументами значило бы
      * показывать пользователю диалог о том, чего модель не собиралась делать.
      */
-    private suspend fun attempt(frame: CallFrame, origin: Origin): Attempt {
+    private suspend fun attempt(
+        frame: CallFrame,
+        origin: Origin,
+        mode: AutonomyMode,
+    ): Attempt {
         val definition = registry.find(frame.tool)
         val parsed = if (definition == null) null else parseArguments(frame.toolArguments)
         return when {
             definition == null -> refused("инструмента «${frame.tool}» агент не знает", ToolOutcome.FAILURE)
             parsed == null -> refused("аргументы вызова «${frame.tool}» не являются JSON-объектом", ToolOutcome.FAILURE)
-            else -> decide(frame, definition, parsed, origin)
+            else -> decide(frame, definition, parsed, origin, mode)
         }
     }
 
@@ -162,6 +186,7 @@ class ToolInvoker(
         definition: AgentTool,
         arguments: JsonObject,
         origin: Origin,
+        mode: AutonomyMode,
     ): Attempt {
         val complaint = ArgumentsSchema.check(definition.argumentsSchema, arguments)
         return when {
@@ -171,7 +196,7 @@ class ToolInvoker(
                 ToolOutcome.FAILURE,
             )
             definition.visibility == ToolVisibility.INTERNAL -> execute(definition, arguments, frame.context)
-            else -> permitted(frame, definition, arguments)
+            else -> permitted(frame, definition, arguments, mode)
         }
     }
 
@@ -180,17 +205,41 @@ class ToolInvoker(
         frame: CallFrame,
         definition: AgentTool,
         arguments: JsonObject,
+        mode: AutonomyMode,
     ): Attempt {
-        val decision = permissions.resolve(definition.name, definition.kind, definition.declaredPermission)
-        return when (decision) {
-            PermissionDecision.Allow -> guarded(frame, definition, arguments)
-
-            is PermissionDecision.Deny -> refused(
-                "вызов «${definition.name}» запрещён настройками (${decision.reason.name})",
-                ToolOutcome.DENIED,
+        val permission = permissions.resolve(definition.name, definition.kind, definition.declaredPermission)
+        val needsRisk = permission !is PermissionDecision.Deny &&
+            definition.changesRepository &&
+            (mode == AutonomyMode.SUGGEST_ONLY || mode == AutonomyMode.AUTO_APPLY_SAFE)
+        val riskLevel = if (needsRisk) {
+            proposalExecutor.assess(frame.runId, definition.name, frame.toolArguments, frame.context)
+        } else {
+            RiskLevel.NORMAL
+        }
+        val call = AutonomyCall(
+            changesRepository = definition.changesRepository,
+            executionOnly = definition.kind == ToolKind.WRITE && !definition.changesRepository,
+            isProposable = definition is ProposableTool,
+            risk = riskLevel,
+        )
+        return when (val outcome = AutonomyDecision.decide(mode, permission, call)) {
+            AutonomyOutcome.Execute -> guarded(frame, definition, arguments)
+            AutonomyOutcome.Ask -> requestApproval(frame, definition, arguments)
+            AutonomyOutcome.Propose -> Attempt(
+                proposalExecutor.propose(
+                    tool = definition as ProposableTool,
+                    input = ProposalInput(
+                        runId = frame.runId,
+                        callId = frame.callId,
+                        toolName = definition.name,
+                        arguments = arguments,
+                        context = frame.context,
+                        timeoutMillis = definition.timeoutMillis,
+                    ),
+                    riskLevel = riskLevel,
+                ),
             )
-
-            PermissionDecision.Ask -> requestApproval(frame, definition, arguments)
+            is AutonomyOutcome.Deny -> refused(outcome.reason, ToolOutcome.DENIED)
         }
     }
 
@@ -214,7 +263,7 @@ class ToolInvoker(
             kind = definition.kind,
             changesRepository = definition.changesRepository,
         )
-        return when (val decision = approval.request(frame.runId, request)) {
+        return when (val decision = autonomy.approval.request(frame.runId, request)) {
             ApprovalDecision.ALLOW_ONCE, ApprovalDecision.ALLOW_SESSION, ApprovalDecision.ALLOW_ALWAYS ->
                 guarded(frame, definition, arguments).copy(requiredApproval = true, approval = decision)
 

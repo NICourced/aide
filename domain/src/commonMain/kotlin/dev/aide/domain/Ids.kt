@@ -28,6 +28,11 @@ value class HunkId(val value: String)
 @JvmInline
 value class ToolCallId(val value: String)
 
+/** Идентификатор сохранённого, но неприменённого предложения (T-1.15). */
+@Serializable
+@JvmInline
+value class ProposalId(val value: String)
+
 /** Ссылка на снапшот в git, вида `refs/ai/snap/<timestamp>-<label>` (§ 9). */
 @Serializable
 @JvmInline

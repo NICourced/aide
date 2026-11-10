@@ -48,7 +48,13 @@ class ToolInvokerChangeSnapshotTest {
         val snapshots = FakeChangeSnapshots()
         val (call, recorder) = invoker(snapshots)
 
-        val result = runBlocking { call.invoke(runId, WriteFileTool.name, WRITE_ARGUMENTS, workspace.context) }
+        val result = runBlocking { call.invoke(
+            runId = runId,
+            tool = WriteFileTool.name,
+            arguments = WRITE_ARGUMENTS,
+            context = workspace.context,
+            mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+        ) }
 
         assertEquals(ToolOutcome.SUCCESS, result.outcome, result.text)
         assertEquals(SnapshotRef(TEST_SNAPSHOT_REF), result.snapshotRef, "ссылка обязана ехать в результате")
@@ -69,7 +75,13 @@ class ToolInvokerChangeSnapshotTest {
         val (call, recorder) = invoker(snapshots)
 
         val result = runBlocking {
-            call.invoke(runId, WriteFileTool.name, """{"path":"src/main","content":"не файл"}""", workspace.context)
+            call.invoke(
+                runId = runId,
+                tool = WriteFileTool.name,
+                arguments = """{"path":"src/main","content":"не файл"}""",
+                context = workspace.context,
+                mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+            )
         }
 
         // Снапшот поставлен до выполнения и остаётся в репозитории; прогон обязан его увидеть,
@@ -84,7 +96,13 @@ class ToolInvokerChangeSnapshotTest {
         val snapshots = FakeChangeSnapshots().apply { answer(ChangeSnapshot.NoHead) }
         val (call, recorder) = invoker(snapshots)
 
-        val result = runBlocking { call.invoke(runId, WriteFileTool.name, WRITE_ARGUMENTS, workspace.context) }
+        val result = runBlocking { call.invoke(
+            runId = runId,
+            tool = WriteFileTool.name,
+            arguments = WRITE_ARGUMENTS,
+            context = workspace.context,
+            mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+        ) }
 
         assertEquals(ToolOutcome.DENIED, result.outcome, "без точки отката изменения быть не должно")
         assertNull(result.snapshotRef)
@@ -100,7 +118,13 @@ class ToolInvokerChangeSnapshotTest {
         val snapshots = FakeChangeSnapshots().apply { answer(ChangeSnapshot.Failed("snapshot_failed")) }
         val (call, recorder) = invoker(snapshots)
 
-        val result = runBlocking { call.invoke(runId, WriteFileTool.name, WRITE_ARGUMENTS, workspace.context) }
+        val result = runBlocking { call.invoke(
+            runId = runId,
+            tool = WriteFileTool.name,
+            arguments = WRITE_ARGUMENTS,
+            context = workspace.context,
+            mode = dev.aide.domain.AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+        ) }
 
         assertEquals(ToolOutcome.DENIED, result.outcome)
         assertTrue(result.text.contains("snapshot_failed"), "код причины обязан быть в тексте: ${result.text}")
@@ -129,7 +153,13 @@ class ToolInvokerChangeSnapshotTest {
         val recorder = RecordingToolCalls()
         val call = testInvoker(ToolRegistry(listOf(WriteFileTool)), recorder, stored = { null }, snapshots = snapshots)
 
-        val result = runBlocking { call.invoke(runId, WriteFileTool.name, WRITE_ARGUMENTS, workspace.context) }
+        val result = runBlocking { call.invoke(
+            runId = runId,
+            tool = WriteFileTool.name,
+            arguments = WRITE_ARGUMENTS,
+            context = workspace.context,
+            mode = dev.aide.domain.AutonomyMode.ASK_BEFORE_CHANGES,
+        ) }
 
         assertEquals(ToolOutcome.DENIED, result.outcome, "у записи объявленное умолчание — ASK")
         assertFalse(workspace.writeTarget().exists())

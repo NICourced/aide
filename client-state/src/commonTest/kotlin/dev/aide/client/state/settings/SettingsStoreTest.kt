@@ -1,5 +1,6 @@
 package dev.aide.client.state.settings
 
+import dev.aide.domain.AutonomyMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -15,6 +16,7 @@ class SettingsStoreTest {
         assertEquals(ThemePreference.SYSTEM, store.theme)
         assertNull(store.repositoryPath, "Путь к репозиторию по умолчанию не задан")
         assertEquals(ControlMode.GESTURES, store.controlMode)
+        assertEquals(AutonomyMode.ASK_BEFORE_CHANGES, store.autonomyMode)
     }
 
     @Test
@@ -22,7 +24,6 @@ class SettingsStoreTest {
         val backend = FakeKeyValueStore()
         SettingsStore(backend).repositoryPath = repositoryPath
 
-        // Перезапуск: новый SettingsStore поверх того же хранилища.
         val afterRestart = SettingsStore(FakeKeyValueStore(backend.snapshot()))
         assertEquals(repositoryPath, afterRestart.repositoryPath)
     }
@@ -50,6 +51,30 @@ class SettingsStoreTest {
         val backend = FakeKeyValueStore()
         SettingsStore(backend).controlMode = ControlMode.BUTTONS
         assertEquals(ControlMode.BUTTONS, SettingsStore(FakeKeyValueStore(backend.snapshot())).controlMode)
+    }
+
+    @Test
+    fun `все режимы автономности переживают перезапуск`() {
+        for (mode in AutonomyMode.entries) {
+            val backend = FakeKeyValueStore()
+            SettingsStore(backend).autonomyMode = mode
+
+            val afterRestart = SettingsStore(FakeKeyValueStore(backend.snapshot()))
+            assertEquals(mode, afterRestart.autonomyMode)
+        }
+    }
+
+    @Test
+    fun `режим автономности читается без учёта регистра`() {
+        val backend = FakeKeyValueStore(mapOf(SettingsStore.KEY_AUTONOMY_MODE to "full_auto_with_checkpoints"))
+        assertEquals(AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS, SettingsStore(backend).autonomyMode)
+    }
+
+    @Test
+    fun `неизвестный режим автономности даёт безопасное умолчание`() {
+        val backend = FakeKeyValueStore(mapOf(SettingsStore.KEY_AUTONOMY_MODE to "unrestricted"))
+        assertEquals(AutonomyMode.ASK_BEFORE_CHANGES, SettingsStore(backend).autonomyMode)
+        assertTrue(backend.snapshot().containsKey(SettingsStore.KEY_AUTONOMY_MODE))
     }
 
     @Test

@@ -156,7 +156,6 @@ class AgentRunEngine(
     private val stepCommits = StepCommitWriter(tools)
     private val gate = PlanGate(planner, writer)
     private val controls = ConcurrentHashMap<RunId, RunControl>()
-    private val pendingModes = ConcurrentHashMap<TaskId, AutonomyMode>()
 
     /** Сигнал воркеру хоста: в очереди появилась задача. */
     private val wakeUp = Channel<Unit>(Channel.CONFLATED)
@@ -178,11 +177,11 @@ class AgentRunEngine(
                 title = taskTitle(prompt),
                 prompt = prompt,
                 branch = "ai/${id.value}",
+                requestedMode = mode,
                 status = TaskStatus.QUEUED,
                 createdAt = clock(),
             ),
         )
-        pendingModes[id] = mode
         wakeUp.trySend(Unit)
         return id
     }
@@ -214,9 +213,8 @@ class AgentRunEngine(
     private suspend fun executeOrFail(task: Task) {
         val running = task.copy(status = TaskStatus.RUNNING)
         writer.persistTask(running)
-        // Режим снимается до планирования: при отказе планирования запись не должна
-        // оставаться в памяти до конца жизни хоста.
-        val mode = pendingModes.remove(task.id) ?: DEFAULT_MODE
+        // У старых записанных задач режима нет: для них сохраняется прежнее умолчание.
+        val mode = task.requestedMode ?: DEFAULT_MODE
         // Отказ выбрать модель — нормальное состояние: на чистой установке провайдер не
         // настроен, у настроенного может не быть переменной окружения с ключом. Задача
         // падает кодом причины, а не молчит, и прогона при этом ещё нет (`NOT_CONFIGURED`).
@@ -469,7 +467,7 @@ class AgentRunEngine(
             // Точку отката, которую поставил изменяющий вызов, дописывает писатель состояния
             // (T-1.8): движок остаётся единственным, кто решает, что попадает в прогон.
             val results = response.toolCalls.map { call ->
-                val result = tools.invoke(run.id, call)
+                val result = tools.invoke(run.id, call, run.mode)
                 current = writer.snapshot(current, result.snapshotRef)
                 // Отчёт тестов и линтера (T-1.10) вкладывает тот же писатель: инструмент
                 // не знает `runId`, а состояние прогона пишет один движок (О-8).

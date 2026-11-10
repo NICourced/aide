@@ -20,6 +20,8 @@ import dev.aide.tools.limits.HardLimitViolation
 import dev.aide.tools.permission.DenyReason
 import dev.aide.tools.permission.PermissionResolver
 import dev.aide.tools.permission.SessionPermissions
+import dev.aide.tools.ports.ChangeProposals
+import dev.aide.tools.ports.ChangeRisk
 import dev.aide.tools.ports.ChangeSnapshot
 import dev.aide.tools.ports.ChangeSnapshots
 import dev.aide.tools.ports.StepCommit
@@ -77,16 +79,25 @@ val writeAllowed: (String) -> ToolPermission = { name ->
     ToolPermission(tool = name, read = Permission.ALLOW, write = Permission.ALLOW)
 }
 
+/** Дополнительные порты режимов автономности в тестовой точке вызова. */
+data class StepToolOptions(
+    val commits: FakeStepCommits = FakeStepCommits(),
+    val risk: ChangeRisk = ChangeRisk { _, _, _, _ -> dev.aide.domain.RiskLevel.NORMAL },
+    val proposals: ChangeProposals = ChangeProposals { error("Очередь предложений не подключена") },
+    // Старые проверки движка не исследуют диалог: разрешаем его явно, как сделал бы пользователь.
+    val approval: ToolApproval = ToolApproval { _, _ -> ApprovalDecision.ALLOW_ONCE },
+)
+
 /** Инструменты шага в заданном каталоге: файлы для чтения готовит сам тест. */
 fun stepToolsIn(
     workspace: Path,
     recorder: ToolCallRecorder = RecordingToolCalls(),
     stored: (String) -> ToolPermission? = { null },
-    commits: FakeStepCommits = FakeStepCommits(),
     snapshots: ChangeSnapshots = EngineChangeSnapshots(),
+    options: StepToolOptions = StepToolOptions(),
 ): StepTools {
     val sessionPermissions = SessionPermissions()
-    val registry = ToolRegistry(defaultTools(commits))
+    val registry = ToolRegistry(defaultTools(options.commits))
     return StepTools.of(
         registry = registry,
         invoker = ToolInvoker(
@@ -94,7 +105,11 @@ fun stepToolsIn(
             permissions = PermissionResolver(stored, sessionPermissions::load),
             recorder = recorder,
             snapshots = snapshots,
-            approval = ToolApproval { _, _ -> ApprovalDecision.DENY },
+            autonomy = dev.aide.tools.ports.AutonomyPorts(
+                approval = options.approval,
+                risk = options.risk,
+                proposals = options.proposals,
+            ),
         ),
         context = TestToolContext(workspace),
     )

@@ -42,6 +42,7 @@ import dev.aide.host.server.StageZeroHandler
 import dev.aide.host.server.ToolCallBroadcaster
 import dev.aide.host.server.ToolLogHandler
 import dev.aide.host.server.freeLoopbackPort
+import dev.aide.host.risk.ConservativeChangeRisk
 import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.store.HostStore
 import dev.aide.host.workspace.OpenWorkspaces
@@ -347,7 +348,11 @@ private fun stepToolsOf(
             permissions = PermissionResolver(store.permissions::load, ports.approvals::sessionPermission),
             recorder = StoreToolCallRecorder(store.toolCalls, ports.events),
             snapshots = snapshots,
-            approval = ports.approvals,
+            autonomy = dev.aide.tools.ports.AutonomyPorts(
+                approval = ports.approvals,
+                risk = ConservativeChangeRisk,
+                proposals = store.proposals,
+            ),
         ),
         context = context,
     )
