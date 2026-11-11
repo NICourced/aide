@@ -405,7 +405,7 @@ class ToolInvokerTest {
             stored = writeAllowed,
             snapshots = FakeChangeSnapshots(),
             autonomy = dev.aide.tools.TestAutonomy(
-                risk = ChangeRisk { _, _, _, _ -> RiskLevel.SAFE },
+                risk = ChangeRisk { _, _, _ -> RiskLevel.SAFE },
             ),
         )
 
@@ -432,7 +432,7 @@ class ToolInvokerTest {
             stored = writeAllowed,
             snapshots = FakeChangeSnapshots(),
             autonomy = dev.aide.tools.TestAutonomy(
-                risk = ChangeRisk { _, _, _, _ -> RiskLevel.NORMAL },
+                risk = ChangeRisk { _, _, _ -> RiskLevel.NORMAL },
                 proposals = proposals,
             ),
         )
@@ -533,7 +533,7 @@ class ToolInvokerTest {
             registry = ToolRegistry(listOf(WriteFileTool)),
             stored = { name -> ToolPermission(name, Permission.DENY, Permission.DENY) },
             autonomy = dev.aide.tools.TestAutonomy(
-                risk = ChangeRisk { _, _, _, _ -> error("риск при DENY вычисляться не должен") },
+                risk = ChangeRisk { _, _, _ -> error("риск при DENY вычисляться не должен") },
                 proposals = proposals,
             ),
         )

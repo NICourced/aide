@@ -155,6 +155,13 @@
     <string name="settings_autonomy_mode_auto_apply_safe">Авто-применять безопасное</string>
     <string name="settings_autonomy_mode_full_auto">Полный автомат с чекпоинтами</string>
 
+    <string name="settings_safe_volume_threshold_title">Порог объёма для авто-применения безопасного</string>
+    <string name="settings_safe_volume_threshold_hint">Например, 50</string>
+    <string name="settings_safe_volume_threshold_apply">Сохранить порог</string>
+    <string name="settings_safe_volume_threshold_invalid">Порог должен быть положительным числом</string>
+    <string name="settings_safe_volume_threshold_current">Действующий порог для новых прогонов: %1$d строк</string>
+    <string name="settings_safe_volume_threshold_rules">Безопасное применяется автоматически, только если сразу несколько условий: изменение только в тестах, документации или локализации; последний прогон тестов зелёный и линтер чист; объём не выше порога; нет удалений; не затронуты публичный API, схема базы, права доступа или секреты. В остальных случаях изменение считается обычным. Высокий риск — при удалении файлов, затронутых специальных областях, красных тестах или объёме больше пяти порогов.</string>
+
     <string name="settings_model_title">Модель</string>
     <string name="settings_model_loading">Загрузка настроек моделей…</string>
     <string name="settings_model_key_note">Ключ в файле настроек не хранится. Он сохраняется в защищённом хранилище платформы хоста (Linux — libsecret, Windows — DPAPI), а если ключа там нет — берётся из переменной окружения хоста по имени.</string>

@@ -207,4 +207,17 @@ class RiskEvaluatorTest {
     fun `порог по умолчанию равен пятидесяти`() {
         assertEquals(50, RiskEvaluator.DEFAULT_VOLUME_THRESHOLD_LINES)
     }
+
+    @Test
+    fun `sanitize сохраняет положительный порог`() {
+        assertEquals(100, RiskEvaluator.sanitizeVolumeThreshold(100))
+        assertEquals(1, RiskEvaluator.sanitizeVolumeThreshold(1))
+    }
+
+    @Test
+    fun `sanitize нормализует неположительный и повреждённый порог в 50`() {
+        assertEquals(50, RiskEvaluator.sanitizeVolumeThreshold(0))
+        assertEquals(50, RiskEvaluator.sanitizeVolumeThreshold(-1))
+        assertEquals(50, RiskEvaluator.sanitizeVolumeThreshold(-100))
+    }
 }

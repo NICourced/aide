@@ -1,6 +1,9 @@
 package dev.aide.client.state.settings
 
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.risk.RiskEvaluator
+
+private const val MIN_VOLUME_THRESHOLD: Int = 1
 
 /** Как приложение выбирает тему. */
 enum class ThemePreference {
@@ -63,6 +66,21 @@ class SettingsStore(private val backend: KeyValueStore) {
             ?: AutonomyMode.ASK_BEFORE_CHANGES
         set(value) = backend.putString(KEY_AUTONOMY_MODE, value.name)
 
+    /**
+     * Порог объёма для авто-применения безопасных изменений (T-1.16).
+     *
+     * Сохраняется только положительное значение; повреждённое, ноль или отрицательное
+     * даёт 50 — значение по умолчанию из § 5.3.2.
+     */
+    var safeVolumeThresholdLines: Int
+        get() = backend.getString(KEY_SAFE_VOLUME_THRESHOLD)
+            ?.toIntOrNull()
+            ?.takeIf { it >= MIN_VOLUME_THRESHOLD }
+            ?: RiskEvaluator.DEFAULT_VOLUME_THRESHOLD_LINES
+        set(value) {
+            if (value >= MIN_VOLUME_THRESHOLD) backend.putString(KEY_SAFE_VOLUME_THRESHOLD, value.toString())
+        }
+
     /** Адрес хоста вида `ws://host:port/ws`; null, если адрес не задан. */
     var hostEndpoint: String?
         get() = backend.getString(KEY_HOST_ENDPOINT)?.takeIf { it.isNotBlank() }
@@ -82,6 +100,9 @@ class SettingsStore(private val backend: KeyValueStore) {
 
         /** Ключ режима автономности новых прогонов (T-1.15). */
         const val KEY_AUTONOMY_MODE: String = "autonomyMode"
+
+        /** Ключ порога объёма для авто-применения безопасного (T-1.16). */
+        const val KEY_SAFE_VOLUME_THRESHOLD: String = "safeVolumeThresholdLines"
 
         /** Ключ адреса хоста. */
         const val KEY_HOST_ENDPOINT: String = "hostEndpoint"

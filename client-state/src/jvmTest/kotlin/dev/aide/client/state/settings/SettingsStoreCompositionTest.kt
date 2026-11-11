@@ -27,6 +27,7 @@ class SettingsStoreCompositionTest {
                 SettingsStore.KEY_THEME,
                 SettingsStore.KEY_CONTROL_MODE,
                 SettingsStore.KEY_AUTONOMY_MODE,
+                SettingsStore.KEY_SAFE_VOLUME_THRESHOLD,
                 SettingsStore.KEY_HOST_ENDPOINT,
             ),
             keys,

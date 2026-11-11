@@ -265,9 +265,19 @@ class HostClient(
     }.onSuccess { state -> sessionState.update { it.copy(hostState = state, lastError = null) } }
 
     /** Ставит задачу в очередь на выполнение агентом (T-1.1). */
-    suspend fun postTask(prompt: String, mode: AutonomyMode): Result<TaskId> {
+    suspend fun postTask(
+        prompt: String,
+        mode: AutonomyMode,
+        safeVolumeThresholdLines: Int = 50,
+    ): Result<TaskId> {
         val requestId = requestIds.next()
-        return when (val response = connection.request(ClientMessage.PostTask(requestId, prompt, mode))) {
+        val message = ClientMessage.PostTask(
+            requestId = requestId,
+            prompt = prompt,
+            mode = mode,
+            safeVolumeThresholdLines = safeVolumeThresholdLines,
+        )
+        return when (val response = connection.request(message)) {
             is HostMessage.TaskPosted -> Result.success(response.taskId)
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))
             else -> Result.failure(HostCallException(ProtocolError.Internal("Хост не ответил на постановку задачи")))

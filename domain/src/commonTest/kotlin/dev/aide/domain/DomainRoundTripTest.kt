@@ -1,5 +1,6 @@
 package dev.aide.domain
 
+import dev.aide.domain.risk.RiskEvaluator
 import kotlinx.datetime.Instant
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -146,6 +147,26 @@ class DomainRoundTripTest {
             decoded.snapshots,
         )
         assertTrue(roundTrip(DomainFixtures.emptyRun).snapshots.isEmpty(), "без снапшотов список пустой")
+    }
+
+    @Test
+    fun `AgentRun помнит порог объёма`() {
+        assertEquals(75, roundTrip(DomainFixtures.run).safeVolumeThresholdLines)
+        assertEquals(50, roundTrip(DomainFixtures.emptyRun).safeVolumeThresholdLines)
+    }
+
+    @Test
+    fun `Task помнит порог объёма`() {
+        assertEquals(75, roundTrip(DomainFixtures.task).requestedSafeVolumeThresholdLines)
+    }
+
+    @Test
+    fun `старые Task и AgentRun без порога читаются со значением по умолчанию`() {
+        val oldTask = DomainFixtures.task.copy(requestedSafeVolumeThresholdLines = null)
+        val oldRun = DomainFixtures.run.copy(safeVolumeThresholdLines = 50)
+
+        assertEquals(50, RiskEvaluator.sanitizeVolumeThreshold(roundTrip(oldTask).requestedSafeVolumeThresholdLines))
+        assertEquals(50, roundTrip(oldRun).safeVolumeThresholdLines)
     }
 
     @Test

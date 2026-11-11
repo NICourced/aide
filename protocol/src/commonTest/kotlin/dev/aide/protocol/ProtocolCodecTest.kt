@@ -225,6 +225,12 @@ class ProtocolCodecTest {
             ClientMessage.HostState(requestId, workspaceId),
             ClientMessage.PostTask(requestId, "Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES),
             ClientMessage.PostTask(requestId, "Только предложи", AutonomyMode.SUGGEST_ONLY),
+            ClientMessage.PostTask(
+                requestId,
+                "С кастомным порогом",
+                AutonomyMode.AUTO_APPLY_SAFE,
+                safeVolumeThresholdLines = 100,
+            ),
             ClientMessage.AgentStatus(requestId),
             ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.PAUSE),
             ClientMessage.RunControl(requestId, RunId("r-1"), RunCommand.RESUME),

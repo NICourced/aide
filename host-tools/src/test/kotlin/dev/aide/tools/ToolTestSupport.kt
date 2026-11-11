@@ -182,7 +182,7 @@ data class TestApprovals(
 /** Тестовые порты автономности вместе с памятью сессионных разрешений. */
 data class TestAutonomy(
     val approvals: TestApprovals = TestApprovals(),
-    val risk: ChangeRisk = ChangeRisk { _, _, _, _ -> dev.aide.domain.RiskLevel.NORMAL },
+    val risk: ChangeRisk = ChangeRisk { _, _, _ -> dev.aide.domain.RiskLevel.NORMAL },
     val proposals: ChangeProposals = ChangeProposals { error("Очередь предложений не подключена") },
 ) {
     fun ports(): dev.aide.tools.ports.AutonomyPorts = dev.aide.tools.ports.AutonomyPorts(

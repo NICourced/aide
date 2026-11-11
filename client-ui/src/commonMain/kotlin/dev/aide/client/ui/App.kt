@@ -201,7 +201,11 @@ private fun AgentDestination(
                 // для уже идущих прогонов (FR-AGENT-5, T-1.15).
                 scope.launch {
                     requestFailed = false
-                    client.postTask(prompt, settings.autonomyMode).onFailure { requestFailed = true }
+                    client.postTask(
+                        prompt,
+                        settings.autonomyMode,
+                        settings.safeVolumeThresholdLines,
+                    ).onFailure { requestFailed = true }
                 }
             },
             openLog = onOpenLog,

@@ -39,7 +39,7 @@ class AgentRunEngineAutonomyTest {
     }
 
     private data class AutonomyFixture(
-        val risk: ChangeRisk = ChangeRisk { _, _, _, _ -> RiskLevel.NORMAL },
+        val risk: ChangeRisk = ChangeRisk { _, _, _ -> RiskLevel.NORMAL },
         val proposals: RecordingProposals = RecordingProposals(),
         val snapshots: EngineChangeSnapshots = EngineChangeSnapshots(),
         val stored: (String) -> ToolPermission? = { null },
@@ -82,8 +82,8 @@ class AgentRunEngineAutonomyTest {
         val proposals: RecordingProposals,
         val snapshots: EngineChangeSnapshots,
     ) {
-        suspend fun runTask() {
-            engine.postTask("задача", mode)
+        suspend fun runTask(safeVolumeThresholdLines: Int = 50) {
+            engine.postTask("задача", mode, safeVolumeThresholdLines)
             assertTrue(engine.processNextApproved(runs))
         }
     }
@@ -117,6 +117,54 @@ class AgentRunEngineAutonomyTest {
             assertEquals(ToolOutcome.PROPOSED, restarted.recorder.calls.first { it.tool == "write_file" }.outcome)
             assertFalse(workspace.resolve("src/App.kt").exists())
             assertEquals(1, fixture.proposals.saved.size)
+        }
+    }
+
+    @Test
+    fun `порог объёма сохраняется в задаче и переносится в прогон`() {
+        runBlocking {
+            val test = engine(AutonomyMode.SUGGEST_ONLY, writeThenDone())
+            test.runTask(safeVolumeThresholdLines = 100)
+
+            val task = tasks.all().single()
+            val run = runs.all().single()
+            assertEquals(100, task.requestedSafeVolumeThresholdLines)
+            assertEquals(100, run.safeVolumeThresholdLines)
+        }
+    }
+
+    @Test
+    fun `порог объёма переживает пересоздание движка и не меняется у существующего прогона`() {
+        runBlocking {
+            val fixture = AutonomyFixture()
+            val posted = engine(AutonomyMode.SUGGEST_ONLY, writeThenDone(), fixture = fixture)
+            posted.engine.postTask("задача", posted.mode, safeVolumeThresholdLines = 100)
+
+            val restarted = engine(
+                AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+                writeThenDone(),
+                fixture = fixture,
+            )
+            assertTrue(restarted.engine.processNextApproved(runs))
+
+            val task = tasks.all().single()
+            val run = runs.all().single()
+            assertEquals(AutonomyMode.SUGGEST_ONLY, run.mode)
+            assertEquals(100, task.requestedSafeVolumeThresholdLines)
+            assertEquals(100, run.safeVolumeThresholdLines)
+        }
+    }
+
+    @Test
+    fun `неположительный порог нормализуется до значения по умолчанию`() {
+        runBlocking {
+            val test = engine(AutonomyMode.SUGGEST_ONLY, writeThenDone())
+            test.runTask(safeVolumeThresholdLines = 0)
+
+            val task = tasks.all().single()
+            val run = runs.all().single()
+            assertEquals(50, task.requestedSafeVolumeThresholdLines)
+            assertEquals(50, run.safeVolumeThresholdLines)
         }
     }
 
@@ -176,7 +224,7 @@ class AgentRunEngineAutonomyTest {
             val test = engine(
                 AutonomyMode.AUTO_APPLY_SAFE,
                 writeThenDone(),
-                fixture = AutonomyFixture(risk = ChangeRisk { _, _, _, _ -> RiskLevel.SAFE }),
+                fixture = AutonomyFixture(risk = ChangeRisk { _, _, _ -> RiskLevel.SAFE }),
             )
             test.runTask()
 

@@ -59,6 +59,7 @@ object DomainFixtures {
         prompt = "Сделай выдачу токена через сервис",
         branch = "ai/t-1",
         requestedMode = AutonomyMode.SUGGEST_ONLY,
+        requestedSafeVolumeThresholdLines = 75,
         status = TaskStatus.REVIEW,
         createdAt = t0,
         runIds = listOf(RunId("r-1")),
@@ -77,6 +78,7 @@ object DomainFixtures {
         elapsedMillis = 60_000,
         cost = Cost(amountMicros = 12_500, known = true),
         modelAlias = "openai/gpt-4o",
+        safeVolumeThresholdLines = 75,
         interruptReason = null,
     )
 

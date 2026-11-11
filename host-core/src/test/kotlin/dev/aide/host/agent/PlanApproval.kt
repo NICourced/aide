@@ -24,8 +24,12 @@ import kotlinx.coroutines.withTimeoutOrNull
  * прогон в режимах FR-AGENT-2..4 не начинается, и ожидание финала висело бы вечно.
  * Отказ планирования сюда не попадает — там плана не появляется вовсе.
  */
-suspend fun HostClient.postTaskApprovingPlan(prompt: String, mode: AutonomyMode): Result<TaskId> {
-    val posted = postTask(prompt, mode)
+suspend fun HostClient.postTaskApprovingPlan(
+    prompt: String,
+    mode: AutonomyMode,
+    safeVolumeThresholdLines: Int = 50,
+): Result<TaskId> {
+    val posted = postTask(prompt, mode, safeVolumeThresholdLines)
     val taskId = posted.getOrElse { return posted }
     val planned = assertNotNull(awaitShownPlan(taskId), "план для задачи ${taskId.value} так и не показался")
     decidePlan(planned.id, PlanDecision.Approve).getOrThrow()

@@ -26,6 +26,18 @@ object RiskEvaluator {
     /** Во сколько раз объём должен превысить порог, чтобы изменение стало [RiskLevel.RISKY]. */
     const val RISKY_VOLUME_MULTIPLIER: Int = 5
 
+    /**
+     * Нормализует пользовательский порог объёма (T-1.16).
+     *
+     * Положительное значение сохраняется; ноль, отрицательное и отсутствующее
+     * дают [DEFAULT_VOLUME_THRESHOLD_LINES].
+     */
+    fun sanitizeVolumeThreshold(value: Int?): Int = if (value != null && value > 0) {
+        value
+    } else {
+        DEFAULT_VOLUME_THRESHOLD_LINES
+    }
+
     /** Вход вычисления: сам набор изменений и контекст, которого нет в diff'е. */
     data class Input(
         /** Изменения по файлам. */

@@ -27,7 +27,11 @@ class AgentRunHandler(
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
         is ClientMessage.PostTask -> HostMessage.TaskPosted(
             requestId = message.requestId,
-            taskId = engine.postTask(message.prompt, message.mode),
+            taskId = engine.postTask(
+                message.prompt,
+                message.mode,
+                message.safeVolumeThresholdLines,
+            ),
         )
 
         is ClientMessage.AgentStatus -> HostMessage.AgentSnapshot(

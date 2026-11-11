@@ -3,6 +3,7 @@ package dev.aide.client.state.settings
 import dev.aide.domain.AutonomyMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -104,5 +105,46 @@ class SettingsStoreTest {
         store.repositoryPath = "/b"
         assertEquals("/b", store.repositoryPath)
         assertEquals(1, backend.snapshot().keys.count { it == SettingsStore.KEY_REPOSITORY_PATH })
+    }
+
+    @Test
+    fun `порог объёма по умолчанию 50`() {
+        val store = SettingsStore(FakeKeyValueStore())
+        assertEquals(50, store.safeVolumeThresholdLines)
+    }
+
+    @Test
+    fun `порог объёма переживает перезапуск`() {
+        val backend = FakeKeyValueStore()
+        SettingsStore(backend).safeVolumeThresholdLines = 100
+
+        assertEquals(100, SettingsStore(FakeKeyValueStore(backend.snapshot())).safeVolumeThresholdLines)
+    }
+
+    @Test
+    fun `повреждённый порог объёма читается как 50`() {
+        val backend = FakeKeyValueStore(mapOf(SettingsStore.KEY_SAFE_VOLUME_THRESHOLD to "abc"))
+        assertEquals(50, SettingsStore(backend).safeVolumeThresholdLines)
+    }
+
+    @Test
+    fun `неположительный порог объёма читается как 50`() {
+        val zero = FakeKeyValueStore(mapOf(SettingsStore.KEY_SAFE_VOLUME_THRESHOLD to "0"))
+        assertEquals(50, SettingsStore(zero).safeVolumeThresholdLines)
+        val negative = FakeKeyValueStore(mapOf(SettingsStore.KEY_SAFE_VOLUME_THRESHOLD to "-5"))
+        assertEquals(50, SettingsStore(negative).safeVolumeThresholdLines)
+    }
+
+    @Test
+    fun `сохраняется только положительный порог объёма`() {
+        val backend = FakeKeyValueStore()
+        val store = SettingsStore(backend)
+        store.safeVolumeThresholdLines = 0
+        assertEquals(50, store.safeVolumeThresholdLines)
+        assertFalse(backend.snapshot().containsKey(SettingsStore.KEY_SAFE_VOLUME_THRESHOLD))
+
+        store.safeVolumeThresholdLines = -1
+        assertEquals(50, store.safeVolumeThresholdLines)
+        assertFalse(backend.snapshot().containsKey(SettingsStore.KEY_SAFE_VOLUME_THRESHOLD))
     }
 }

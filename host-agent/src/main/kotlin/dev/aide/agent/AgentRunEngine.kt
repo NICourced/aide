@@ -25,6 +25,7 @@ import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
 import dev.aide.domain.code
+import dev.aide.domain.risk.RiskEvaluator
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
@@ -169,7 +170,11 @@ class AgentRunEngine(
      * Статус задачи пишется в базу и рассылается событием — иначе постановка на чистой
      * установке выглядела бы успешной, а отказ планирования пользователь бы не увидел.
      */
-    suspend fun postTask(prompt: String, mode: AutonomyMode): TaskId {
+    suspend fun postTask(
+        prompt: String,
+        mode: AutonomyMode,
+        safeVolumeThresholdLines: Int = RiskEvaluator.DEFAULT_VOLUME_THRESHOLD_LINES,
+    ): TaskId {
         val id = TaskId(UUID.randomUUID().toString())
         writer.persistTask(
             Task(
@@ -178,6 +183,7 @@ class AgentRunEngine(
                 prompt = prompt,
                 branch = "ai/${id.value}",
                 requestedMode = mode,
+                requestedSafeVolumeThresholdLines = RiskEvaluator.sanitizeVolumeThreshold(safeVolumeThresholdLines),
                 status = TaskStatus.QUEUED,
                 createdAt = clock(),
             ),
@@ -299,6 +305,8 @@ class AgentRunEngine(
             plan = plan,
             startedAt = clock(),
             modelAlias = model.alias,
+            safeVolumeThresholdLines = task.requestedSafeVolumeThresholdLines
+                ?: RiskEvaluator.DEFAULT_VOLUME_THRESHOLD_LINES,
         )
         val control = RunControl()
         controls[run.id] = control

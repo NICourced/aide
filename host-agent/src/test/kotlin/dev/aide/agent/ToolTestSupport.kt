@@ -82,7 +82,7 @@ val writeAllowed: (String) -> ToolPermission = { name ->
 /** Дополнительные порты режимов автономности в тестовой точке вызова. */
 data class StepToolOptions(
     val commits: FakeStepCommits = FakeStepCommits(),
-    val risk: ChangeRisk = ChangeRisk { _, _, _, _ -> dev.aide.domain.RiskLevel.NORMAL },
+    val risk: ChangeRisk = ChangeRisk { _, _, _ -> dev.aide.domain.RiskLevel.NORMAL },
     val proposals: ChangeProposals = ChangeProposals { error("Очередь предложений не подключена") },
     // Старые проверки движка не исследуют диалог: разрешаем его явно, как сделал бы пользователь.
     val approval: ToolApproval = ToolApproval { _, _ -> ApprovalDecision.ALLOW_ONCE },

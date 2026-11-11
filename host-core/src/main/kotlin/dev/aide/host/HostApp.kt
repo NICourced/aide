@@ -42,7 +42,7 @@ import dev.aide.host.server.StageZeroHandler
 import dev.aide.host.server.ToolCallBroadcaster
 import dev.aide.host.server.ToolLogHandler
 import dev.aide.host.server.freeLoopbackPort
-import dev.aide.host.risk.ConservativeChangeRisk
+import dev.aide.host.risk.DeterministicChangeRisk
 import dev.aide.host.store.DatabaseFactory
 import dev.aide.host.store.HostStore
 import dev.aide.host.workspace.OpenWorkspaces
@@ -350,7 +350,7 @@ private fun stepToolsOf(
             snapshots = snapshots,
             autonomy = dev.aide.tools.ports.AutonomyPorts(
                 approval = ports.approvals,
-                risk = ConservativeChangeRisk,
+                risk = DeterministicChangeRisk(store.runs),
                 proposals = store.proposals,
             ),
         ),

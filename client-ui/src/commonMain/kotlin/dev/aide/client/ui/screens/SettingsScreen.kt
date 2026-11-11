@@ -30,6 +30,8 @@ import dev.aide.domain.AutonomyMode
 import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 
+private const val MIN_VOLUME_THRESHOLD: Int = 1
+
 /**
  * Настройки: путь к репозиторию, адрес хоста, тема, режим управления, модели.
  *
@@ -126,7 +128,57 @@ fun SettingsScreen(
             },
         )
 
+        SafeVolumeThresholdSection(settings)
+
         ModelSettingsScreen(state = modelConfig)
+    }
+}
+
+/** Раздел настройки порога объёма для авто-применения безопасного (T-1.16). */
+@Composable
+private fun SafeVolumeThresholdSection(settings: SettingsStore) {
+    var thresholdText by remember { mutableStateOf(settings.safeVolumeThresholdLines.toString()) }
+    var thresholdError by remember { mutableStateOf(false) }
+
+    Text(Strings.text(Strings.settingsSafeVolumeThresholdTitle), style = MaterialTheme.typography.titleMedium)
+    Text(
+        Strings.text(Strings.settingsSafeVolumeThresholdRules),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        Strings.text(Strings.settingsSafeVolumeThresholdCurrent, settings.safeVolumeThresholdLines),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedTextField(
+        value = thresholdText,
+        onValueChange = {
+            thresholdText = it
+            thresholdError = false
+        },
+        label = { Text(Strings.text(Strings.settingsSafeVolumeThresholdTitle)) },
+        placeholder = { Text(Strings.text(Strings.settingsSafeVolumeThresholdHint)) },
+        isError = thresholdError,
+        supportingText = if (thresholdError) {
+            { Text(Strings.text(Strings.settingsSafeVolumeThresholdInvalid)) }
+        } else null,
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth().testTag("settings-safe-volume-threshold"),
+    )
+    Button(
+        onClick = {
+            val value = thresholdText.toIntOrNull()
+            if (value != null && value >= MIN_VOLUME_THRESHOLD) {
+                settings.safeVolumeThresholdLines = value
+                thresholdError = false
+            } else {
+                thresholdError = true
+            }
+        },
+        modifier = Modifier.testTag("settings-safe-volume-threshold-apply"),
+    ) {
+        Text(Strings.text(Strings.settingsSafeVolumeThresholdApply))
     }
 }
 

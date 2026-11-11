@@ -208,14 +208,18 @@ class ToolInvoker(
         mode: AutonomyMode,
     ): Attempt {
         val permission = permissions.resolve(definition.name, definition.kind, definition.declaredPermission)
-        val needsRisk = permission !is PermissionDecision.Deny &&
-            definition.changesRepository &&
-            (mode == AutonomyMode.SUGGEST_ONLY || mode == AutonomyMode.AUTO_APPLY_SAFE)
-        val riskLevel = if (needsRisk) {
-            proposalExecutor.assess(frame.runId, definition.name, frame.toolArguments, frame.context)
+        val evaluated = if (needsEvaluation(permission, definition, mode)) {
+            proposalExecutor.evaluate(
+                tool = definition as ProposableTool,
+                input = frame.proposalInput(definition, arguments),
+            )
         } else {
-            RiskLevel.NORMAL
+            null
         }
+        if (evaluated is EvaluatedChange.Failed) return Attempt(evaluated.result)
+        val ready = evaluated as? EvaluatedChange.Ready
+        val files = ready?.files
+        val riskLevel = ready?.risk ?: RiskLevel.NORMAL
         val call = AutonomyCall(
             changesRepository = definition.changesRepository,
             executionOnly = definition.kind == ToolKind.WRITE && !definition.changesRepository,
@@ -227,16 +231,9 @@ class ToolInvoker(
             AutonomyOutcome.Ask -> requestApproval(frame, definition, arguments)
             AutonomyOutcome.Propose -> Attempt(
                 proposalExecutor.propose(
-                    tool = definition as ProposableTool,
-                    input = ProposalInput(
-                        runId = frame.runId,
-                        callId = frame.callId,
-                        toolName = definition.name,
-                        arguments = arguments,
-                        context = frame.context,
-                        timeoutMillis = definition.timeoutMillis,
-                    ),
-                    riskLevel = riskLevel,
+                    input = frame.proposalInput(definition, arguments),
+                    files = files ?: emptyList(),
+                    risk = riskLevel,
                 ),
             )
             is AutonomyOutcome.Deny -> refused(outcome.reason, ToolOutcome.DENIED)
@@ -397,6 +394,27 @@ private data class Attempt(
  * хоста. Сложи оба пути в один — и модель, назвав `commit_step`, обошла бы и права, и
  * «один коммит на изменяющий шаг», потому что внутренний инструмент их не спрашивает.
  */
+private fun needsEvaluation(
+    permission: PermissionDecision,
+    definition: AgentTool,
+    mode: AutonomyMode,
+): Boolean = permission !is PermissionDecision.Deny &&
+    definition.changesRepository &&
+    (mode == AutonomyMode.SUGGEST_ONLY || mode == AutonomyMode.AUTO_APPLY_SAFE) &&
+    definition is ProposableTool
+
+private fun CallFrame.proposalInput(
+    definition: AgentTool,
+    arguments: JsonObject,
+): ProposalInput = ProposalInput(
+    runId = runId,
+    callId = callId,
+    toolName = definition.name,
+    arguments = arguments,
+    context = context,
+    timeoutMillis = definition.timeoutMillis,
+)
+
 private enum class Origin { MODEL, INTERNAL }
 
 /**

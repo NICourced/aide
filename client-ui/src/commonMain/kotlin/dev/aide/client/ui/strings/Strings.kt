@@ -220,6 +220,12 @@ import dev.aide.client.ui.resources.settings_autonomy_mode_ask_before_changes
 import dev.aide.client.ui.resources.settings_autonomy_mode_auto_apply_safe
 import dev.aide.client.ui.resources.settings_autonomy_mode_full_auto
 import dev.aide.client.ui.resources.settings_autonomy_mode_suggest_only
+import dev.aide.client.ui.resources.settings_safe_volume_threshold_apply
+import dev.aide.client.ui.resources.settings_safe_volume_threshold_current
+import dev.aide.client.ui.resources.settings_safe_volume_threshold_hint
+import dev.aide.client.ui.resources.settings_safe_volume_threshold_invalid
+import dev.aide.client.ui.resources.settings_safe_volume_threshold_rules
+import dev.aide.client.ui.resources.settings_safe_volume_threshold_title
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -372,6 +378,13 @@ object Strings {
     val settingsAutonomyModeAskBeforeChanges: StringResource = Res.string.settings_autonomy_mode_ask_before_changes
     val settingsAutonomyModeAutoApplySafe: StringResource = Res.string.settings_autonomy_mode_auto_apply_safe
     val settingsAutonomyModeFullAuto: StringResource = Res.string.settings_autonomy_mode_full_auto
+
+    val settingsSafeVolumeThresholdTitle: StringResource = Res.string.settings_safe_volume_threshold_title
+    val settingsSafeVolumeThresholdHint: StringResource = Res.string.settings_safe_volume_threshold_hint
+    val settingsSafeVolumeThresholdApply: StringResource = Res.string.settings_safe_volume_threshold_apply
+    val settingsSafeVolumeThresholdInvalid: StringResource = Res.string.settings_safe_volume_threshold_invalid
+    val settingsSafeVolumeThresholdCurrent: StringResource = Res.string.settings_safe_volume_threshold_current
+    val settingsSafeVolumeThresholdRules: StringResource = Res.string.settings_safe_volume_threshold_rules
 
     val settingsModelTitle: StringResource = Res.string.settings_model_title
     val settingsModelLoading: StringResource = Res.string.settings_model_loading

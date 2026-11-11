@@ -5,6 +5,8 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.runComposeUiTest
 import dev.aide.client.state.ConnectionState
@@ -97,6 +99,40 @@ class AppNavigationTest {
         }
     }
 
+    @Test
+    fun `следующая задача использует порог объёма на момент постановки`() = runComposeUiTest {
+        val connection = StubConnection()
+        val settings = SettingsStore(InMemoryKeyValueStore())
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            setContent { App(connection = connection, settings = settings, scope = scope) }
+
+            onNodeWithText("Настройки").performClick()
+            onNodeWithTag("settings-safe-volume-threshold").performScrollTo().performTextClearance()
+            onNodeWithTag("settings-safe-volume-threshold").performTextInput("75")
+            onNodeWithTag("settings-safe-volume-threshold-apply").performScrollTo().performClick()
+
+            onNodeWithText("Агент").performClick()
+            onNodeWithTag("task-input").performTextInput("первая")
+            onNodeWithTag("post-task").performClick()
+            waitUntil { connection.postedThresholds.size == 1 }
+
+            onNodeWithText("Настройки").performClick()
+            onNodeWithTag("settings-safe-volume-threshold").performScrollTo().performTextClearance()
+            onNodeWithTag("settings-safe-volume-threshold").performTextInput("30")
+            onNodeWithTag("settings-safe-volume-threshold-apply").performScrollTo().performClick()
+
+            onNodeWithText("Агент").performClick()
+            onNodeWithTag("task-input").performTextInput("вторая")
+            onNodeWithTag("post-task").performClick()
+            waitUntil { connection.postedThresholds.size == 2 }
+
+            assertEquals(listOf(75, 30), connection.postedThresholds)
+        } finally {
+            scope.cancel()
+        }
+    }
+
     /** Соединение-заглушка: отвечает на минимум, нужный экрану агента. */
     private class StubConnection : HostConnection {
 
@@ -107,6 +143,7 @@ class AppNavigationTest {
         override val events: SharedFlow<HostMessage> = _events
 
         val postedModes = CopyOnWriteArrayList<AutonomyMode>()
+        val postedThresholds = CopyOnWriteArrayList<Int>()
 
         override fun start() {
             _state.value = ConnectionState.Connected(sessionId = SessionId("test"), reconnected = false)
@@ -118,6 +155,7 @@ class AppNavigationTest {
             is ClientMessage.AgentStatus -> HostMessage.AgentSnapshot(message.requestId, emptyList(), emptyList())
             is ClientMessage.PostTask -> {
                 postedModes += message.mode
+                postedThresholds += message.safeVolumeThresholdLines
                 HostMessage.TaskPosted(message.requestId, TaskId("task-${postedModes.size}"))
             }
             else -> HostMessage.Failure(
