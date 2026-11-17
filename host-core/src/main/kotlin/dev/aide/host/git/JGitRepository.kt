@@ -322,26 +322,22 @@ private class SnapshotOperation(private val repository: Repository) {
      * исключением (иначе он застрянет в `PLANNED`, а задача — в `RUNNING` без объяснения).
      *
      * Успешные исходы — только те, при которых ссылка указывает на нужный коммит:
-     * [RefUpdate.Result.NEW] (ссылки не было), [RefUpdate.Result.FORCED] (была и перезаписана),
-     * [RefUpdate.Result.NO_CHANGE] (уже указывала на него). Остальные, включая
+     * [RefUpdate.Result.NEW] (ссылки не было) и [RefUpdate.Result.NO_CHANGE] (уже указывала
+     * на него). [RefUpdate.Result.FORCED] — отказ: он означает перезапись существующей
+     * ссылки, что молча теряет точку отката (T-1.17). Остальные, включая
      * [RefUpdate.Result.LOCK_FAILURE] и [RefUpdate.Result.IO_FAILURE], — отказ.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun writeRef(ref: String, head: ObjectId): SnapshotOutcome = try {
-        val update = repository.updateRef(ref).apply {
-            setNewObjectId(head)
-            isForceUpdate = true
-        }
-        val result = update.update()
-        if (result in WRITTEN) {
-            // FORCED значит, что ссылка уже была: два снапшота в одну миллисекунду с одним
-            // поводом неразличимы, и первый теряется молча — поэтому о нём есть запись.
-            if (result == RefUpdate.Result.FORCED) {
-                logger.warn("Снапшот $ref перезаписан: два снапшота в одну миллисекунду с одним поводом")
-            }
-            SnapshotOutcome.Created
-        } else {
-            refused(ref, "исход ${result.name}")
+        // Снапшот не должен перезаписывать существующую ссылку, даже если новый коммит —
+        // потомок старого (иначе JGit дал бы FAST_FORWARD и потерял бы точку отката,
+        // T-1.17). Поэтому сначала читаем текущее значение: если оно уже нужное — успех,
+        // если другое — отказ, если ссылки нет — создаём с compare-and-set на zero.
+        val existing = runCatching { repository.exactRef(ref)?.objectId }.getOrNull()
+        when {
+            existing == head -> SnapshotOutcome.Created
+            existing != null -> refused(ref, "ссылка уже существует")
+            else -> createNewRef(ref, head)
         }
     } catch (cancel: CancellationException) {
         // Отмена — не «снапшот не поставлен»: если внутри появятся suspend-вызовы, отменённая
@@ -349,6 +345,17 @@ private class SnapshotOperation(private val repository: Repository) {
         throw cancel
     } catch (error: Exception) {
         refused(ref, error.message.orEmpty(), error)
+    }
+
+    /** Создаёт новую ссылку атомарно; не перезаписывает, если она появилась между проверкой и записью. */
+    private fun createNewRef(ref: String, head: ObjectId): SnapshotOutcome {
+        val update = repository.updateRef(ref).apply {
+            setNewObjectId(head)
+            setExpectedOldObjectId(ObjectId.zeroId())
+            isForceUpdate = false
+        }
+        val result = update.update()
+        return if (result == RefUpdate.Result.NEW) SnapshotOutcome.Created else refused(ref, "исход ${result.name}")
     }
 
     /** Ссылки снапшотов, от старых к новым: метка времени в имени сортируется как число. */
@@ -407,10 +414,6 @@ private class SnapshotOperation(private val repository: Repository) {
     private fun timestampOf(ref: String): Long =
         ref.removePrefix(SNAPSHOT_REF_PREFIX).substringBefore('-').toLongOrNull() ?: 0L
 
-    private companion object {
-        /** Исходы записи ссылки, означающие, что она записана; остальные — отказ. */
-        val WRITTEN = setOf(RefUpdate.Result.NEW, RefUpdate.Result.FORCED, RefUpdate.Result.NO_CHANGE)
-    }
 }
 
 /**

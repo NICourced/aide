@@ -143,6 +143,94 @@ class SnapshotRollbackEndToEndTest {
         }
     }
 
+    @Test
+    fun `два изменяющих шага в полном автомате дают два чекпоинта и последовательный откат`() {
+        runBlocking {
+            val repo = repoWithFile()
+            val database = Files.createTempFile("aide-rollback-two", ".db")
+            allowWriteFile(database)
+            val host = host(database, TwoWritesThenFinishModel, steps = 2)
+
+            try {
+                val (connection, client) = openClient(host)
+                val connected = CompletableDeferred<Unit>()
+                scope.launch {
+                    client.session.onSubscription { connected.complete(Unit) }.collect {}
+                }
+                connected.await()
+
+                val workspaceId = assertNotNull(
+                    client.openWorkspace(repo.toString()),
+                    "воркспейс обязан открыться",
+                )
+
+                client.postTaskApprovingPlan(
+                    "Запиши файл дважды",
+                    AutonomyMode.FULL_AUTO_WITH_CHECKPOINTS,
+                ).getOrThrow()
+                val run = finish(client)
+
+                // Стартовый снапшот + два чекпоинта перед изменяющими шагами.
+                assertEquals(
+                    3,
+                    run.snapshots.size,
+                    "прогон должен содержать стартовый снапшот и два before-agent-step",
+                )
+
+                val listed = client.snapshots.list(workspaceId).getOrThrow()
+                val stepSnapshots = listed
+                    .filter { it.label == "before-agent-step" && it.taskId == run.taskId }
+                    .sortedBy { it.ref.value }
+                    .takeLast(2)
+                assertEquals(
+                    2,
+                    stepSnapshots.size,
+                    "список должен содержать оба чекпоинта изменяющих шагов",
+                )
+
+                val first = stepSnapshots.first()
+                val second = stepSnapshots.last()
+
+                // Откат ко второму чекпоинту возвращает intermediate.
+                val previewSecond = client.snapshots.preview(workspaceId, second.ref).getOrThrow()
+                assertEquals(
+                    "final",
+                    repo.resolve("a.txt").readText().trim(),
+                    "перед первым откатом файл должен быть в состоянии final",
+                )
+                val revertSecond = client.snapshots
+                    .revert(workspaceId, second.ref, previewSecond.headCommit).getOrThrow()
+                assertTrue(
+                    revertSecond.commit.isNotBlank(),
+                    "ответ обязан содержать полный хеш обратного коммита",
+                )
+                client.hostState().getOrThrow()
+                assertEquals(
+                    "intermediate",
+                    repo.resolve("a.txt").readText().trim(),
+                    "откат ко второму чекпоинту должен вернуть intermediate",
+                )
+
+                // Откат к первому чекпоинту возвращает original.
+                val previewFirst = client.snapshots.preview(workspaceId, first.ref).getOrThrow()
+                val revertFirst = client.snapshots
+                    .revert(workspaceId, first.ref, previewFirst.headCommit).getOrThrow()
+                assertTrue(
+                    revertFirst.commit.isNotBlank(),
+                    "ответ обязан содержать полный хеш обратного коммита",
+                )
+                client.hostState().getOrThrow()
+                assertEquals(
+                    "original",
+                    repo.resolve("a.txt").readText().trim(),
+                    "откат к первому чекпоинту должен вернуть original",
+                )
+            } finally {
+                host.close()
+            }
+        }
+    }
+
     /** Репозиторий с одним закоммиченным файлом. */
     private fun repoWithFile(): Path {
         val repo = GitCliFixture.createRepo(Files.createTempDirectory("aide-rollback-repo"))
@@ -162,17 +250,23 @@ class SnapshotRollbackEndToEndTest {
         }
     }
 
-    private fun host(database: Path): EmbeddedHost = EmbeddedHost.open(
+    private fun host(
+        database: Path,
+        model: LlmClient = WriteThenFinishModel,
+        steps: Int = 1,
+    ): EmbeddedHost = EmbeddedHost.open(
         databasePath = database,
         models = object : AgentModels {
             override fun current(): Result<ConfiguredModel> =
-                Result.success(ConfiguredModel("test/scripted", WriteThenFinishModel))
+                Result.success(ConfiguredModel("test/scripted", model))
 
             override suspend fun check(alias: String): dev.aide.domain.ModelCheckFailure? =
                 dev.aide.domain.ModelCheckFailure.Unsupported
         },
         planner = RunPlanner { _, _, _ ->
-            listOf(PlanStep(index = 0, summary = "записать файл", status = StepStatus.PENDING))
+            (0 until steps).map { index ->
+                PlanStep(index = index, summary = "записать файл", status = StepStatus.PENDING)
+            }
         },
     )
 
@@ -220,20 +314,46 @@ private object WriteThenFinishModel : LlmClient {
     override suspend fun complete(request: LlmRequest): LlmResponse {
         calls += 1
         return if (calls == 1) {
-            LlmResponse.Text(
-                text = "",
-                cost = Cost(amountMicros = 0, known = true),
-                elapsedMillis = 1,
-                toolCalls = listOf(
-                    LlmToolCall(
-                        id = "call-1",
-                        name = WriteFileTool.TOOL_NAME,
-                        arguments = """{"path":"a.txt","content":"changed\n"}""",
-                    ),
-                ),
-            )
+            writeFileToolCall("""{"path":"a.txt","content":"changed\n"}""")
         } else {
-            LlmResponse.Text(text = "готово", cost = Cost(amountMicros = 0, known = true), elapsedMillis = 1)
+            textResponse("готово")
         }
     }
 }
+
+/**
+ * Модель, которая дважды просит записать файл — intermediate и final — а потом завершает шаг.
+ *
+ * Движок вызовет её четыре раза: write_file, финал первого шага, write_file, финал второго шага.
+ */
+private object TwoWritesThenFinishModel : LlmClient {
+
+    @Volatile
+    private var calls: Int = 0
+
+    override suspend fun complete(request: LlmRequest): LlmResponse {
+        calls += 1
+        return when (calls) {
+            1 -> writeFileToolCall("""{"path":"a.txt","content":"intermediate\n"}""")
+            2 -> textResponse("шаг 1 готов")
+            3 -> writeFileToolCall("""{"path":"a.txt","content":"final\n"}""")
+            else -> textResponse("готово")
+        }
+    }
+}
+
+private fun writeFileToolCall(arguments: String): LlmResponse.Text = LlmResponse.Text(
+    text = "",
+    cost = Cost(amountMicros = 0, known = true),
+    elapsedMillis = 1,
+    toolCalls = listOf(
+        LlmToolCall(
+            id = "call-${System.nanoTime()}",
+            name = WriteFileTool.TOOL_NAME,
+            arguments = arguments,
+        ),
+    ),
+)
+
+private fun textResponse(text: String): LlmResponse.Text =
+    LlmResponse.Text(text = text, cost = Cost(amountMicros = 0, known = true), elapsedMillis = 1)

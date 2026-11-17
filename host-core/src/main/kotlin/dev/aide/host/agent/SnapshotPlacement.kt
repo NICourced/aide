@@ -32,22 +32,52 @@ internal class SnapshotPlacement(
 
     private val logger = LoggerFactory.getLogger(SnapshotPlacement::class.java)
 
-    /** Ставит снапшот с поводом [trigger] в текущем открытом воркспейсе. */
+    /**
+     * Ставит снапшот с поводом [trigger] в текущем открытом воркспейсе.
+     *
+     * Имя выбирается первым свободным от текущих миллисекунд: если две записи совпали
+     * по времени, вторая получит следующую свободную метку, а не перезапишет первую
+     * ссылку (T-1.17). Максимум попыток ограничен практическим пределом хранимых
+     * снапшотов: дальше поиск превращается в бесконечный цикл, и правильный ответ —
+     * честный отказ, а не случайное имя.
+     */
     fun place(trigger: SnapshotTrigger): Result {
-        val opened = workspaces.current() ?: return Result.Failed(RunInterruptReason.NO_WORKSPACE)
-        val ref = snapshotRefName(clock().toEpochMilliseconds(), trigger.label)
-        return when (opened.git.createSnapshot(ref)) {
-            // Коммитов нет: ссылаться не на что; вызывающий сам решает, отказ это или нет.
-            SnapshotOutcome.NoHead -> Result.NoHead
+        val opened = workspaces.current()
+        val ref = opened?.let { findFreeRef(it.git.snapshotRefs(), trigger.label) }
+        return when {
+            opened == null -> Result.Failed(RunInterruptReason.NO_WORKSPACE)
+            ref == null -> Result.Failed(RunInterruptReason.SNAPSHOT_FAILED)
+            else -> when (opened.git.createSnapshot(ref)) {
+                // Коммитов нет: ссылаться не на что; вызывающий сам решает, отказ это или нет.
+                SnapshotOutcome.NoHead -> Result.NoHead
 
-            // Сбой записи — отказ, а не исключение: вызывающий обязан получить код причины.
-            SnapshotOutcome.Refused -> Result.Failed(RunInterruptReason.SNAPSHOT_FAILED)
+                // Сбой записи — отказ, а не исключение: вызывающий обязан получить код причины.
+                SnapshotOutcome.Refused -> Result.Failed(RunInterruptReason.SNAPSHOT_FAILED)
 
-            SnapshotOutcome.Created -> {
-                evict(opened.git, keep = ref)
-                Result.Created(SnapshotRef(ref))
+                SnapshotOutcome.Created -> {
+                    evict(opened.git, keep = ref)
+                    Result.Created(SnapshotRef(ref))
+                }
             }
         }
+    }
+
+    /**
+     * Первое свободное имя ссылки, начиная с [clock], с шагом в одну миллисекунду.
+     *
+     * Свободность проверяется по уже занятым ссылкам того же воркспейса: так решение
+     * работает и для обоих адаптеров ([TaskSnapshotGuard] и [ChangeSnapshotGuard]), и
+     * для разных экземпляров guard, не требуя общего mutable-состояния (T-1.17).
+     */
+    private fun findFreeRef(existing: List<String>, label: String): String? {
+        var millis = clock().toEpochMilliseconds()
+        repeat(SEARCH_LIMIT) {
+            val ref = snapshotRefName(millis, label)
+            if (ref !in existing) return ref
+            millis += 1
+        }
+        logger.warn("Не найдено свободного имени снапшота за $SEARCH_LIMIT попыток")
+        return null
     }
 
     /**
@@ -99,3 +129,5 @@ internal val SnapshotTrigger.label: String
         SnapshotTrigger.BEFORE_MANUAL_EDIT -> "before-manual-edit"
         SnapshotTrigger.AFTER_MANUAL_EDIT -> "after-manual-edit"
     }
+
+private const val SEARCH_LIMIT: Int = 100

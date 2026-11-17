@@ -36,11 +36,13 @@ import dev.aide.host.workspace.TempRepoFixture
 import dev.aide.host.workspace.Workspace
 import dev.aide.host.workspace.WorkspaceBoundaryAdapter
 import dev.aide.host.workspace.WorkspaceFileSystem
+import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Instant
@@ -182,6 +184,48 @@ class TaskSnapshotGuardTest {
         }
     }
 
+    @Test
+    fun `два снапшота в одну миллисекунду получают разные имена и оба живы`() {
+        runBlocking {
+            val first = assertIs<TaskSnapshot.Created>(guard(FIXED_MILLIS).create(SnapshotTrigger.BEFORE_AGENT_STEP))
+            val second = assertIs<TaskSnapshot.Created>(guard(FIXED_MILLIS).create(SnapshotTrigger.BEFORE_AGENT_STEP))
+
+            assertEquals(SnapshotRef(snapshotRefName(FIXED_MILLIS, "before-agent-step")), first.ref)
+            assertEquals(SnapshotRef(snapshotRefName(FIXED_MILLIS + 1, "before-agent-step")), second.ref)
+
+            val alive = GitCliFixture.snapshotRefs(fixture.root)
+            assertTrue(first.ref.value in alive, "первая ссылка должна существовать")
+            assertTrue(second.ref.value in alive, "вторая ссылка должна существовать")
+
+            val head = GitCliFixture.headHash(fixture.root)
+            assertEquals(head, GitCliFixture.hashOf(fixture.root, first.ref.value))
+            assertEquals(head, GitCliFixture.hashOf(fixture.root, second.ref.value))
+        }
+    }
+
+    @Test
+    fun `перезапись существующей ссылки на другой HEAD отклоняется и сохраняет старый объект`() {
+        runBlocking {
+            val ref = snapshotRefName(FIXED_MILLIS, "before-agent-step")
+            val originalHead = GitCliFixture.headHash(fixture.root)
+            assertEquals(SnapshotOutcome.Created, git.createSnapshot(ref), "первичная запись обязана удаться")
+            assertEquals(originalHead, GitCliFixture.hashOf(fixture.root, ref))
+
+            fixture.root.resolve("extra.txt").writeText("extra\n")
+            val commitOutcome = git.commitStep("master", "extra")
+            val committed = assertIs<StepCommitOutcome.Committed>(
+                commitOutcome,
+                "коммит должен создаться, а не $commitOutcome",
+            )
+            val newHead = committed.hash
+            assertNotEquals(originalHead, newHead, "HEAD должен сдвинуться после коммита")
+
+            val outcome = git.createSnapshot(ref)
+            assertEquals(SnapshotOutcome.Refused, outcome, "перезапись ссылки на другой HEAD должна быть отказом")
+            assertEquals(originalHead, GitCliFixture.hashOf(fixture.root, ref), "объект ссылки не должен измениться")
+        }
+    }
+
     private fun guard(millis: Long): TaskSnapshotGuard =
         TaskSnapshotGuard(workspaces, store, clock = { Instant.fromEpochMilliseconds(millis) })
 
@@ -275,5 +319,8 @@ class TaskSnapshotGuardTest {
 
         /** Метка времени новых снапшотов: больше посеянных, поэтому они не самые старые. */
         const val NEW_MILLIS = 1_758_535_300_000L
+
+        /** Фиксированные часы для проверки коллизии имён ссылок. */
+        const val FIXED_MILLIS = 1_758_535_400_000L
     }
 }
