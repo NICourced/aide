@@ -82,6 +82,19 @@ sealed interface ProtocolError {
         val rejection: ModelSecretRejection,
     ) : ProtocolError
 
+    /**
+     * Откат к снапшоту отклонён по существу (T-1.6).
+     *
+     * Отдельный вариант, а не [Internal]: каждая причина требует своего сообщения
+     * в интерфейсе, и пользователь обязан видеть, почему откат невозможен (NFR-13).
+     */
+    @Serializable
+    @SerialName("snapshotRollbackRejected")
+    data class SnapshotRollbackRejected(
+        /** Почему откат невозможен. */
+        val rejection: SnapshotRollbackRejection,
+    ) : ProtocolError
+
     /** Внутренняя ошибка хоста. */
     @Serializable
     @SerialName("internal")
@@ -91,6 +104,31 @@ sealed interface ProtocolError {
         /** Техническая деталь для лога; в UI показывается по запросу (§ 6.1). */
         val detail: String? = null,
     ) : ProtocolError
+}
+
+/** Почему откат к снапшоту невозможен (T-1.6). */
+@Serializable
+enum class SnapshotRollbackRejection {
+    /** Снапшот с таким именем не найден или не начинается с `refs/ai/snap/`. */
+    UNKNOWN_SNAPSHOT,
+
+    /** Снапшот не является предком текущего HEAD. */
+    NOT_IN_CURRENT_BRANCH,
+
+    /** В рабочем дереве или индексе есть незафиксированные изменения. */
+    DIRTY_WORKTREE,
+
+    /** Есть незавершённый прогон, к которому привязан снапшот. */
+    ACTIVE_RUN,
+
+    /** HEAD изменился с момента предпросмотра. */
+    HEAD_CHANGED,
+
+    /** Дерево снапшота совпадает с деревом HEAD — откатывать нечего. */
+    NOTHING_TO_REVERT,
+
+    /** Git-операция не удалась по технической причине. */
+    GIT_FAILED,
 }
 
 /** Почему версии протокола несовместимы. */

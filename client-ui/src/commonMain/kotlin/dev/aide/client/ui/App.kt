@@ -25,6 +25,7 @@ import dev.aide.client.state.HostCallException
 import dev.aide.client.state.HostClient
 import dev.aide.client.state.HostConnection
 import dev.aide.client.state.HostSession
+import dev.aide.client.state.SnapshotRollbackStore
 import dev.aide.client.state.ToolCallLogStore
 import dev.aide.client.state.answerApproval
 import dev.aide.client.state.decidePlan
@@ -37,6 +38,8 @@ import dev.aide.client.ui.screens.CallLogScreen
 import dev.aide.client.ui.screens.ModelSettingsState
 import dev.aide.client.ui.screens.RepoScreen
 import dev.aide.client.ui.screens.SettingsScreen
+import dev.aide.client.ui.screens.SnapshotRollbackActions
+import dev.aide.client.ui.screens.SnapshotRollbackBottomSheet
 import dev.aide.client.ui.screens.ToolApprovalDialog
 import dev.aide.client.ui.strings.Strings
 import dev.aide.client.ui.strings.incompatibleMessage
@@ -47,10 +50,13 @@ import dev.aide.domain.AutonomyMode
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.TaskId
 import dev.aide.domain.ToolCallId
+import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.ToolCallCursor
 import dev.aide.protocol.ToolCallScope
+import dev.aide.protocol.WorkspaceId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -114,7 +120,7 @@ fun App(
                         session = session,
                         client = client,
                         settings = settings,
-                        scope = coroutineScope,
+                        state = state,
                         onOpenLog = { destination = Destination.CALL_LOG },
                     )
 
@@ -182,10 +188,14 @@ private fun AgentDestination(
     session: HostSession,
     client: HostClient,
     settings: SettingsStore,
-    scope: CoroutineScope,
+    state: AppStateStore,
     onOpenLog: () -> Unit,
 ) {
     var requestFailed by remember { mutableStateOf(false) }
+    var showSnapshots by remember { mutableStateOf(false) }
+    val snapshotState by state.snapshots.state.collectAsState()
+    val scope = rememberCoroutineScope()
+    val workspaceId = session.workspaceId
 
     LaunchedEffect(Unit) {
         client.agentStatus().onFailure { requestFailed = true }
@@ -209,6 +219,13 @@ private fun AgentDestination(
                 }
             },
             openLog = onOpenLog,
+            openSnapshots = {
+                if (workspaceId != null) {
+                    showSnapshots = true
+                    state.snapshots.open()
+                    scope.launch { client.loadSnapshotList(state.snapshots, workspaceId) }
+                }
+            },
             // Решение по плану (T-1.2): подтверждение или перепланирование с комментарием —
             // тем же способом, что и постановка задачи.
             decidePlan = { runId: RunId, decision: PlanDecision ->
@@ -227,6 +244,32 @@ private fun AgentDestination(
             },
         ),
     )
+
+    if (showSnapshots && workspaceId != null) {
+        SnapshotRollbackBottomSheet(
+            state = snapshotState,
+            actions = SnapshotRollbackActions(
+                onDismiss = {
+                    showSnapshots = false
+                    state.snapshots.dismiss()
+                },
+                onLoadList = {
+                    state.snapshots.open()
+                    scope.launch { client.loadSnapshotList(state.snapshots, workspaceId) }
+                },
+                onSelect = { ref ->
+                    state.snapshots.select(ref)
+                    scope.launch { client.loadSnapshotPreview(state.snapshots, workspaceId, ref) }
+                },
+                onRevert = { ref, expectedHead ->
+                    state.snapshots.revert(ref)
+                    scope.launch {
+                        client.revertSnapshot(state.snapshots, workspaceId, ref, expectedHead)
+                    }
+                },
+            ),
+        )
+    }
 }
 
 /**
@@ -414,6 +457,42 @@ private suspend fun loadFile(client: HostClient, state: AppStateStore, path: Str
         if (protocolError != null) state.onFileFailed(protocolError)
     }
 }
+
+/** Запрашивает список снапшотов и кладёт его в состояние (T-1.6). */
+private suspend fun HostClient.loadSnapshotList(store: SnapshotRollbackStore, workspaceId: WorkspaceId) {
+    snapshots.list(workspaceId)
+        .onSuccess { store.loaded(it) }
+        .onFailure { error -> store.failed(error.toProtocolError()) }
+}
+
+/** Запрашивает предпросмотр отката к снапшоту (T-1.6). */
+private suspend fun HostClient.loadSnapshotPreview(
+    store: SnapshotRollbackStore,
+    workspaceId: WorkspaceId,
+    ref: SnapshotRef,
+) {
+    snapshots.preview(workspaceId, ref)
+        .onSuccess { store.previewLoaded(it) }
+        .onFailure { error -> store.previewFailed(error.toProtocolError(), ref) }
+}
+
+/** Откатывает рабочее дерево к снапшоту и обновляет состояние хоста при успехе (T-1.6). */
+private suspend fun HostClient.revertSnapshot(
+    store: SnapshotRollbackStore,
+    workspaceId: WorkspaceId,
+    ref: SnapshotRef,
+    expectedHead: String,
+) {
+    snapshots.revert(workspaceId, ref, expectedHead)
+        .onSuccess { result ->
+            store.revertSucceeded(result.ref, result.commit)
+            hostState()
+        }
+        .onFailure { error -> store.revertFailed(error.toProtocolError(), ref) }
+}
+
+private fun Throwable.toProtocolError(): ProtocolError =
+    (this as? HostCallException)?.error ?: ProtocolError.Internal(message ?: "неизвестная ошибка")
 
 /** Подписка на живые записи журнала: событие применяется только к совпадающей области. */
 @Composable

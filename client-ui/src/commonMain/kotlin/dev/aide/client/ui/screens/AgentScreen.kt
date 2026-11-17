@@ -100,6 +100,9 @@ fun AgentScreen(
         Button(onClick = actions.openLog, modifier = Modifier.testTag("open-log")) {
             Text(Strings.text(Strings.agentOpenLog))
         }
+        Button(onClick = actions.openSnapshots, modifier = Modifier.testTag("open-snapshots")) {
+            Text(Strings.text(Strings.agentOpenSnapshots))
+        }
         OutlinedTextField(
             value = prompt,
             onValueChange = { prompt = it },

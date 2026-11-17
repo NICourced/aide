@@ -38,6 +38,9 @@ fun failureMessage(kind: ScreenState.ErrorKind, arguments: List<String>): StateM
     ScreenState.ErrorKind.CONFIG_REJECTED ->
         StateMessage.Resource(Strings.stateErrorConfigRejected, emptyList())
 
+    ScreenState.ErrorKind.ROLLBACK_REJECTED ->
+        StateMessage.Resource(Strings.stateErrorRollbackRejected, arguments)
+
     ScreenState.ErrorKind.OTHER ->
         StateMessage.Literal(arguments.firstOrNull().orEmpty())
 }

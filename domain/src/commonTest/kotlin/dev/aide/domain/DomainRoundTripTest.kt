@@ -120,6 +120,43 @@ class DomainRoundTripTest {
     }
 
     @Test
+    fun `SnapshotPreview переживает round-trip с полным хешем HEAD`() {
+        val preview = SnapshotPreview(
+            snapshot = DomainFixtures.snapshot,
+            headCommit = "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736",
+            files = listOf(
+                SnapshotFileChange(
+                    path = "src/Main.kt",
+                    changeKind = FileChangeKind.MODIFIED,
+                    addedLines = 3,
+                    removedLines = 1,
+                ),
+                SnapshotFileChange(
+                    path = "src/Moved.kt",
+                    previousPath = "src/Old.kt",
+                    changeKind = FileChangeKind.RENAMED,
+                    addedLines = 0,
+                    removedLines = 0,
+                ),
+            ),
+        )
+        assertEquals(preview, roundTrip(preview))
+    }
+
+    @Test
+    fun `SnapshotFileChange сохраняет previousPath и нули`() {
+        val change = SnapshotFileChange(
+            path = "src/New.kt",
+            changeKind = FileChangeKind.ADDED,
+            addedLines = 0,
+            removedLines = 0,
+        )
+        val decoded = roundTrip(change)
+        assertEquals(change, decoded)
+        assertNull(decoded.previousPath)
+    }
+
+    @Test
     fun `AgentRun помнит модель, на которой шёл прогон`() {
         val decoded = roundTrip(DomainFixtures.run)
 

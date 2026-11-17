@@ -16,6 +16,8 @@ class AgentActions(
     val postTask: (String) -> Unit,
     /** Открыть журнал вызовов (T-1.3). */
     val openLog: () -> Unit = {},
+    /** Открыть точки отката (T-1.6). */
+    val openSnapshots: () -> Unit = {},
     /** Решение по показанному плану: подтвердить или переделать (T-1.2). */
     val decidePlan: (RunId, PlanDecision) -> Unit = { _, _ -> },
     /**

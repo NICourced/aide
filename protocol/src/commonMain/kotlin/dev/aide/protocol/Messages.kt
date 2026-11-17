@@ -9,6 +9,9 @@ import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
+import dev.aide.domain.Snapshot
+import dev.aide.domain.SnapshotPreview
+import dev.aide.domain.SnapshotRef
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.ToolApprovalRequest
@@ -331,6 +334,47 @@ sealed interface ClientMessage {
         /** Идентификатор запроса. */
         override val requestId: RequestId,
     ) : ClientMessage, RequestIdCarrier
+
+    /** Запросить список снапшотов воркспейса (T-1.6). */
+    @Serializable
+    @SerialName("snapshotList")
+    data class SnapshotList(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Открытый воркспейс. */
+        val workspaceId: WorkspaceId,
+    ) : ClientMessage, RequestIdCarrier
+
+    /** Запросить предпросмотр отката к снапшоту (T-1.6). */
+    @Serializable
+    @SerialName("snapshotPreviewRequest")
+    data class SnapshotPreviewRequest(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Открытый воркспейс. */
+        val workspaceId: WorkspaceId,
+        /** Ссылка на снапшот, к которому готовится откат. */
+        val ref: SnapshotRef,
+    ) : ClientMessage, RequestIdCarrier
+
+    /**
+     * Подтвердить откат к снапшоту (T-1.6).
+     *
+     * [expectedHead] — полный хеш HEAD, показанный в предпросмотре; хост отклоняет откат,
+     * если HEAD изменился с тех пор, чтобы пользователь не подтверждал устаревшее состояние.
+     */
+    @Serializable
+    @SerialName("snapshotRevert")
+    data class SnapshotRevert(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Открытый воркспейс. */
+        val workspaceId: WorkspaceId,
+        /** Ссылка на снапшот, к которому откатываются. */
+        val ref: SnapshotRef,
+        /** Полный хеш текущего HEAD на момент предпросмотра. */
+        val expectedHead: String,
+    ) : ClientMessage, RequestIdCarrier
 }
 
 /** Сообщение хоста клиенту. */
@@ -594,5 +638,41 @@ sealed interface HostMessage {
         override val requestId: RequestId,
         /** Ожидающие запросы; пустой список означает, что сейчас спрашивать нечего. */
         val requests: List<ToolApprovalRequest>,
+    ) : HostMessage, RequestIdCarrier
+
+    /** Список снапшотов воркспейса (T-1.6). */
+    @Serializable
+    @SerialName("snapshotListResponse")
+    data class SnapshotListResponse(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Снапшоты от новых к старым. */
+        val snapshots: List<Snapshot>,
+    ) : HostMessage, RequestIdCarrier
+
+    /** Предпросмотр отката к снапшоту (T-1.6). */
+    @Serializable
+    @SerialName("snapshotPreviewResponse")
+    data class SnapshotPreviewResponse(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Что изменилось между снапшотом и текущим HEAD. */
+        val preview: SnapshotPreview,
+    ) : HostMessage, RequestIdCarrier
+
+    /**
+     * Откат к снапшоту выполнен (T-1.6).
+     *
+     * [commit] — полный хеш созданного обратного коммита, который теперь является HEAD.
+     */
+    @Serializable
+    @SerialName("snapshotReverted")
+    data class SnapshotReverted(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Ссылка на снапшот, к которому откатывались. */
+        val ref: SnapshotRef,
+        /** Полный хеш созданного обратного коммита. */
+        val commit: String,
     ) : HostMessage, RequestIdCarrier
 }

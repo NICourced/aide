@@ -9,7 +9,12 @@ import dev.aide.host.git.CommitInfo
 import dev.aide.host.git.GitRepository
 import dev.aide.host.git.RestoreOutcome
 import dev.aide.host.git.RestoreRepository
+import dev.aide.domain.SnapshotRef
 import dev.aide.host.git.SnapshotOutcome
+import dev.aide.host.git.SnapshotRollbackOutcome
+import dev.aide.host.git.SnapshotRollbackRefusal
+import dev.aide.host.git.SnapshotRollbackRepository
+import dev.aide.host.git.SnapshotRevertCommitted
 import dev.aide.host.git.StashOutcome
 import dev.aide.host.git.StashRepository
 import dev.aide.host.git.StashReturnOutcome
@@ -161,6 +166,17 @@ class WorkStashGuardTest {
         override fun returnStashEdits(ref: String, branch: String?): StashReturnOutcome {
             returned = ref to branch
             return restoreOutcome
+        }
+
+        override val rollback: SnapshotRollbackRepository = object : SnapshotRollbackRepository {
+            override fun list(): List<dev.aide.domain.Snapshot> = emptyList()
+            override fun preview(ref: SnapshotRef): SnapshotRollbackOutcome<dev.aide.domain.SnapshotPreview> =
+                SnapshotRollbackOutcome.Refused(SnapshotRollbackRefusal.UNKNOWN_SNAPSHOT)
+            override fun revert(
+                ref: SnapshotRef,
+                expectedHead: String,
+            ): SnapshotRollbackOutcome<SnapshotRevertCommitted> =
+                SnapshotRollbackOutcome.Refused(SnapshotRollbackRefusal.UNKNOWN_SNAPSHOT)
         }
 
         override fun close() = Unit

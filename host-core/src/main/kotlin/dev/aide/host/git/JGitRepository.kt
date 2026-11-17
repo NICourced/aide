@@ -47,10 +47,17 @@ class JGitRepository private constructor(
 
     override val restore: RestoreRepository = RestoreOperation(repository, git)
 
+    override val rollback: SnapshotRollbackRepository = SnapshotRollbackOperation(
+        repository,
+        git,
+        ::changedFiles,
+    )
+
     override fun currentBranch(): String = repository.branch ?: DETACHED_HEAD
 
     override fun headCommit(): String =
         runCatching { repository.resolve(HEAD) }.getOrNull()?.name?.take(SHORT_HASH_LENGTH).orEmpty()
+
 
     override fun changedFiles(): List<ChangedFile> {
         val status = runCatching { git.status().call() }.getOrElse { error ->

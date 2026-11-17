@@ -5,7 +5,13 @@ import dev.aide.domain.AgentRun
 import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
+import dev.aide.domain.FileChangeKind
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.Snapshot
+import dev.aide.domain.SnapshotFileChange
+import dev.aide.domain.SnapshotPreview
+import dev.aide.domain.SnapshotRef
+import dev.aide.domain.SnapshotTrigger
 import dev.aide.domain.ModelProfile
 import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.ProviderCatalogEntry
@@ -258,6 +264,18 @@ class ProtocolCodecTest {
             ClientMessage.ApprovalAnswer(requestId, RunId("r-1"), ToolCallId("tc-1"), ApprovalDecision.ALLOW_SESSION),
             ClientMessage.ApprovalAnswer(requestId, RunId("r-1"), ToolCallId("tc-1"), ApprovalDecision.DENY),
             ClientMessage.PendingApprovals(requestId),
+            ClientMessage.SnapshotList(requestId, workspaceId),
+            ClientMessage.SnapshotPreviewRequest(
+                requestId,
+                workspaceId,
+                SnapshotRef("refs/ai/snap/1-before-agent-step"),
+            ),
+            ClientMessage.SnapshotRevert(
+                requestId,
+                workspaceId,
+                SnapshotRef("refs/ai/snap/1-before-agent-step"),
+                expectedHead = "abc123def456",
+            ),
         )
         messages.forEach { message ->
             assertEquals(message, clientMessage(ProtocolCodec.encode(message)))
@@ -266,6 +284,12 @@ class ProtocolCodecTest {
 
     @Test
     fun `все варианты HostMessage переживают round-trip`() {
+        hostMessages().forEach { message ->
+            assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
+        }
+    }
+
+    private fun hostMessages(): List<HostMessage> {
         val tree = FileTreePayload(
             workspaceId = workspaceId,
             rootPath = "/projects/aide",
@@ -288,7 +312,7 @@ class ProtocolCodecTest {
             uptimeMillis = 1000,
             mode = HostMode.LOCAL,
         )
-        val messages: List<HostMessage> = listOf(
+        return listOf(
             HostMessage.Hello(ProtocolVersion.CURRENT, sessionId),
             HostMessage.WorkspaceOpened(requestId, workspaceId),
             HostMessage.Tree(requestId, tree),
@@ -339,11 +363,19 @@ class ProtocolCodecTest {
             HostMessage.ApprovalAnswered(requestId, RunId("r-1"), ToolCallId("tc-1")),
             HostMessage.PendingApprovalsSnapshot(requestId, emptyList()),
             HostMessage.PendingApprovalsSnapshot(requestId, listOf(approvalRequest())),
-        )
-        messages.forEach { message ->
-            assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
-        }
+        ) + hostSnapshotMessages()
     }
+
+    private fun hostSnapshotMessages(): List<HostMessage> = listOf(
+        HostMessage.SnapshotListResponse(requestId, emptyList()),
+        HostMessage.SnapshotListResponse(requestId, listOf(snapshot())),
+        HostMessage.SnapshotPreviewResponse(requestId, snapshotPreview()),
+        HostMessage.SnapshotReverted(
+            requestId,
+            SnapshotRef("refs/ai/snap/1-before-agent-step"),
+            "abc123def456",
+        ),
+    )
 
     /** Задача для проверки round-trip: статус, причина отказа и ветка. */
     private fun task(): Task = Task(
@@ -453,6 +485,9 @@ class ProtocolCodecTest {
             ProtocolError.NotImplemented(what = "поиск по символам"),
             internalWithoutDetail,
             ProtocolError.Internal(message = "внутренняя ошибка", detail = "trace: …"),
+            ProtocolError.SnapshotRollbackRejected(SnapshotRollbackRejection.UNKNOWN_SNAPSHOT),
+            ProtocolError.SnapshotRollbackRejected(SnapshotRollbackRejection.DIRTY_WORKTREE),
+            ProtocolError.SnapshotRollbackRejected(SnapshotRollbackRejection.ACTIVE_RUN),
         )
         errors.forEach { error ->
             val message = HostMessage.Failure(requestId, error)
@@ -490,6 +525,28 @@ class ProtocolCodecTest {
             assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
         }
     }
+
+    private fun snapshot(): Snapshot = Snapshot(
+        ref = SnapshotRef("refs/ai/snap/1758535200000-before-agent-step"),
+        label = "before-agent-step",
+        commit = "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736",
+        trigger = SnapshotTrigger.BEFORE_AGENT_STEP,
+        taskId = TaskId("t-1"),
+        createdAt = Instant.fromEpochMilliseconds(1_758_535_200_000),
+    )
+
+    private fun snapshotPreview(): SnapshotPreview = SnapshotPreview(
+        snapshot = snapshot(),
+        headCommit = "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736",
+        files = listOf(
+            SnapshotFileChange(
+                path = "src/Main.kt",
+                changeKind = FileChangeKind.MODIFIED,
+                addedLines = 2,
+                removedLines = 1,
+            ),
+        ),
+    )
 
     private fun statePayload(mode: HostMode) = HostStatePayload(
         workspaceId = workspaceId,

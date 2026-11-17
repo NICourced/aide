@@ -5,6 +5,7 @@ import dev.aide.client.ui.resources.Res
 import dev.aide.client.ui.resources.action_back
 import dev.aide.client.ui.resources.action_settings
 import dev.aide.client.ui.resources.agent_open_log
+import dev.aide.client.ui.resources.agent_open_snapshots
 import dev.aide.client.ui.resources.agent_pause_run
 import dev.aide.client.ui.resources.agent_post_task
 import dev.aide.client.ui.resources.agent_resume_run
@@ -181,6 +182,7 @@ import dev.aide.client.ui.resources.state_error_path_missing
 import dev.aide.client.ui.resources.state_error_retry
 import dev.aide.client.ui.resources.state_error_title
 import dev.aide.client.ui.resources.state_error_config_rejected
+import dev.aide.client.ui.resources.state_error_rollback_rejected
 import dev.aide.client.ui.resources.state_error_workspace_closed
 import dev.aide.client.ui.resources.state_loading_skeleton
 import dev.aide.client.ui.resources.state_loading_title
@@ -226,6 +228,23 @@ import dev.aide.client.ui.resources.settings_safe_volume_threshold_hint
 import dev.aide.client.ui.resources.settings_safe_volume_threshold_invalid
 import dev.aide.client.ui.resources.settings_safe_volume_threshold_rules
 import dev.aide.client.ui.resources.settings_safe_volume_threshold_title
+import dev.aide.client.ui.resources.snapshot_change_added
+import dev.aide.client.ui.resources.snapshot_change_deleted
+import dev.aide.client.ui.resources.snapshot_change_modified
+import dev.aide.client.ui.resources.snapshot_change_renamed
+import dev.aide.client.ui.resources.snapshot_change_renamed_from
+import dev.aide.client.ui.resources.snapshot_empty
+import dev.aide.client.ui.resources.snapshot_error
+import dev.aide.client.ui.resources.snapshot_preview_added
+import dev.aide.client.ui.resources.snapshot_preview_files
+import dev.aide.client.ui.resources.snapshot_preview_removed
+import dev.aide.client.ui.resources.snapshot_close
+import dev.aide.client.ui.resources.snapshot_revert
+import dev.aide.client.ui.resources.snapshot_revert_confirm
+import dev.aide.client.ui.resources.snapshot_revert_done
+import dev.aide.client.ui.resources.snapshot_reverting
+import dev.aide.client.ui.resources.snapshot_revert_error
+import dev.aide.client.ui.resources.snapshot_title
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -252,9 +271,28 @@ object Strings {
     val agentTaskHint: StringResource = Res.string.agent_task_hint
     val agentPostTask: StringResource = Res.string.agent_post_task
     val agentOpenLog: StringResource = Res.string.agent_open_log
+    val agentOpenSnapshots: StringResource = Res.string.agent_open_snapshots
     val agentPauseRun: StringResource = Res.string.agent_pause_run
     val agentResumeRun: StringResource = Res.string.agent_resume_run
     val agentStopRun: StringResource = Res.string.agent_stop_run
+
+    val snapshotTitle: StringResource = Res.string.snapshot_title
+    val snapshotEmpty: StringResource = Res.string.snapshot_empty
+    val snapshotError: StringResource = Res.string.snapshot_error
+    val snapshotPreviewFiles: StringResource = Res.string.snapshot_preview_files
+    val snapshotPreviewAdded: StringResource = Res.string.snapshot_preview_added
+    val snapshotPreviewRemoved: StringResource = Res.string.snapshot_preview_removed
+    val snapshotChangeAdded: StringResource = Res.string.snapshot_change_added
+    val snapshotChangeDeleted: StringResource = Res.string.snapshot_change_deleted
+    val snapshotChangeModified: StringResource = Res.string.snapshot_change_modified
+    val snapshotChangeRenamed: StringResource = Res.string.snapshot_change_renamed
+    val snapshotChangeRenamedFrom: StringResource = Res.string.snapshot_change_renamed_from
+    val snapshotRevert: StringResource = Res.string.snapshot_revert
+    val snapshotReverting: StringResource = Res.string.snapshot_reverting
+    val snapshotRevertError: StringResource = Res.string.snapshot_revert_error
+    val snapshotRevertConfirm: StringResource = Res.string.snapshot_revert_confirm
+    val snapshotRevertDone: StringResource = Res.string.snapshot_revert_done
+    val snapshotClose: StringResource = Res.string.snapshot_close
 
     val toolApprovalTitle: StringResource = Res.string.tool_approval_title
     val toolApprovalTool: StringResource = Res.string.tool_approval_tool
@@ -351,6 +389,7 @@ object Strings {
     val stateErrorNotARepo: StringResource = Res.string.state_error_not_a_repo
     val stateErrorWorkspaceClosed: StringResource = Res.string.state_error_workspace_closed
     val stateErrorConfigRejected: StringResource = Res.string.state_error_config_rejected
+    val stateErrorRollbackRejected: StringResource = Res.string.state_error_rollback_rejected
     val stateOfflineTitle: StringResource = Res.string.state_offline_title
     val stateOfflineBody: StringResource = Res.string.state_offline_body
     val stateNoPermissionTitle: StringResource = Res.string.state_no_permission_title

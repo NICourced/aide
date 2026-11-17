@@ -110,6 +110,15 @@ interface GitRepository : AutoCloseable {
      */
     val restore: RestoreRepository
 
+    /**
+     * Откат к снапшоту с предпросмотром (T-1.6).
+     *
+     * Свойство, а не методы в основном интерфейсе: у операции свои предпроверки
+     * (грязное дерево, не-ancestor, изменившийся HEAD) и она меняет историю иначе,
+     * чем [restore] — обратным коммитом, а не сдвигом ветки назад.
+     */
+    val rollback: SnapshotRollbackRepository
+
     companion object {
         /** Сколько коммитов отдаётся по умолчанию: столько помещается в список без подгрузки. */
         const val DEFAULT_LOG_LIMIT: Int = 50

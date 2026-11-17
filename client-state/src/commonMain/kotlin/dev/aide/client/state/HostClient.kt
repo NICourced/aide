@@ -336,6 +336,14 @@ class HostClient(
     val toolLogClient: ToolCallLogClient = ToolCallLogClient(connection, requestIds::next)
 
     /**
+     * Запросы отката к снапшоту (T-1.6): список, предпросмотр и откат.
+     *
+     * Отдельный объект по той же причине, что и [toolLogClient]: у отката свой набор
+     * запросов, и держать их здесь значило бы растить класс доступа к хосту.
+     */
+    val snapshots: SnapshotRollbackClient = SnapshotRollbackClient(connection, requestIds::next)
+
+    /**
      * Дозапрашивает состояние хоста, дерево и открытый файл.
      *
      * Нужно и после реконнекта, и по событию [HostEvent.WorkspaceChanged]: пока связи

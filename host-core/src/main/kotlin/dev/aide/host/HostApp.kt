@@ -24,6 +24,7 @@ import dev.aide.host.agent.ModelSecretHandler
 import dev.aide.host.agent.PendingApprovals
 import dev.aide.host.agent.RunWorker
 import dev.aide.host.agent.ServerRunEventSink
+import dev.aide.host.agent.SnapshotRollbackHandler
 import dev.aide.host.agent.StashRecovery
 import dev.aide.host.agent.StepCommitGuard
 import dev.aide.host.agent.StoreRunRepository
@@ -191,6 +192,19 @@ object HostApp {
                 tasks = get<HostStore>().tasks,
             )
         }
+        handlersModule(storage, models)
+        single {
+            ProtocolServer(
+                handler = get(),
+                hostVersion = get(versionQualifier),
+                mode = get(modeQualifier),
+                port = get(portQualifier),
+                sessions = get(),
+            )
+        }
+    }
+
+    private fun Module.handlersModule(storage: HostStorage, models: AgentModels) {
         single {
             AgentConfigHandler(
                 store = storage.config,
@@ -206,23 +220,25 @@ object HostApp {
         }
         // Журнал вызовов: чтение страницами и полное содержимое (T-1.3).
         single { ToolLogHandler(store = get<HostStore>().toolCalls) }
+        // Откат к снапшоту: список, предпросмотр и обратный коммит (T-1.6).
+        single {
+            SnapshotRollbackHandler(
+                workspaces = get(),
+                runs = get<HostStore>().runs,
+                sessions = get(),
+            )
+        }
         single<ClientMessageHandler> {
             ClientMessageRouter(
                 stageZero = get<StageZeroHandler>(),
                 agent = get<AgentRunHandler>(),
                 approvals = ApprovalHandler(get()),
-                modelConfig = get<AgentConfigHandler>(),
-                modelSecrets = get<ModelSecretHandler>(),
+                modelSettings = ClientMessageRouter.ModelSettingsHandler(
+                get<AgentConfigHandler>(),
+                get<ModelSecretHandler>(),
+            ),
                 toolLog = get<ToolLogHandler>(),
-            )
-        }
-        single {
-            ProtocolServer(
-                handler = get(),
-                hostVersion = get(versionQualifier),
-                mode = get(modeQualifier),
-                port = get(portQualifier),
-                sessions = get(),
+                snapshots = get<SnapshotRollbackHandler>(),
             )
         }
     }

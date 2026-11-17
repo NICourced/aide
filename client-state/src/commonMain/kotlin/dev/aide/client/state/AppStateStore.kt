@@ -48,6 +48,15 @@ class AppStateStore {
      */
     val toolCallLog: ToolCallLogStore = ToolCallLogStore()
 
+    /**
+     * Состояние отката к снапшоту: список, предпросмотр и выполнение отката (T-1.6).
+     *
+     * Отдельный объект по той же причине, что и [toolCallLog]: у отката свои переходы,
+     * и держать их в общем держателе экранов значило бы вывести его за порог
+     * `TooManyFunctions`.
+     */
+    val snapshots: SnapshotRollbackStore = SnapshotRollbackStore()
+
     private val _pendingApproval = MutableStateFlow<ToolApprovalRequest?>(null)
 
     /** Ожидающий запрос подтверждения вызова; null, если сейчас спрашивать нечего (T-1.13). */
@@ -155,6 +164,7 @@ class AppStateStore {
                 _treeState.value = _treeState.value.toOffline()
                 _fileState.value = _fileState.value.toOffline()
                 toolCallLog.setOffline(true)
+                snapshots.setOffline(true)
             }
 
             is ConnectionState.Connected -> {
@@ -162,6 +172,7 @@ class AppStateStore {
                     _treeState.value = _treeState.value.fromOffline()
                     _fileState.value = _fileState.value.fromOffline()
                     toolCallLog.setOffline(false)
+                    snapshots.setOffline(false)
                 }
             }
 
@@ -211,7 +222,7 @@ private fun <T> ScreenState<T>.fromOffline(): ScreenState<T> = when (this) {
  * там параметром идёт текст, пришедший от хоста, потому что такую ошибку
  * классифицировать нельзя.
  */
-private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
+internal fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
     is ProtocolError.NotFound -> ScreenState.Failed(ScreenState.ErrorKind.PATH_MISSING, listOf(what))
 
     is ProtocolError.NotAGitRepository ->
@@ -230,4 +241,7 @@ private fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
     is ProtocolError.NotImplemented -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(what))
 
     is ProtocolError.Internal -> ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf(message), detail)
+
+    is ProtocolError.SnapshotRollbackRejected ->
+        ScreenState.Failed(ScreenState.ErrorKind.ROLLBACK_REJECTED, listOf(rejection.name))
 }

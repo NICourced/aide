@@ -56,6 +56,9 @@ object ClientMessageType {
     const val TOOL_CALL_DETAIL = "toolCallDetail"
     const val APPROVAL_ANSWER = "approvalAnswer"
     const val PENDING_APPROVALS = "pendingApprovals"
+    const val SNAPSHOT_LIST = "snapshotList"
+    const val SNAPSHOT_PREVIEW_REQUEST = "snapshotPreviewRequest"
+    const val SNAPSHOT_REVERT = "snapshotRevert"
 }
 
 /** Имена типов сообщений хоста. */
@@ -81,6 +84,9 @@ object HostMessageType {
     const val EVENT = "event"
     const val APPROVAL_ANSWERED = "approvalAnswered"
     const val PENDING_APPROVALS_SNAPSHOT = "pendingApprovalsSnapshot"
+    const val SNAPSHOT_LIST_RESPONSE = "snapshotListResponse"
+    const val SNAPSHOT_PREVIEW_RESPONSE = "snapshotPreviewResponse"
+    const val SNAPSHOT_REVERTED = "snapshotReverted"
 }
 
 /**
@@ -121,6 +127,9 @@ object ProtocolCodec {
         is ClientMessage.ToolCalls, is ClientMessage.ToolCallDetail -> encodeToolLog(message)
 
         is ClientMessage.ApprovalAnswer, is ClientMessage.PendingApprovals -> encodeAgent(message)
+
+        is ClientMessage.SnapshotList, is ClientMessage.SnapshotPreviewRequest,
+        is ClientMessage.SnapshotRevert -> encodeSnapshots(message)
     }
 
     /** Кодирует сообщение хоста; полнота таблицы гарантируется исчерпывающим `when`. */
@@ -140,6 +149,9 @@ object ProtocolCodec {
         is HostMessage.ToolCallPage, is HostMessage.ToolCallContent -> encodeToolLog(message)
 
         is HostMessage.ApprovalAnswered, is HostMessage.PendingApprovalsSnapshot -> encodeAgent(message)
+
+        is HostMessage.SnapshotListResponse, is HostMessage.SnapshotPreviewResponse,
+        is HostMessage.SnapshotReverted -> encodeSnapshots(message)
     }
 
     fun decodeClientMessage(bytes: ByteArray): DecodeResult<ClientMessage> {
@@ -149,6 +161,7 @@ object ProtocolCodec {
             ?: decodeModelConfigClient(env)
             ?: decodeModelSecretsClient(env)
             ?: decodeToolLogClient(env)
+            ?: decodeSnapshotsClient(env)
             ?: DecodeResult.Ignored(env.type, "неизвестный тип сообщения клиента")
     }
 
@@ -159,6 +172,7 @@ object ProtocolCodec {
             ?: decodeModelConfigHost(env)
             ?: decodeModelSecretsHost(env)
             ?: decodeToolLogHost(env)
+            ?: decodeSnapshotsHost(env)
             ?: DecodeResult.Ignored(env.type, "неизвестный тип сообщения хоста")
     }
 
@@ -182,14 +196,14 @@ private fun readEnvelope(bytes: ByteArray): WireEnvelope? =
     runCatching { cbor.decodeFromByteArray(WireEnvelope.serializer(), bytes) }.getOrNull()
 
 /** Разбирает нагрузку одного типа; неразобранная нагрузка пропускается, а не роняет разбор. */
-private fun <T> decode(env: WireEnvelope, serializer: DeserializationStrategy<T>): DecodeResult<T> =
+internal fun <T> decode(env: WireEnvelope, serializer: DeserializationStrategy<T>): DecodeResult<T> =
     runCatching { cbor.decodeFromByteArray(serializer, env.payload) }.fold(
         onSuccess = { DecodeResult.Message(it) },
         onFailure = { DecodeResult.Ignored(env.type, "полезная нагрузка не разобрана: ${it.message}") },
     )
 
 /** Сообщение не отнесено к группе: так выглядит только ошибка в самой таблице. */
-private fun wrongGroup(message: Any): Nothing =
+internal fun wrongGroup(message: Any): Nothing =
     error("Сообщение не отнесено к группе кодировщика: ${message::class.simpleName}")
 
 // ——— Этап 0: репозиторий, ФС, состояние хоста ———

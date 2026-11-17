@@ -158,19 +158,8 @@ internal class FakeHostConnection : HostConnection {
 
         is ClientMessage.CheckModel -> HostMessage.ModelCheckResult(message.requestId, ok = true)
 
-        is ClientMessage.SetModelSecret -> HostMessage.ModelSecretChanged(
-            requestId = message.requestId,
-            providerId = message.providerId,
-            status = ModelSecretStatus.InStore,
-        )
-
-        is ClientMessage.DeleteModelSecret -> HostMessage.ModelSecretChanged(
-            requestId = message.requestId,
-            providerId = message.providerId,
-            status = ModelSecretStatus.Absent,
-        )
-
-        is ClientMessage.ModelSecrets -> HostMessage.ModelSecretsSnapshot(message.requestId, emptyMap())
+        is ClientMessage.SetModelSecret, is ClientMessage.DeleteModelSecret,
+        is ClientMessage.ModelSecrets -> modelSecretResponse(message)
 
         is ClientMessage.ToolCalls ->
             HostMessage.ToolCallPage(
@@ -185,6 +174,45 @@ internal class FakeHostConnection : HostConnection {
 
         is ClientMessage.ToolCallDetail ->
             HostMessage.Failure(message.requestId, ProtocolError.NotFound("вызов ${message.callId.value}"))
+
+        is ClientMessage.SnapshotList, is ClientMessage.SnapshotPreviewRequest,
+        is ClientMessage.SnapshotRevert -> snapshotResponse(message)
+
+        else -> error("неожиданный запрос: ${message::class.simpleName}")
+    }
+
+    /** Ответы на запросы отката к снапшоту; вынесены, чтобы не раздувать [agentOrModelResponse]. */
+    private fun snapshotResponse(message: ClientMessage): HostMessage = when (message) {
+        is ClientMessage.SnapshotList -> HostMessage.SnapshotListResponse(message.requestId, emptyList())
+
+        is ClientMessage.SnapshotPreviewRequest -> HostMessage.Failure(
+            message.requestId,
+            ProtocolError.SnapshotRollbackRejected(dev.aide.protocol.SnapshotRollbackRejection.UNKNOWN_SNAPSHOT),
+        )
+
+        is ClientMessage.SnapshotRevert -> HostMessage.Failure(
+            message.requestId,
+            ProtocolError.SnapshotRollbackRejected(dev.aide.protocol.SnapshotRollbackRejection.ACTIVE_RUN),
+        )
+
+        else -> error("неожиданный запрос: ${message::class.simpleName}")
+    }
+
+    /** Ответы на запросы ключей провайдеров; вынесены, чтобы не раздувать [agentOrModelResponse]. */
+    private fun modelSecretResponse(message: ClientMessage): HostMessage = when (message) {
+        is ClientMessage.SetModelSecret -> HostMessage.ModelSecretChanged(
+            requestId = message.requestId,
+            providerId = message.providerId,
+            status = ModelSecretStatus.InStore,
+        )
+
+        is ClientMessage.DeleteModelSecret -> HostMessage.ModelSecretChanged(
+            requestId = message.requestId,
+            providerId = message.providerId,
+            status = ModelSecretStatus.Absent,
+        )
+
+        is ClientMessage.ModelSecrets -> HostMessage.ModelSecretsSnapshot(message.requestId, emptyMap())
 
         else -> error("неожиданный запрос: ${message::class.simpleName}")
     }

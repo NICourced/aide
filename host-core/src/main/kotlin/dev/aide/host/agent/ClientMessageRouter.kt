@@ -17,9 +17,9 @@ class ClientMessageRouter(
     private val stageZero: ClientMessageHandler,
     private val agent: ClientMessageHandler,
     private val approvals: ClientMessageHandler,
-    private val modelConfig: ClientMessageHandler,
-    private val modelSecrets: ClientMessageHandler,
+    private val modelSettings: ClientMessageHandler,
     private val toolLog: ClientMessageHandler,
+    private val snapshots: ClientMessageHandler,
 ) : ClientMessageHandler {
 
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
@@ -28,14 +28,35 @@ class ClientMessageRouter(
 
         is ClientMessage.ApprovalAnswer, is ClientMessage.PendingApprovals -> approvals.handle(message)
 
-        is ClientMessage.AgentConfigRequest, is ClientMessage.SaveAgentConfig, is ClientMessage.CheckModel ->
-            modelConfig.handle(message)
-
+        is ClientMessage.AgentConfigRequest, is ClientMessage.SaveAgentConfig, is ClientMessage.CheckModel,
         is ClientMessage.SetModelSecret, is ClientMessage.DeleteModelSecret, is ClientMessage.ModelSecrets ->
-            modelSecrets.handle(message)
+            modelSettings.handle(message)
 
         is ClientMessage.ToolCalls, is ClientMessage.ToolCallDetail -> toolLog.handle(message)
 
+        is ClientMessage.SnapshotList, is ClientMessage.SnapshotPreviewRequest,
+        is ClientMessage.SnapshotRevert -> snapshots.handle(message)
+
         else -> stageZero.handle(message)
+    }
+
+    /**
+     * Объединяет конфигурацию моделей и секреты в один обработчик, чтобы уменьшить
+     * число параметров [ClientMessageRouter] (T-1.58, T-1.6).
+     */
+    internal class ModelSettingsHandler(
+        private val config: ClientMessageHandler,
+        private val secrets: ClientMessageHandler,
+    ) : ClientMessageHandler {
+
+        override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
+            is ClientMessage.AgentConfigRequest, is ClientMessage.SaveAgentConfig, is ClientMessage.CheckModel ->
+                config.handle(message)
+
+            is ClientMessage.SetModelSecret, is ClientMessage.DeleteModelSecret, is ClientMessage.ModelSecrets ->
+                secrets.handle(message)
+
+            else -> error("ModelSettingsHandler получил сообщение другого вида")
+        }
     }
 }
