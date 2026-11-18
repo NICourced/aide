@@ -2,6 +2,7 @@ package dev.aide.host.git
 
 import dev.aide.domain.FileChangeKind
 import dev.aide.protocol.ProtocolError
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.writeText
@@ -12,7 +13,20 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CancellationException
+import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.internal.storage.dfs.DfsRepositoryDescription
+import org.eclipse.jgit.internal.storage.dfs.InMemoryRepository
+import org.eclipse.jgit.lib.CommitBuilder
+import org.eclipse.jgit.lib.Constants
+import org.eclipse.jgit.lib.ObjectId
+import org.eclipse.jgit.lib.ObjectInserter
+import org.eclipse.jgit.lib.PersonIdent
+import org.eclipse.jgit.lib.Ref
+import org.eclipse.jgit.lib.RefDatabase
+import org.eclipse.jgit.lib.RefRename
 import org.eclipse.jgit.lib.RefUpdate
+import org.eclipse.jgit.lib.TreeFormatter
 
 private const val LOG_LIMIT = 10
 private const val MILLIS_PER_SECOND = 1_000L
@@ -419,6 +433,64 @@ class JGitRepositoryTest {
     }
 
     @Test
+    fun `сбой чтения ссылки даёт отказ без попытки записи`() {
+        val ref = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+
+        // Раньше runCatching поглощал ошибку чтения, принимал её за отсутствие ссылки
+        // и шёл в createNewRef. Теперь сбой чтения должен давать безопасный Refused.
+        ThrowingRefRepository(IOException("сбой exactRef")).use { throwingRepo ->
+            JGitRepository(throwingRepo, Git(throwingRepo)).use { repository ->
+                assertEquals(SnapshotOutcome.Refused, repository.createSnapshot(ref))
+            }
+        }
+    }
+
+    @Test
+    fun `отмена при чтении ссылки пробрасывается`() {
+        val ref = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+
+        // CancellationException не должен превращаться в Refused или в null:
+        // отменённая корутина обязана остаться отменённой.
+        ThrowingRefRepository(CancellationException("отмена exactRef")).use { throwingRepo ->
+            JGitRepository(throwingRepo, Git(throwingRepo)).use { repository ->
+                assertFailsWith<CancellationException> { repository.createSnapshot(ref) }
+            }
+        }
+    }
+
+    @Test
+    fun `снапшот идемпотентен при повторном вызове на том же HEAD`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        val ref = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+
+        JGitRepository.open(root).use { repository ->
+            assertEquals(SnapshotOutcome.Created, repository.createSnapshot(ref))
+            assertEquals(
+                SnapshotOutcome.Created,
+                repository.createSnapshot(ref),
+                "повтор на том же HEAD — идемпотентность",
+            )
+        }
+
+        assertEquals(listOf(ref), GitCliFixture.snapshotRefs(root), "ссылка одна")
+    }
+
+    @Test
+    fun `снапшот не перезаписывает существующую ссылку на другой HEAD`() {
+        val root = GitCliFixture.createRepo(tempDir("aide-git-"))
+        val ref = snapshotRefName(SNAPSHOT_MILLIS, LABEL)
+
+        JGitRepository.open(root).use { repository ->
+            assertEquals(SnapshotOutcome.Created, repository.createSnapshot(ref))
+
+            // Новый коммит меняет HEAD; та же ссылка теперь указывала бы на другой объект.
+            GitCliFixture.run(listOf("git", "commit", "--allow-empty", "-m", "новый HEAD"), root)
+
+            assertEquals(SnapshotOutcome.Refused, repository.createSnapshot(ref))
+        }
+    }
+
+    @Test
     fun `неудачный исход удаления ссылки не считается успехом`() {
         // JGit сообщает о неудаче удаления значением, а не исключением: без этой проверки
         // ссылки копились бы, а лимит 50 соблюдался бы только на бумаге (T-1.19).
@@ -670,4 +742,56 @@ class JGitRepositoryTest {
             }
             entry.path to kind
         }.sortedBy { it.first }
+}
+
+/**
+ * Репозиторий, чьё чтение exactRef падает с заданной ошибкой — для focused-тестов writeRef.
+ *
+ * InMemoryRepository инициализируется пустым коммитом напрямую: так у него есть HEAD,
+ * а запись ссылок идёт через оригинальную базу, не затронутую переопределением exactRef.
+ */
+private class ThrowingRefRepository(error: Throwable) : InMemoryRepository(DfsRepositoryDescription("throwing")) {
+
+    // Берём оригинальную базу до переопределения getRefDatabase(), иначе delegate
+    // укажет на сам throwingDb и createNewRef пойдёт по кругу.
+    private val originalRefDatabase: RefDatabase = super.getRefDatabase()
+    private val throwingDb = ThrowingRefDatabase(originalRefDatabase, error)
+    private val headId: ObjectId = createEmptyCommit()
+
+    override fun resolve(revstr: String?): ObjectId = headId
+
+    override fun getRefDatabase(): RefDatabase = throwingDb
+
+    private fun createEmptyCommit(): ObjectId {
+        val treeId = newObjectInserter().use { ins -> ins.insert(TreeFormatter()) }
+        val commitId = newObjectInserter().use { ins ->
+            val commit = CommitBuilder().apply {
+                setTreeId(treeId)
+                setAuthor(PersonIdent("test", "test@aide.dev"))
+                setCommitter(PersonIdent("test", "test@aide.dev"))
+                setMessage("throwing-head")
+            }
+            ins.insert(commit).also { ins.flush() }
+        }
+        updateRef(Constants.HEAD).apply { setNewObjectId(commitId) }.update()
+        return commitId
+    }
+}
+
+/** RefDatabase, который бросает заданную ошибку на exactRef, но позволяет писать через делегата. */
+@Suppress("OVERRIDE_DEPRECATION")
+private class ThrowingRefDatabase(
+    private val delegate: RefDatabase,
+    private val error: Throwable,
+) : RefDatabase() {
+
+    override fun exactRef(name: String?): Ref? = throw error
+    override fun getRefs(prefix: String?): MutableMap<String, Ref> = mutableMapOf()
+    override fun getAdditionalRefs(): MutableList<Ref> = mutableListOf()
+    override fun newUpdate(name: String?, detach: Boolean): RefUpdate = delegate.newUpdate(name, detach)
+    override fun newRename(fromName: String?, toName: String?): RefRename = delegate.newRename(fromName, toName)
+    override fun isNameConflicting(name: String?): Boolean = false
+    override fun peel(ref: Ref?): Ref? = ref
+    override fun create() = Unit
+    override fun close() = Unit
 }

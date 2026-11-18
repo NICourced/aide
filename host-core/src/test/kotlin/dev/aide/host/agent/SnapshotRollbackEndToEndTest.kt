@@ -73,7 +73,7 @@ class SnapshotRollbackEndToEndTest {
             val repo = repoWithFile()
             val database = Files.createTempFile("aide-rollback", ".db")
             allowWriteFile(database)
-            val host = host(database)
+            val host = host(database, WriteThenFinishModel())
 
             try {
                 val (connection, client) = openClient(host)
@@ -149,7 +149,7 @@ class SnapshotRollbackEndToEndTest {
             val repo = repoWithFile()
             val database = Files.createTempFile("aide-rollback-two", ".db")
             allowWriteFile(database)
-            val host = host(database, TwoWritesThenFinishModel, steps = 2)
+            val host = host(database, TwoWritesThenFinishModel(), steps = 2)
 
             try {
                 val (connection, client) = openClient(host)
@@ -231,6 +231,21 @@ class SnapshotRollbackEndToEndTest {
         }
     }
 
+    @Test
+    fun `скриптованные модели не делят состояние между экземплярами`() {
+        runBlocking {
+            val first = WriteThenFinishModel()
+            val firstResponse = first.complete(LlmRequest(emptyList()))
+            assertTrue(firstResponse is LlmResponse.Text)
+            assertEquals(1, firstResponse.toolCalls.size)
+
+            val second = WriteThenFinishModel()
+            val secondResponse = second.complete(LlmRequest(emptyList()))
+            assertTrue(secondResponse is LlmResponse.Text)
+            assertEquals(1, secondResponse.toolCalls.size)
+        }
+    }
+
     /** Репозиторий с одним закоммиченным файлом. */
     private fun repoWithFile(): Path {
         val repo = GitCliFixture.createRepo(Files.createTempDirectory("aide-rollback-repo"))
@@ -252,7 +267,7 @@ class SnapshotRollbackEndToEndTest {
 
     private fun host(
         database: Path,
-        model: LlmClient = WriteThenFinishModel,
+        model: LlmClient = WriteThenFinishModel(),
         steps: Int = 1,
     ): EmbeddedHost = EmbeddedHost.open(
         databasePath = database,
@@ -305,10 +320,11 @@ class SnapshotRollbackEndToEndTest {
  * Модель, которая один раз просит записать файл, а потом завершает шаг текстом.
  *
  * Движок вызовет её дважды: первый раз — инструмент write_file, второй — финальный ответ.
+ * Класс, а не object: каждый тест должен получать свежий экземпляр без состояния
+ * предыдущих прогонов и retries (T-1.17).
  */
-private object WriteThenFinishModel : LlmClient {
+private class WriteThenFinishModel : LlmClient {
 
-    @Volatile
     private var calls: Int = 0
 
     override suspend fun complete(request: LlmRequest): LlmResponse {
@@ -325,10 +341,11 @@ private object WriteThenFinishModel : LlmClient {
  * Модель, которая дважды просит записать файл — intermediate и final — а потом завершает шаг.
  *
  * Движок вызовет её четыре раза: write_file, финал первого шага, write_file, финал второго шага.
+ * Класс, а не object: каждый тест должен получать свежий экземпляр без состояния
+ * предыдущих прогонов и retries (T-1.17).
  */
-private object TwoWritesThenFinishModel : LlmClient {
+private class TwoWritesThenFinishModel : LlmClient {
 
-    @Volatile
     private var calls: Int = 0
 
     override suspend fun complete(request: LlmRequest): LlmResponse {

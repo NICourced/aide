@@ -30,7 +30,7 @@ import org.slf4j.LoggerFactory
  * У чтения состояния и у изменения репозитория разные поводы меняться, а коммиты шагов
  * принесут свою операцию (T-1.11).
  */
-class JGitRepository private constructor(
+class JGitRepository internal constructor(
     private val repository: Repository,
     private val git: Git,
 ) : GitRepository {
@@ -333,7 +333,16 @@ private class SnapshotOperation(private val repository: Repository) {
         // потомок старого (иначе JGit дал бы FAST_FORWARD и потерял бы точку отката,
         // T-1.17). Поэтому сначала читаем текущее значение: если оно уже нужное — успех,
         // если другое — отказ, если ссылки нет — создаём с compare-and-set на zero.
-        val existing = runCatching { repository.exactRef(ref)?.objectId }.getOrNull()
+        // runCatching здесь опасен: он поглощает CancellationException и ошибки чтения refs,
+        // превращая их в null. Отмена должна пробрасываться, а сбой чтения — давать отказ,
+        // а не попытку создания/перезаписи ссылки.
+        val existing = try {
+            repository.exactRef(ref)?.objectId
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            return refused(ref, error.message.orEmpty(), error)
+        }
         when {
             existing == head -> SnapshotOutcome.Created
             existing != null -> refused(ref, "ссылка уже существует")

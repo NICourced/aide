@@ -58,3 +58,80 @@ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
 - Живой Android/Desktop UI и реальный провайдер, как указано в плане (О-11).
 - Вытеснение при нескольких незакрытых задачах одновременно: в этапе 1 хост ведёт один прогон за раз.
 - Внешняя гонка с независимым git-процессом: защита реализована через отказ `writeRef`, но не нагружалась в интеграционных условиях.
+
+## Исправления по контроллерному ревью T-1.17
+
+Контроллерное ревью выявило два Important. Оба исправлены строго в объёме задачи, без изменения спецификации, плана и задачного чеклиста.
+
+### Important 1: `JGitRepository.writeRef` поглощал ошибки чтения refs
+
+**Root cause.** В `SnapshotOperation.writeRef` чтение существующей ссылки делалось через `runCatching { repository.exactRef(ref)?.objectId }.getOrNull()`. Это превращало `CancellationException` и любой сбой чтения refs в `null`, принимая их за «ссылки нет». В результате операция шла в `createNewRef`, что могло привести к перезаписи или к неправильному исходу прогона вместо безопасного отказа.
+
+**Исправление.** `runCatching` заменён на явный `try/catch` вокруг `repository.exactRef(ref)?.objectId`:
+- `CancellationException` пробрасывается дальше.
+- Прочий `Exception` чтения превращается в безопасный `SnapshotOutcome.Refused` без попытки записи.
+- Пути `existing == head` (идемпотентность), `existing != null` (защита от перезаписи) и `else -> createNewRef` сохранены.
+
+**Файлы.**
+- `host-core/src/main/kotlin/dev/aide/host/git/JGitRepository.kt` — переписан `writeRef`.
+- `host-core/src/test/kotlin/dev/aide/host/git/JGitRepositoryTest.kt` — добавлены focused-тесты и фикстура `ThrowingRefRepository`/`ThrowingRefDatabase`.
+
+**RED/GREEN.**
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+# Старый код временно возвращён: runCatching поглощает IOException и CancellationException.
+./gradlew :host-core:test \
+  --tests "dev.aide.host.git.JGitRepositoryTest.сбой чтения ссылки даёт отказ без попытки записи" \
+  --tests "dev.aide.host.git.JGitRepositoryTest.отмена при чтении ссылки пробрасывается"
+```
+
+RED: оба теста падают с `AssertionFailedError` — старый код поглощает исключение, идёт в `createNewRef`, успешно создаёт ссылку (`SnapshotOutcome.Created`) вместо ожидаемого `Refused`/`CancellationException`.
+
+```bash
+# Исправленный writeRef.
+./gradlew :host-core:test \
+  --tests "dev.aide.host.git.JGitRepositoryTest.сбой чтения ссылки даёт отказ без попытки записи" \
+  --tests "dev.aide.host.git.JGitRepositoryTest.отмена при чтении ссылки пробрасывается"
+```
+
+GREEN: оба теста проходят.
+
+### Important 2: `SnapshotRollbackEndToEndTest` использовал `object` для скриптованных моделей
+
+**Root cause.** `WriteThenFinishModel` и `TwoWritesThenFinishModel` были объявлены как `object` с `@Volatile var calls`. Одиночки живут внутри JVM до перезапуска Gradle-демона, поэтому состояние `calls` переживало повторный запуск теста, retries Gradle и параллельные прогоны, что делало end-to-end тест недетерминированным.
+
+**Исправление.** Оба `object` превращены в `class`, `@Volatile` убрано (экземпляр не разделяется между корутинами), и каждый тест теперь создаёт свой экземпляр (`WriteThenFinishModel()`, `TwoWritesThenFinishModel()`). Добавлен focused-тест `скриптованные модели не делят состояние между экземплярами`, который доказывает, что два экземпляра одной модели независимо начинают счётчик с нуля.
+
+**Файлы.**
+- `host-core/src/test/kotlin/dev/aide/host/agent/SnapshotRollbackEndToEndTest.kt` — `object -> class`, явное создание экземпляров, новый тест.
+
+**RED/GREEN.**
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+./gradlew :host-core:test --tests "dev.aide.host.agent.SnapshotRollbackEndToEndTest"
+```
+
+GREEN: все три теста (`клиент получает список снапшотов...`, `два изменяющих шага...`, `скриптованные модели не делят состояние между экземплярами`) проходят.
+
+Дополнительная проверка независимости: тест `скриптованные модели не делят состояние между экземплярами` падает, если вернуть `object`, потому что второй экземпляр в действительности не создаётся и счётчик продолжает расти.
+
+### Повторная сводная проверка
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+./gradlew :host-core:test \
+  --tests "dev.aide.host.git.JGitRepositoryTest" \
+  --tests "dev.aide.host.agent.TaskSnapshotGuardTest" \
+  --tests "dev.aide.host.agent.SnapshotRollbackEndToEndTest"
+./gradlew :host-core:test --rerun-tasks --max-workers=1
+./gradlew :host-core:detekt
+```
+
+Все три команды завершились успешно.
+
+### Что осталось непроверенным после правок
+
+- Реальная отмена корутины внутри `writeRef` в полноценном прогоне: тест имитирует `CancellationException` синхронно, в продакшене отмена придёт извне suspend-границы.
+- Внешняя гонка с независимым git-процессом при сбое чтения refs: защита реализована, но не нагружалась в интеграционных условиях.
