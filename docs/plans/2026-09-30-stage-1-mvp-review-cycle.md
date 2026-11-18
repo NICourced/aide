@@ -214,12 +214,12 @@ host-tools/                                   ← новый модуль (О-1)
 
 ## Порядок задач
 
-Порядок — по зависимостям, а не по номерам: восемь задач этапа помечены «вне очереди» (`T-1.6`, `T-1.8`, `T-1.11`, `T-1.17`, `T-1.25`, `T-1.29`, `T-1.35`, `T-1.54`) — их берут в работу до тех, кто на них ссылается, а от `T-1.55` (генератор фикстур) зависят сразу четыре задачи, поэтому он идёт вперёд волны B. Две задачи, найденные при написании этого плана (`T-1.56`, `T-1.57`), идут в волне A почти в начале: без настроенной модели агент не работает вовсе.
+Порядок — по зависимостям, а не по номерам: восемь задач этапа помечены «вне очереди» (`T-1.6`, `T-1.8`, `T-1.11`, `T-1.17`, `T-1.25`, `T-1.29`, `T-1.35`, `T-1.54`) — их берут в работу до тех, кто на них ссылается. От `T-1.55` (генератор фикстур) зависят сразу четыре задачи, поэтому он идёт перед первой из них (`T-1.25`), но после собственных зависимостей `T-1.21` и `T-1.24`: генератор должен создавать настоящие hunk'и и пакеты, а не параллельную модель фикстур. Две задачи, найденные при написании этого плана (`T-1.56`, `T-1.57`), идут в волне A почти в начале: без настроенной модели агент не работает вовсе.
 
 | Волна | Задачи | Что получается на выходе |
 |---|---|---|
 | A. Рантайм и инструменты | T-1.12, T-1.1, T-1.56, T-1.57, T-1.58, T-1.7, T-1.18, T-1.19, T-1.8, T-1.11, T-1.9, T-1.10, T-1.3, T-1.2, T-1.4, T-1.5, T-1.13, T-1.14, T-1.15, T-1.16, T-1.6, T-1.17 | агент выполняет задачу в своей ветке, ставит снапшоты, пишет журнал; модель настроена и вызывается; режимы автономности работают |
-| B. Diff, фикстуры, пакеты | T-1.55, T-1.21, T-1.22, T-1.23, T-1.24, T-1.25, T-1.26, T-1.27, T-1.20 | изменение превращается в пакет с hunk'ами, объяснением и риском |
+| B. Diff, фикстуры, пакеты | T-1.21, T-1.22, T-1.23, T-1.24, T-1.55, T-1.25, T-1.26, T-1.27, T-1.20 | изменение превращается в пакет с hunk'ами, объяснением и риском |
 | C. Инбокс и hunk-вьюер | T-1.28, T-1.29, T-1.30, T-1.31, T-1.32, T-1.33, T-1.34, T-1.35, T-1.36 | пакет виден, ревьюится по блокам, решения принимаются |
 | D. Решения, откат, предупреждения | T-1.37, T-1.38, T-1.39 | решения переживают перезапуск, undo/redo, предупреждение о тестах |
 | E. Взаимодействие и управление | T-1.40, T-1.41, T-1.42, T-1.43, T-1.44, T-1.45, T-1.46, T-1.47 | чат, голос, быстрые команды, три режима управления, панели, хаптик |
@@ -1465,6 +1465,275 @@ interface ToolContext {
 
 Задачи 1–9 расписаны выше отдельными разделами в порядке исполнения (`T-1.12`, `T-1.1`, `T-1.56`, `T-1.57`, `T-1.58`, `T-1.7`, `T-1.18`, `T-1.59`, `T-1.19`). Порядок внутри таблицы ниже — продолжение того же порядка, номера в первой колонке сквозные по волне, чтобы на них ссылаться в отчётах.
 
+## Волна B: diff, фикстуры и пакеты
+
+### Задача 24: `T-1.21` Diff-движок: разбиение на hunk'и — 2д
+
+**Готово когда:** набор изменений файла разбивается на hunk'и связанных правок; у каждого hunk'а есть номер строки, тип (добавление/удаление/замена) и привязка к файлу; разбиение воспроизводимо — на одном и том же входе даёт один и тот же результат; есть тесты на переименование файла, добавление файла, удаление файла.
+
+**Файлы и границы.**
+- Создать `host-core/src/main/kotlin/dev/aide/host/diff/LineDiffEngine.kt`: чистый текстовый движок без репозитория, БД, протокола и UI.
+- Создать `host-core/src/test/kotlin/dev/aide/host/diff/LineDiffEngineTest.kt`: фиксированные строки, никаких генераторов до T-1.55.
+- Доменные `FileChange`, `Hunk`, `HunkLine`, `HunkKind`, `LineKind` уже существуют и полностью покрывают результат; не добавлять параллельные DTO и не менять сериализацию. `SnapshotRollbackOperation.diff` остаётся отдельным preview по git-деревьям: выносить общий адаптер до T-1.24 не нужно.
+
+**Интерфейс.**
+
+```kotlin
+data class TextDiffInput(
+    val oldPath: String,
+    val newPath: String,
+    val oldText: String?,
+    val newText: String?,
+)
+
+class LineDiffEngine {
+    fun diff(input: TextDiffInput): FileChange
+}
+```
+
+`null` для `oldText` означает добавление, `null` для `newText` — удаление; одновременно оба `null` запрещены. Для добавления и удаления пути совпадают. `oldPath != newPath` означает переименование, в том числе с изменением содержимого. Пустой результат с `MODIFIED` запрещён: неизменённый вход не является изменением. Чистое переименование без изменения текста возвращает `RENAMED` с пустым списком hunk'ов — это уже допускает доменный инвариант.
+
+**Реализация.** Использовать уже подключённый JGit 6.10: `DiffAlgorithm.getAlgorithm(DiffAlgorithm.SupportedAlgorithm.HISTOGRAM).diff(RawTextComparator.DEFAULT, old, new)`. API проверен по jar текущей версии: `RawText(ByteArray)`, `RawText.EMPTY_TEXT`, `RawText.size()`, `RawText.getString(Int)`, `Edit.getBeginA/EndA/BeginB/EndB/LengthA/LengthB`. Новых зависимостей нет. Кодировка входа — UTF-8; `HunkLine.text` не содержит diff-префиксов и разделителей строк.
+
+Полный код движка (допускается разнести private helpers по файлам только ради detekt, без смены публичного интерфейса):
+
+```kotlin
+package dev.aide.host.diff
+
+import dev.aide.domain.FileChange
+import dev.aide.domain.FileChangeKind
+import dev.aide.domain.Hunk
+import dev.aide.domain.HunkId
+import dev.aide.domain.HunkKind
+import dev.aide.domain.HunkLine
+import dev.aide.domain.LineKind
+import dev.aide.domain.RiskLevel
+import org.eclipse.jgit.diff.DiffAlgorithm
+import org.eclipse.jgit.diff.Edit
+import org.eclipse.jgit.diff.EditList
+import org.eclipse.jgit.diff.RawText
+import org.eclipse.jgit.diff.RawTextComparator
+
+data class TextDiffInput(
+    val oldPath: String,
+    val newPath: String,
+    val oldText: String?,
+    val newText: String?,
+)
+
+class LineDiffEngine {
+    fun diff(input: TextDiffInput): FileChange {
+        require(input.oldText != null || input.newText != null) { "Обе версии файла отсутствуют" }
+        require(input.oldText != input.newText || input.oldPath != input.newPath) { "Файл не изменился" }
+        val old = input.oldText.asRawText()
+        val new = input.newText.asRawText()
+        val edits = DiffAlgorithm.getAlgorithm(DiffAlgorithm.SupportedAlgorithm.HISTOGRAM)
+            .diff(RawTextComparator.DEFAULT, old, new)
+        val changeKind = input.changeKind()
+        return FileChange(
+            path = input.newPath,
+            previousPath = input.oldPath.takeIf { it != input.newPath },
+            changeKind = changeKind,
+            hunks = HunkBuilder(input.newPath, old, new).build(edits, changeKind),
+            addedLines = edits.sumOf { it.lengthB },
+            removedLines = edits.sumOf { it.lengthA },
+        )
+    }
+}
+
+private class HunkBuilder(
+    private val path: String,
+    private val old: RawText,
+    private val new: RawText,
+) {
+    fun build(edits: EditList, changeKind: FileChangeKind): List<Hunk> {
+        if (edits.isEmpty()) {
+            return if (changeKind == FileChangeKind.ADDED || changeKind == FileChangeKind.DELETED) {
+                listOf(hunk(listOf(Edit(0, 0)), emptyList()))
+            } else {
+                emptyList()
+            }
+        }
+        return edits.grouped().map { group -> buildGroup(group) }
+    }
+
+    private fun EditList.grouped(): List<List<Edit>> {
+        val groups = mutableListOf<MutableList<Edit>>()
+        forEach { edit ->
+            val previous = groups.lastOrNull()?.lastOrNull()
+            val overlaps = previous != null &&
+                edit.beginA - previous.endA <= CONTEXT_LINES * 2 &&
+                edit.beginB - previous.endB <= CONTEXT_LINES * 2
+            if (overlaps) groups.last().add(edit) else groups.add(mutableListOf(edit))
+        }
+        return groups
+    }
+
+    private fun buildGroup(group: List<Edit>): Hunk {
+        val first = group.first()
+        val last = group.last()
+        val endA = (last.endA + CONTEXT_LINES).coerceAtMost(old.size())
+        val endB = (last.endB + CONTEXT_LINES).coerceAtMost(new.size())
+        val lines = mutableListOf<HunkLine>()
+        var a = (first.beginA - CONTEXT_LINES).coerceAtLeast(0)
+        var b = (first.beginB - CONTEXT_LINES).coerceAtLeast(0)
+        group.forEach { edit ->
+            while (a < edit.beginA) {
+                lines += HunkLine(LineKind.CONTEXT, a + 1, b + 1, old.getString(a))
+                a += 1
+                b += 1
+            }
+            for (index in edit.beginA until edit.endA) {
+                lines += HunkLine(LineKind.REMOVED, oldNumber = index + 1, text = old.getString(index))
+            }
+            for (index in edit.beginB until edit.endB) {
+                lines += HunkLine(LineKind.ADDED, newNumber = index + 1, text = new.getString(index))
+            }
+            a = edit.endA
+            b = edit.endB
+        }
+        while (a < endA) {
+            lines += HunkLine(LineKind.CONTEXT, a + 1, b + 1, old.getString(a))
+            a += 1
+            b += 1
+        }
+        check(b == endB) { "Курсоры версий разошлись" }
+        return hunk(group, lines)
+    }
+
+    private fun hunk(group: List<Edit>, lines: List<HunkLine>): Hunk {
+        val first = group.first()
+        val removed = group.sumOf { it.lengthA }
+        val added = group.sumOf { it.lengthB }
+        return Hunk(
+            id = HunkId("$path:${first.beginA + 1}-${first.beginB + 1}"),
+            filePath = path,
+            startLine = first.beginA + 1,
+            kind = when {
+                removed == 0 -> HunkKind.ADD
+                added == 0 -> HunkKind.REMOVE
+                else -> HunkKind.REPLACE
+            },
+            risk = RiskLevel.NORMAL,
+            lines = lines,
+        )
+    }
+
+    private companion object {
+        const val CONTEXT_LINES = 3
+    }
+}
+
+private fun TextDiffInput.changeKind(): FileChangeKind = when {
+    oldText == null -> FileChangeKind.ADDED
+    newText == null -> FileChangeKind.DELETED
+    oldPath != newPath -> FileChangeKind.RENAMED
+    else -> FileChangeKind.MODIFIED
+}
+
+private fun String?.asRawText(): RawText =
+    this?.let { RawText(it.toByteArray(Charsets.UTF_8)) } ?: RawText.EMPTY_TEXT
+```
+
+Таким образом три контекстные строки до/после и объединение при расстоянии не больше шести реализованы явно. Тип hunk'а вычисляется по всей группе; `startLine` и номера строк 1-based. До T-1.24 каждый hunk получает консервативный `RiskLevel.NORMAL`: движок текста не объявляет изменение безопасным. Пустой добавленный/удалённый файл получает один hunk с пустым `lines`, чистый rename — нет.
+
+**Тесты (сначала RED).** Полный файл использует `kotlin.test.Test`, `assertEquals`, `assertNull`, `assertTrue` и доменные `FileChangeKind`, `HunkKind`, `LineKind`. Каждый тест имеет блочное тело. Helpers и тесты:
+
+```kotlin
+private fun text(count: Int): String =
+    (1..count).joinToString("\n", postfix = "\n") { "line-$it" }
+
+private fun String.replaced(vararg replacements: Pair<Int, String>): String {
+    val result = removeSuffix("\n").lines().toMutableList()
+    replacements.forEach { (number, replacement) -> result[number - 1] = replacement }
+    return result.joinToString("\n", postfix = "\n")
+}
+
+@Test
+fun `два далёких изменения дают два hunk-а`() {
+    val change = LineDiffEngine().diff(
+        TextDiffInput("src/A.kt", "src/A.kt", text(30), text(30).replaced(5 to "five", 25 to "twenty-five")),
+    )
+    assertEquals(listOf(5, 25), change.hunks.map { it.startLine })
+    assertEquals(listOf("src/A.kt:5-5", "src/A.kt:25-25"), change.hunks.map { it.id.value })
+    assertEquals(listOf(2, 3, 4), change.hunks.first().lines.take(3).map { it.oldNumber })
+    assertEquals(listOf(6, 7, 8), change.hunks.first().lines.takeLast(3).map { it.oldNumber })
+    assertEquals(2, change.addedLines)
+    assertEquals(2, change.removedLines)
+}
+
+@Test
+fun `близкие изменения объединяются без повторного контекста`() {
+    val change = LineDiffEngine().diff(
+        TextDiffInput("src/A.kt", "src/A.kt", text(30), text(30).replaced(5 to "five", 10 to "ten")),
+    )
+    assertEquals(1, change.hunks.size)
+    assertEquals(HunkKind.REPLACE, change.hunks.single().kind)
+    assertEquals(listOf(6, 7, 8, 9), change.hunks.single().lines.filter {
+        it.kind == LineKind.CONTEXT && it.oldNumber in 6..9
+    }.map { it.oldNumber })
+    assertEquals(2, change.addedLines)
+    assertEquals(2, change.removedLines)
+}
+
+@Test
+fun `добавление и удаление файла сохраняют нумерацию своей версии`() {
+    val added = LineDiffEngine().diff(TextDiffInput("A.kt", "A.kt", null, "a\nb\n"))
+    val deleted = LineDiffEngine().diff(TextDiffInput("A.kt", "A.kt", "a\nb\n", null))
+    assertEquals(FileChangeKind.ADDED, added.changeKind)
+    assertEquals(HunkKind.ADD, added.hunks.single().kind)
+    assertEquals(listOf(1, 2), added.hunks.single().lines.map { it.newNumber })
+    assertTrue(added.hunks.single().lines.all { it.oldNumber == null })
+    assertNull(added.previousPath)
+    assertEquals(FileChangeKind.DELETED, deleted.changeKind)
+    assertEquals(HunkKind.REMOVE, deleted.hunks.single().kind)
+    assertEquals(listOf(1, 2), deleted.hunks.single().lines.map { it.oldNumber })
+    assertTrue(deleted.hunks.single().lines.all { it.newNumber == null })
+}
+
+@Test
+fun `пустые добавленный и удалённый файлы остаются видимыми`() {
+    val added = LineDiffEngine().diff(TextDiffInput("A.kt", "A.kt", null, ""))
+    val deleted = LineDiffEngine().diff(TextDiffInput("A.kt", "A.kt", "", null))
+    assertEquals(1, added.hunks.size)
+    assertEquals(1, deleted.hunks.size)
+    assertTrue(added.hunks.single().lines.isEmpty())
+    assertTrue(deleted.hunks.single().lines.isEmpty())
+    assertEquals(0, added.addedLines + added.removedLines)
+    assertEquals(0, deleted.addedLines + deleted.removedLines)
+}
+
+@Test
+fun `переименование сохраняет прежний путь с правкой и без`() {
+    val pure = LineDiffEngine().diff(TextDiffInput("Old.kt", "New.kt", "same\n", "same\n"))
+    val changed = LineDiffEngine().diff(TextDiffInput("Old.kt", "New.kt", "old\n", "new\n"))
+    assertEquals(FileChangeKind.RENAMED, pure.changeKind)
+    assertEquals("Old.kt", pure.previousPath)
+    assertTrue(pure.hunks.isEmpty())
+    assertEquals(0, pure.addedLines + pure.removedLines)
+    assertEquals("Old.kt", changed.previousPath)
+    assertEquals("new", changed.hunks.single().lines.single { it.kind == LineKind.ADDED }.text)
+}
+
+@Test
+fun `повторный и последующий вызовы не меняют результат`() {
+    val engine = LineDiffEngine()
+    val input = TextDiffInput("A.kt", "A.kt", "a\nb\n", "a\nc\n")
+    val first = engine.diff(input)
+    assertEquals(first, engine.diff(input))
+    engine.diff(TextDiffInput("B.kt", "B.kt", "x\n", "y\n"))
+    assertEquals(first, engine.diff(input))
+}
+```
+
+`:host-core:test` уже входит в CI и guard `@Test`/`tests=`.
+
+Команда RED/GREEN: `export JAVA_HOME=/usr/lib/jvm/java-17-openjdk`; `./gradlew :host-core:test --tests "dev.aide.host.diff.LineDiffEngineTest" --rerun-tasks --max-workers=1`. До класса движка ожидается compilation RED; после минимальной реализации — зелёный. Поломочные проверки: убрать объединение пересекающихся контекстов → тест 2 красный; вернуть 0-based номера → тесты 1/3 красные; считать контекст в `addedLines` → тест 2 красный; потерять `previousPath` → тест 5 красный; добавить недетерминированный UUID → тест 6 красный. После каждой поломки вернуть код и получить GREEN.
+
+**Проверка.** Затем полный набор JVM-тестов, `build-logic`, `detekt`, `verifyModuleBoundaries`, `build`, сверка объявленных и исполненных тестов. После двух независимых ревью — коммит, push рабочей ветки, зелёные `build`/`desktop-windows`, обновление `master`.
+
+**Границы и долг.** Это построчный text diff, не AST-aware и не semantic merge. Word-level подсветка — T-1.22, раскрытие контекста по диапазону — T-1.23, чтение деревьев и сборка неизменяемого пакета — T-1.24. Бинарные файлы и размерные лимиты текста будут определены в адаптере T-1.24; здесь нет чтения файлов и сети.
+
 ## Дальше
 
-Волны B–F будут расписаны так же, перед началом каждой. Сейчас зафиксированы только их состав и порядок — достаточный, чтобы волна A не принимала решений, которые волне C придётся переделывать.
+Волны B–F расписываются перед началом каждой; полный код очередной задачи добавляется непосредственно перед её исполнением. Состав волн и зависимости зафиксированы выше.
