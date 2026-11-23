@@ -1736,6 +1736,185 @@ fun `повторный и последующий вызовы не меняют
 
 **Границы и долг.** Это построчный text diff, не AST-aware и не semantic merge. Word-level подсветка — T-1.22, раскрытие контекста по диапазону — T-1.23, чтение деревьев и сборка неизменяемого пакета — T-1.24. Бинарные файлы и размерные лимиты текста будут определены в адаптере T-1.24; здесь нет чтения файлов и сети.
 
+### Задача 25: `T-1.22` Diff-движок: подсветка на уровне слов — 2д
+
+**Готово когда:** внутри изменённой строки выделяются конкретные изменённые слова, а не строка целиком; при полной замене строки поведение предсказуемо (перечислены изменённые фрагменты); есть тест на строку с несколькими правками подряд.
+
+**Файлы и границы.**
+- Аддитивно изменить `domain/src/commonMain/kotlin/dev/aide/domain/ChangePacket.kt`: сериализуемый `TextRange(start, endExclusive)` и `HunkLine.changedRanges: List<TextRange> = emptyList()`. Значение по умолчанию сохраняет чтение старых CBOR-записей и все существующие вызовы конструктора.
+- Создать `host-core/src/main/kotlin/dev/aide/host/diff/WordDiffEngine.kt`: чистый движок двух строк, без файлов, UI и протокола.
+- Создать `host-core/src/test/kotlin/dev/aide/host/diff/WordDiffEngineTest.kt` и дополнить `LineDiffEngineTest.kt`: фиксированные строки, генераторов до T-1.55 нет.
+- Изменить `host-core/src/main/kotlin/dev/aide/host/diff/LineDiffEngine.kt`: заполнить диапазоны только у ADDED/REMOVED; у CONTEXT список пуст. Никакого UI и режима «только суть» в этой задаче нет.
+
+**Представление.** Диапазон — полуинтервал `[start, endExclusive)` в индексах Kotlin `String` (UTF-16), пригодный для `substring` и Compose `AnnotatedString`. Диапазоны отсортированы, не пересекаются и не бывают пустыми. При полной замене без общих токенов каждая непустая сторона получает один диапазон на всю строку. Чистое добавление/удаление строки аналогично покрывает всю непустую строку; у отсутствующей стороны диапазонов нет.
+
+Добавить в домен рядом с `HunkLine`:
+
+```kotlin
+/** Полуинтервал изменённого текста в индексах строки: [start, endExclusive). */
+@Serializable
+data class TextRange(
+    val start: Int,
+    val endExclusive: Int,
+)
+```
+
+В `HunkLine` после `text`:
+
+```kotlin
+/** Изменённые фрагменты строки; пусто для контекста и старых записей без word-diff. */
+val changedRanges: List<TextRange> = emptyList(),
+```
+
+**Алгоритм.** Разбить каждую строку на токены без потери текста: последовательности букв/цифр/знака подчёркивания/combining marks, пробельные последовательности и одиночные знаки пунктуации. Сравнить последовательности токенов тем же JGit HistogramDiff, превратив их во временные `RawText` с токеном на строку. Каждый непустой `Edit` отображается обратно в границы исходных токенов. Это даёт детерминированный diff без самодельной квадратичной LCS-матрицы и новых зависимостей.
+
+Полный код `WordDiffEngine.kt`:
+
+```kotlin
+package dev.aide.host.diff
+
+import dev.aide.domain.TextRange
+import org.eclipse.jgit.diff.DiffAlgorithm
+import org.eclipse.jgit.diff.Edit
+import org.eclipse.jgit.diff.EditList
+import org.eclipse.jgit.diff.RawText
+import org.eclipse.jgit.diff.RawTextComparator
+
+data class WordDiffResult(
+    val oldRanges: List<TextRange> = emptyList(),
+    val newRanges: List<TextRange> = emptyList(),
+)
+
+class WordDiffEngine {
+    fun diff(oldText: String, newText: String): WordDiffResult {
+        if (oldText == newText) return WordDiffResult()
+        val old = tokenize(oldText)
+        val new = tokenize(newText)
+        val edits = DiffAlgorithm.getAlgorithm(DiffAlgorithm.SupportedAlgorithm.HISTOGRAM)
+            .diff(RawTextComparator.DEFAULT, old.asRawText(), new.asRawText())
+        return WordDiffResult(
+            oldRanges = old.changedRanges(edits) { edit -> edit.beginA to edit.endA },
+            newRanges = new.changedRanges(edits) { edit -> edit.beginB to edit.endB },
+        )
+    }
+}
+
+private data class Token(
+    val text: String,
+    val start: Int,
+    val endExclusive: Int,
+)
+
+private fun tokenize(text: String): List<Token> =
+    TOKEN.findAll(text).map { match ->
+        Token(match.value, match.range.first, match.range.last + 1)
+    }.toList()
+
+private fun List<Token>.asRawText(): RawText =
+    RawText(joinToString("\n") { it.text }.toByteArray(Charsets.UTF_8))
+
+private fun List<Token>.changedRanges(
+    edits: EditList,
+    bounds: (Edit) -> Pair<Int, Int>,
+): List<TextRange> = edits.mapNotNull { edit ->
+    val (begin, end) = bounds(edit)
+    if (begin == end) {
+        null
+    } else {
+        TextRange(this[begin].start, this[end - 1].endExclusive)
+    }
+}
+
+private val TOKEN = Regex("""[\p{L}\p{N}\p{M}_]+|\s+|[^\p{L}\p{N}\p{M}_\s]""")
+```
+
+**Подключение к строковому diff.** В `HunkBuilder` добавить `private val wordDiff = WordDiffEngine()`. В `buildGroup` заменить два цикла по `edit` на `lines += changedLines(edit)`. Helper сохраняет порядок «все удалённые, затем все добавленные» внутри edit и попарно сопоставляет строки замены по смещению; недостающая сторона представляется пустой строкой:
+
+```kotlin
+private fun changedLines(edit: Edit): List<HunkLine> {
+    val count = maxOf(edit.lengthA, edit.lengthB)
+    val diffs = (0 until count).map { offset ->
+        val oldIndex = edit.beginA + offset
+        val newIndex = edit.beginB + offset
+        wordDiff.diff(
+            if (oldIndex < edit.endA) old.getString(oldIndex) else "",
+            if (newIndex < edit.endB) new.getString(newIndex) else "",
+        )
+    }
+    return buildList {
+        for (index in edit.beginA until edit.endA) {
+            add(
+                HunkLine(
+                    kind = LineKind.REMOVED,
+                    oldNumber = index + 1,
+                    text = old.getString(index),
+                    changedRanges = diffs[index - edit.beginA].oldRanges,
+                ),
+            )
+        }
+        for (index in edit.beginB until edit.endB) {
+            add(
+                HunkLine(
+                    kind = LineKind.ADDED,
+                    newNumber = index + 1,
+                    text = new.getString(index),
+                    changedRanges = diffs[index - edit.beginB].newRanges,
+                ),
+            )
+        }
+    }
+}
+```
+
+**Тесты (сначала RED).** В `WordDiffEngineTest.kt` пять блочных тестов; helper `fragments(text, ranges) = ranges.map { text.substring(it.start, it.endExclusive) }`:
+
+```kotlin
+@Test
+fun `несколько правок в строке перечисляются отдельно`() {
+    val old = "val total = first + second"
+    val new = "val sum = first - second"
+    val result = WordDiffEngine().diff(old, new)
+    assertEquals(listOf("total", "+"), fragments(old, result.oldRanges))
+    assertEquals(listOf("sum", "-"), fragments(new, result.newRanges))
+}
+
+@Test
+fun `полная замена покрывает каждую непустую сторону целиком`() {
+    val result = WordDiffEngine().diff("old value", "новое значение")
+    assertEquals(listOf(TextRange(0, 9)), result.oldRanges)
+    assertEquals(listOf(TextRange(0, 14)), result.newRanges)
+}
+
+@Test
+fun `добавление слова не отмечает несуществующий старый фрагмент`() {
+    val result = WordDiffEngine().diff("a b", "a new b")
+    assertTrue(result.oldRanges.isEmpty())
+    assertEquals(listOf("new "), fragments("a new b", result.newRanges))
+}
+
+@Test
+fun `unicode и отсутствие перевода строки сохраняют точные границы`() {
+    val old = "val greeting = \"привет\""
+    val new = "val greeting = \"пока\""
+    val result = WordDiffEngine().diff(old, new)
+    assertEquals(listOf("привет"), fragments(old, result.oldRanges))
+    assertEquals(listOf("пока"), fragments(new, result.newRanges))
+}
+
+@Test
+fun `одинаковые строки не имеют изменённых диапазонов`() {
+    assertEquals(WordDiffResult(), WordDiffEngine().diff("same", "same"))
+}
+```
+
+В `LineDiffEngineTest.kt` добавить интеграционный тест: входы `val total = first + second\n` и `val sum = first - second\n`; у единственной REMOVED-строки `changedRanges` выделяют `total` и `+`, у ADDED — `sum` и `-`, а у CONTEXT в существующем тесте близких изменений все `changedRanges` пусты. Это доказывает не только отдельный движок, но и наличие данных в итоговом `FileChange`.
+
+Команда RED/GREEN: `export JAVA_HOME=/usr/lib/jvm/java-17-openjdk`; `./gradlew :host-core:test --tests "dev.aide.host.diff.WordDiffEngineTest" --tests "dev.aide.host.diff.LineDiffEngineTest" --rerun-tasks --max-workers=1`. До `TextRange`/движка ожидается compilation RED. Поломки: вернуть диапазон всей строки → тест нескольких правок красный; отбросить результат `WordDiffEngine` в `changedLines` → интеграционный тест красный; считать `endExclusive` включительным → unicode/полная замена красные; убрать default у `changedRanges` → существующая компиляция красная. После каждой поломки вернуть код и получить GREEN.
+
+**Проверка.** `:domain:jvmTest :host-core:test --rerun-tasks`, затем полный набор JVM-тестов, `build-logic`, `detekt`, `verifyModuleBoundaries`, `:domain:dokkaGenerate`, `build`, сверка `@Test`/`tests=`. После двух независимых ревью — коммит, push рабочей ветки, зелёные `build`/`desktop-windows`, обновление `master`.
+
+**Границы и долг.** Это данные для будущей inline-подсветки, а не сам Compose-рендер; UI появится во вьюере волны C. Нет AST, semantic diff и сопоставления строк по содержимому за пределами порядка внутри одного JGit Edit. Строки с неоднозначными повторами токенов следуют детерминированному выбору HistogramDiff, без дополнительных эвристик.
+
 ## Дальше
 
 Волны B–F расписываются перед началом каждой; полный код очередной задачи добавляется непосредственно перед её исполнением. Состав волн и зависимости зафиксированы выше.
