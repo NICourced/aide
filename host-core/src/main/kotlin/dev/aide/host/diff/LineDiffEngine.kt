@@ -46,6 +46,8 @@ private class HunkBuilder(
     private val old: RawText,
     private val new: RawText,
 ) {
+    private val wordDiff = WordDiffEngine()
+
     fun build(edits: EditList, changeKind: FileChangeKind): List<Hunk> {
         if (edits.isEmpty()) {
             return when (changeKind) {
@@ -83,12 +85,7 @@ private class HunkBuilder(
                 a += 1
                 b += 1
             }
-            for (index in edit.beginA until edit.endA) {
-                lines += HunkLine(LineKind.REMOVED, oldNumber = index + 1, text = old.getString(index))
-            }
-            for (index in edit.beginB until edit.endB) {
-                lines += HunkLine(LineKind.ADDED, newNumber = index + 1, text = new.getString(index))
-            }
+            lines += changedLines(edit)
             a = edit.endA
             b = edit.endB
         }
@@ -99,6 +96,40 @@ private class HunkBuilder(
         }
         check(b == endB) { "Курсоры версий разошлись" }
         return hunk(group, lines)
+    }
+
+    private fun changedLines(edit: Edit): List<HunkLine> {
+        val count = maxOf(edit.lengthA, edit.lengthB)
+        val diffs = (0 until count).map { offset ->
+            val oldIndex = edit.beginA + offset
+            val newIndex = edit.beginB + offset
+            wordDiff.diff(
+                if (oldIndex < edit.endA) old.getString(oldIndex) else "",
+                if (newIndex < edit.endB) new.getString(newIndex) else "",
+            )
+        }
+        return buildList {
+            for (index in edit.beginA until edit.endA) {
+                add(
+                    HunkLine(
+                        kind = LineKind.REMOVED,
+                        oldNumber = index + 1,
+                        text = old.getString(index),
+                        changedRanges = diffs[index - edit.beginA].oldRanges,
+                    ),
+                )
+            }
+            for (index in edit.beginB until edit.endB) {
+                add(
+                    HunkLine(
+                        kind = LineKind.ADDED,
+                        newNumber = index + 1,
+                        text = new.getString(index),
+                        changedRanges = diffs[index - edit.beginB].newRanges,
+                    ),
+                )
+            }
+        }
     }
 
     private fun hunk(group: List<Edit>, lines: List<HunkLine>): Hunk {

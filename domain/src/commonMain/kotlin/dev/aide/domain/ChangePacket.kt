@@ -80,6 +80,15 @@ data class Hunk(
     val lines: List<HunkLine>,
 )
 
+/** Полуинтервал изменённого текста в индексах строки: [start, endExclusive). */
+@Serializable
+data class TextRange(
+    /** Индекс первого изменённого символа (включительно). */
+    val start: Int,
+    /** Индекс за последним изменённым символом (не включительно). */
+    val endExclusive: Int,
+)
+
 /** Одна строка внутри блока. */
 @Serializable
 data class HunkLine(
@@ -91,6 +100,8 @@ data class HunkLine(
     val newNumber: Int? = null,
     /** Текст строки без diff-префикса. */
     val text: String,
+    /** Изменённые фрагменты строки; пусто для контекста и старых записей без word-diff. */
+    val changedRanges: List<TextRange> = emptyList(),
 )
 
 /** Итог прогона тестов и линтера по пакету. */

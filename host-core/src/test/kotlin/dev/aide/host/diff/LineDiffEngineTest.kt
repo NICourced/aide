@@ -8,6 +8,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+private fun fragments(text: String, ranges: List<dev.aide.domain.TextRange>): List<String> =
+    ranges.map { text.substring(it.start, it.endExclusive) }
+
 class LineDiffEngineTest {
 
     @Test
@@ -48,6 +51,11 @@ class LineDiffEngineTest {
         )
         assertEquals(2, change.addedLines)
         assertEquals(2, change.removedLines)
+        assertTrue(
+            change.hunks.single().lines
+                .filter { it.kind == LineKind.CONTEXT }
+                .all { it.changedRanges.isEmpty() },
+        )
     }
 
     @Test
@@ -99,6 +107,45 @@ class LineDiffEngineTest {
         assertEquals(first, engine.diff(input))
         engine.diff(TextDiffInput("B.kt", "B.kt", "x\n", "y\n"))
         assertEquals(first, engine.diff(input))
+    }
+
+    @Test
+    fun `word-diff диапазоны передаются в строки hunk-а`() {
+        val change = LineDiffEngine().diff(
+            TextDiffInput(
+                "A.kt",
+                "A.kt",
+                "val total = first + second\n",
+                "val sum = first - second\n",
+            ),
+        )
+        assertEquals(1, change.hunks.size)
+        val hunk = change.hunks.single()
+        val removed = hunk.lines.single { it.kind == LineKind.REMOVED }
+        val added = hunk.lines.single { it.kind == LineKind.ADDED }
+        assertEquals(listOf("total", "+"), fragments(removed.text, removed.changedRanges))
+        assertEquals(listOf("sum", "-"), fragments(added.text, added.changedRanges))
+    }
+
+    @Test
+    fun `один edit с разным числом строк корректно сопоставляет по смещению`() {
+        val change = LineDiffEngine().diff(
+            TextDiffInput(
+                "A.kt",
+                "A.kt",
+                "alpha beta\nsecond removed\nomega\n",
+                "alpha gamma\nomega\n",
+            ),
+        )
+        assertEquals(1, change.hunks.size)
+        val hunk = change.hunks.single()
+        val removed = hunk.lines.filter { it.kind == LineKind.REMOVED }
+        val added = hunk.lines.filter { it.kind == LineKind.ADDED }
+        assertEquals(2, removed.size)
+        assertEquals(1, added.size)
+        assertEquals(listOf("beta"), fragments(removed[0].text, removed[0].changedRanges))
+        assertEquals(listOf("gamma"), fragments(added[0].text, added[0].changedRanges))
+        assertEquals(listOf("second removed"), fragments(removed[1].text, removed[1].changedRanges))
     }
 }
 
