@@ -1917,6 +1917,149 @@ fun `одинаковые строки не имеют изменённых ди
 
 **Границы и долг.** Это данные для будущей inline-подсветки, а не сам Compose-рендер; UI появится во вьюере волны C. Нет AST, semantic diff и сопоставления строк по содержимому за пределами порядка внутри одного JGit Edit. Строки с неоднозначными повторами токенов следуют детерминированному выбору HistogramDiff, без дополнительных эвристик.
 
+### Задача 26: `T-1.23` Diff-движок: свёртка контекста — 1д
+
+**Готово когда:** неизменённый контекст между hunk'ами отдаётся клиенту как «... N строк ...» с точным числом; раскрытие контекста запрашивает нужный диапазон у хоста и не грузит файл целиком.
+
+**Файлы и границы.**
+- `domain/.../ChangePacket.kt`: аддитивные `ContextGap` и `FileChange.contextGaps = emptyList()`.
+- `host-core/.../diff/LineDiffEngine.kt` и `LineDiffEngineTest.kt`: gaps до, между и после hunk'ами, со стартами в old/new.
+- `protocol/.../Messages.kt`, `Payloads.kt`, `ProtocolCodec.kt`, `ProtocolError.kt`, `ProtocolCodecTest.kt`: аддитивные запрос/ответ диапазона и типизированный отказ. Версия остаётся 1.1.
+- `host-core/.../workspace/WorkspaceFileSystem.kt` и `WorkspaceFileSystemTest.kt`: потоковое чтение только до конца запрошенного диапазона, лимит 200 строк, прежняя изоляция путей.
+- `host-core/.../server/StageZeroHandler.kt`: обработка запроса в существующем обработчике файлов.
+- `client-state/.../DiffContextClient.kt` (новый), `HostClient.kt`, `FakeHostConnection.kt`, `HostClientTest.kt`: клиентский вызов с новым RequestId.
+- `host-core/.../EmbeddedHostTest.kt`: сквозной тест клиент → WebSocket → хост → файл.
+- Compose-строка «... N строк ...» и раскрытие по тапу относятся к вьюеру волны C; здесь появляются точные структурированные данные и работающий запрос, а не UI.
+
+**Модель gaps.** Добавить:
+
+```kotlin
+/** Неизменённые строки, скрытые между видимыми участками diff. */
+@Serializable
+data class ContextGap(
+    /** Первая скрытая строка старой версии, 1-based. */
+    val oldStartLine: Int,
+    /** Первая скрытая строка новой версии, 1-based. */
+    val newStartLine: Int,
+    /** Точное число скрытых строк; больше нуля. */
+    val lineCount: Int,
+)
+```
+
+В `FileChange` добавить `val contextGaps: List<ContextGap> = emptyList()` после `hunks`. Текст «... N строк ...» в протокол не кладём (NFR-13): UI строит его из `lineCount`.
+
+В `LineDiffEngine` `HunkBuilder.build` возвращает internal `HunkBatch(hunks, contextGaps)`. Для edits группы уже содержат три строки контекста. Gaps — промежутки между этими видимыми интервалами, а не между самими изменениями:
+
+```kotlin
+private data class ContextCursor(var old: Int = 0, var new: Int = 0)
+
+private fun contextGaps(groups: List<List<Edit>>): List<ContextGap> {
+    val cursor = ContextCursor()
+    val gaps = mutableListOf<ContextGap>()
+    groups.forEach { group ->
+        val first = group.first()
+        val oldStart = (first.beginA - CONTEXT_LINES).coerceAtLeast(0)
+        val newStart = (first.beginB - CONTEXT_LINES).coerceAtLeast(0)
+        if (oldStart > cursor.old) {
+            gaps += ContextGap(cursor.old + 1, cursor.new + 1, oldStart - cursor.old)
+        }
+        val last = group.last()
+        cursor.old = (last.endA + CONTEXT_LINES).coerceAtMost(old.size())
+        cursor.new = (last.endB + CONTEXT_LINES).coerceAtMost(new.size())
+    }
+    if (cursor.old < old.size()) {
+        gaps += ContextGap(cursor.old + 1, cursor.new + 1, old.size() - cursor.old)
+    }
+    return gaps
+}
+```
+
+При пустом `edits` для add/delete сохраняется один пустой hunk и пустой список gaps; чистый rename также не получает gaps. Для непустого `edits` результат — `HunkBatch(groups.map(::buildGroup), contextGaps(groups))`; `FileChange.contextGaps` заполняется из batch. Соседние группы уже разведены более чем на шесть строк, поэтому между ними gap гарантированно непустой.
+
+Тесты:
+1. Существующий тест двух далёких правок в 30 строках дополнительно ожидает `ContextGap(1, 1, 1)`, `ContextGap(9, 9, 13)`, `ContextGap(29, 29, 2)`.
+2. Новый тест сдвига нумерации: `text(10)` против `"inserted-1\ninserted-2\n${text(10)}"` даёт один suffix-gap `ContextGap(oldStartLine = 4, newStartLine = 6, lineCount = 7)`.
+3. Существующий чистый rename проверяет пустые `contextGaps`. Поломки: не учитывать три видимые контекстные строки → тест 1 RED; использовать oldStart для обеих версий → тест 2 RED; после возврата — GREEN.
+
+**Протокол.** В `Payloads.kt`:
+
+```kotlin
+@Serializable
+data class ContextLinePayload(
+    /** Номер строки в файле, 1-based. */
+    val number: Int,
+    /** Текст без разделителя строки. */
+    val text: String,
+)
+
+@Serializable
+data class DiffContextPayload(
+    val workspaceId: WorkspaceId,
+    val path: String,
+    val startLine: Int,
+    val lines: List<ContextLinePayload>,
+)
+```
+
+В `ClientMessage` добавить `DiffContextRequest(requestId, workspaceId, path, startLine: Int, lineCount: Int)` с `@SerialName("diffContextRequest")`; в `HostMessage` — `DiffContextResponse(requestId, context: DiffContextPayload)` с `@SerialName("diffContextResponse")`. Запрос относится к текущему файлу воркспейса; привязка к git-версиям пакета появится в адаптере T-1.24, модель gaps уже хранит обе нумерации.
+
+В `ProtocolError` добавить:
+
+```kotlin
+@Serializable
+@SerialName("invalidDiffRange")
+data class InvalidDiffRange(
+    val startLine: Int,
+    val lineCount: Int,
+) : ProtocolError
+```
+
+В кодеке добавить строковые константы `diffContextRequest`/`diffContextResponse`, включить оба сообщения в stage-zero encode/decode и добавить их в списки всех вариантов `ProtocolCodecTest`. В `hostMessages()` добавить response с двумя строками и `Failure(InvalidDiffRange(0, 201))`. Поломка любого из четырёх направлений таблицы даёт RED в round-trip.
+
+**Чтение диапазона.** `WorkspaceFileSystem.readContext(relativePath, startLine, lineCount): DiffContextPayload` сначала проверяет `startLine >= 1` и `lineCount in 1..200`, иначе бросает `WorkspaceAccessException(InvalidDiffRange(...))`. Затем использует существующие `resolveInside`, `ensureRegularFile`, проверку readable и sniff первых 8 КиБ на NUL. Чтение — `Files.newBufferedReader(resolved, Charsets.UTF_8)` с последовательными `readLine()`:
+
+```kotlin
+val lines = mutableListOf<ContextLinePayload>()
+var number = 1
+while (number < startLine) {
+    if (reader.readLine() == null) break
+    number += 1
+}
+if (number == startLine) {
+    while (lines.size < lineCount) {
+        val text = reader.readLine() ?: break
+        lines += ContextLinePayload(number, text)
+        number += 1
+    }
+}
+```
+
+Весь метод оборачивает `IOException` в существующий `denied(relativePath, ...)`, не вызывает `readFile` и не читает `MAX_DISPLAY_BYTES` целиком. EOF возвращает меньше строк или пустой список, а не искусственные записи. Константа `MAX_CONTEXT_LINES = 200` в companion. `StageZeroHandler` веткой `is ClientMessage.DiffContextRequest` вызывает `open.fileSystem.readContext(...)` и возвращает `HostMessage.DiffContextResponse`.
+
+Тесты `WorkspaceFileSystemTest`:
+1. Диапазон 2..3 возвращает номера 2/3 и точный текст; запрос с конца файла возвращает только реальные строки.
+2. `startLine = 0`, `lineCount = 0`, `lineCount = 201` дают `InvalidDiffRange`.
+3. Файл из 60 000 строк размером больше `MAX_DISPLAY_BYTES`: запрос строк 59 999–60 000 возвращает их точно; это запрещает реализацию через старый обрезанный `readFile`. Поломки: `readFile(...).text.lines()` → большой тест RED; off-by-one в номерах → первый тест RED; снятие лимита → тест 201 RED.
+
+**Клиент и сквозной путь.** Новый `DiffContextClient(connection, nextRequestId)` имеет:
+
+```kotlin
+suspend fun context(
+    workspaceId: WorkspaceId,
+    path: String,
+    startLine: Int,
+    lineCount: Int,
+): Result<DiffContextPayload>
+```
+
+Он отправляет `DiffContextRequest(nextRequestId(), ...)`, принимает только `DiffContextResponse`, `Failure` превращает в `HostCallException`, неожиданный ответ — в `ProtocolError.Internal`. В `HostClient` добавить `val diffContext = DiffContextClient(connection, requestIds::next)` рядом со `snapshots`.
+
+`FakeHostConnection` отвечает двумя строками по `message.startLine`; новый `HostClientTest` вызывает `client.diffContext.context(...)`, проверяет payload, startLine/count и уникальные RequestId двух вызовов. В `EmbeddedHostTest` добавить тест: записать `range.txt` с пятью строками, открыть воркспейс через настоящий `HostClient`, вызвать `diffContext.context(workspaceId, "range.txt", 2, 2)` и получить строки `line-2`, `line-3` с номерами 2/3. Поломки: потерять параметр диапазона в клиенте → клиентский тест RED; не подключить handler → сквозной тест RED.
+
+**Проверка.** `JAVA_HOME=/usr/lib/jvm/java-17-openjdk`; сначала `:host-core:test :protocol:jvmTest :client-state:jvmTest --rerun-tasks --max-workers=1`, затем полный набор JVM-тестов, `build-logic`, `detekt`, `verifyModuleBoundaries`, `:domain:dokkaGenerate`, `build`, сверка `@Test`/`tests=`. После двух независимых ревью — коммит, push рабочей ветки, зелёные `build`/`desktop-windows`, обновление `master`.
+
+**Границы и долг.** Нет Compose-вьюера, тапа и объединения загруженных строк с `FileChange`: это волна C. Запрос читает текущий файл воркспейса, а не old/new blob пакета; источник версий и хранение пакетов появятся в T-1.24. Потоковый reader не материализует файл, но одна очень длинная строка по-прежнему требует памяти на эту строку. Лимит 200 строк защищает размер одного ответа, не число последовательных запросов.
+
 ## Дальше
 
 Волны B–F расписываются перед началом каждой; полный код очередной задачи добавляется непосредственно перед её исполнением. Состав волн и зависимости зафиксированы выше.
