@@ -2062,6 +2062,94 @@ suspend fun context(
 
 **Границы и долг.** Нет Compose-вьюера, тапа и объединения загруженных строк с `FileChange`: это волна C. Запрос читает текущий файл воркспейса, а не old/new blob пакета; источник версий и хранение пакетов появятся в T-1.24. Потоковый reader не материализует файл, но одна очень длинная строка по-прежнему требует памяти на эту строку. Лимит 200 строк защищает размер одного ответа, не число последовательных запросов.
 
+### Задача 27: `T-1.24` Сборка `ChangePacket` — 2д
+
+**Готово когда:** по завершении прогона хост собирает пакет: список файлов, число добавленных и удалённых строк, уровень риска, статус тестов, источник, статус, ссылка на ветку; пакет неизменяем после попадания в инбокс, доработка создаёт новую ревизию (инвариант 2).
+
+**Файлы и границы.**
+- `domain/.../ChangePacket.kt`: аддитивные `baseCommit: String? = null` и `headCommit: String? = null`. Они закрепляют обе версии ревизии: последующая доработка двигает ветку, но не меняет смысл старого пакета.
+- `host-agent/.../ports/ChangePackets.kt` (новый), `RunPorts.kt`, `RunStateWriter.kt`, `InterruptedRuns.kt`: порт публикации, вызов перед `TaskStatus.REVIEW`, отдельный код `packet_assembly_failed`. `host-agent` по-прежнему не знает про git, SQLite и протокол.
+- `host-core/.../git/GitRepository.kt`, `JGitRepository.kt`, `PacketDiffOperation.kt` (новый): чтение merge-base, diff деревьев и old/new blob без переключения рабочего дерева.
+- `host-core/.../packet/ChangePacketAssembler.kt` и `PacketContextReader.kt` (новые): сборка полного пакета задачи и чтение контекста закреплённой ревизии.
+- `host-core/src/main/sqldelight/.../ChangePacket.sq`, `4.sqm`, `HostStore.kt`, `ChangePacketStore.kt`, `RowMapper.kt`: следующая миграция (4 → 5), только `INSERT`, составной ключ `(id, revision)`, никакого update/delete пакета.
+- `protocol/.../Messages.kt`, `Payloads.kt`, `ProtocolCodecTest.kt`: `HostEvent.ChangePacketRecorded`, аддитивный список пакетов в `AgentSnapshot`, аддитивный источник old/new в `DiffContextRequest`. Версия остаётся 1.1.
+- `client-state/.../HostClient.kt`, `DiffContextClient.kt`, тесты: список пакетов в сессии, применение события и снимка, передача ревизии и источника контекста.
+- `host-core/.../agent/AgentRunHandler.kt`, `HostApp.kt`, `server/StageZeroHandler.kt`: production-связывание настоящего сборщика, снимка пакетов и чтения old/new.
+- Никакого Compose-инбокса и нового вызова модели: экран — T-1.28/T-1.29, объяснения hunk'ов — T-1.25. Краткий `summary` здесь строится из summaries подтверждённого плана текущего прогона.
+
+**Порт и терминальный переход.** В `host-agent` добавить:
+
+```kotlin
+interface ChangePackets {
+    /** Сохраняет новую ревизию и возвращает её; реализация живёт в host-core. */
+    suspend fun publish(task: Task, run: AgentRun): ChangePacket
+}
+```
+
+`RunPorts` получает обязательный `val packets: ChangePackets`; `AgentRunEngine` передаёт его в `RunStateWriter`. Тестовые `RunPorts` получают настоящий recording-fake, а не отсутствующий по умолчанию no-op. `RunStateWriter.finish` загружает задачу и вызывает `packets.publish(task, run)` до записи `REVIEW` и `FINISHED`. Отказ сборки логируется, отмена пробрасывается, остальная ошибка даёт `RunInterruptReason.PACKET_ASSEMBLY_FAILED = "packet_assembly_failed"`, прогон `FAILED` и задачу `FAILED`: состояние «ждёт ревью» без пакета больше невозможно. Сбой рассылки уже записанного терминального состояния сохраняет прежнее поведение и не превращает его в отказ.
+
+Тесты:
+1. `AgentRunEngineTest`: успешный прогон вызывает fake-порт с той же задачей/прогоном; запись пакета предшествует `REVIEW`.
+2. `RunStateWriterTest` или отдельный engine-тест: fake бросает ошибку → `FAILED`, `packet_assembly_failed`, нет `REVIEW`; отмена не переводится в отказ.
+3. Поломки: не вызвать порт → первый тест RED; проглотить ошибку и записать `REVIEW` → второй RED; вернуть реализацию → GREEN.
+
+**Git diff ревизии.** В `GitRepository` добавить свойство `val changeSets: ChangeSetRepository`, чтобы не превысить лимит функций основного интерфейса. Новые типы:
+
+```kotlin
+data class GitChangeSet(
+    val baseCommit: String,
+    val headCommit: String,
+    val files: List<TextDiffInput>,
+)
+
+interface ChangeSetRepository {
+    fun read(baseBranch: String, taskBranch: String): GitChangeSet
+    fun readContext(commit: String, path: String, startLine: Int, lineCount: Int): List<ContextLinePayload>
+}
+```
+
+`JGitRepository.changeSets = PacketDiffOperation(repository)`. `read` разрешает обе ветки в коммиты, находит merge-base через `RevWalk` + `RevFilter.MERGE_BASE` (API проверен по JGit 6.10 `javap`), сканирует деревья merge-base → HEAD задачи через `DiffFormatter` с `setDetectRenames(true)`. Поэтому в пакет попадает вся работа задачи, а не только последний шаг; коммиты, добавленные в базовую ветку после ответвления, не попадают. `baseCommit` — merge-base, `headCommit` — полный хеш HEAD задачи. Рабочее дерево и индекс не читаются и не меняются.
+
+Для ADD oldText = null, DELETE newText = null и путь результата = старый; RENAME передаёт разные old/new path, чистый rename остаётся валидным для `LineDiffEngine`. Blob читается через `TreeWalk.forPath` и `ObjectLoader`. Для полного diff действует явный предел 512 КиБ на версию, строгий UTF-8 и запрет NUL: неподдерживаемый файл отклоняет сборку с технической причиной вместо молчаливой порчи текста. `readContext` не материализует blob: использует `ObjectLoader.openStream`, проверяет `startLine >= 1`, `lineCount in 1..200`, последовательно читает строки до конца диапазона; отсутствующий в этой версии путь даёт пустой список (ADD в OLD и DELETE в NEW — нормальные случаи).
+
+Тесты `PacketDiffOperationTest`:
+1. Изменение ветки задачи читается от merge-base; новый unrelated-файл в `master` после ответвления отсутствует в результате; old/new текст точный.
+2. ADD/DELETE/RENAME дают правильные nullable-версии и пути; повторный `read` детерминирован.
+3. `readContext` возвращает точные номера и текст, EOF даёт короткий список, 0/201 отклоняются `InvalidDiffRange`.
+4. Поломки: взять текущий base HEAD вместо merge-base → тест 1 RED; потерять oldPath при rename → тест 2 RED; читать с первой строки вместо `startLine` → тест 3 RED.
+
+**Сборка пакета.** `ChangePacketAssembler(workspaces, store, sessions, clock, diffEngine)` реализует `ChangePackets`. Для завершённого прогона:
+1. Берёт текущий открытый git и `task.baseBranch` (его отсутствие — отказ, а не выдуманная база).
+2. Читает `GitChangeSet`, превращает каждый `TextDiffInput` через существующий `LineDiffEngine`, получая hunk'и, word ranges, gaps и точные `+/-`.
+3. Добавляет `store.proposals.byTask(task.id)`, а не только текущий прогон: ревизия описывает всю задачу, включая прежние неприменённые предложения.
+4. Объединяет applied/proposal записи по `path`, чтобы конструктор домена не отклонил дубликаты. Одиночная запись сохраняется без изменений. При нескольких записях одного пути сохраняются все hunk'и в исходном порядке, ID получают стабильный суффикс `#N`, `+/-` суммируются, `previousPath` берётся из первой записи, вид — из последней; gaps очищаются, потому что они относились к разным базам и не должны давать ложный контекст. Ни одно предложение не отбрасывается.
+5. Формирует `TestStatus` из `run.testReport`: `state ?: NOT_RUN`, имена `failures`, размер `lintFindings` или 0. Риск считает существующий `DeterministicChangeRisk.assess(run.id, "change_packet", files)` и повышает до максимального `ChangeProposal.risk`; LLM не вызывается.
+6. Создаёт `ChangePacket(id = PacketId(task.id.value), revision = store.packets.latestRevision(task.id) + 1, title = task.title, summary = run.plan.joinToString("; ") { it.summary }, files, risk, tests, source = AGENT, status = AWAITING_REVIEW, branch = task.branch, baseCommit, headCommit, snapshotRef = run.snapshots.firstOrNull(), createdAt = clock())`.
+7. Сначала `store.packets.save(packet)`, затем `sessions.broadcast(HostEvent.ChangePacketRecorded(packet))`. Повторный прогон создаёт revision + 1 с тем же PacketId; прежняя CBOR-запись не сериализуется заново и не изменяется.
+
+Тесты `ChangePacketAssemblerTest` на настоящем временном git и SQLite:
+1. Пакет содержит title/summary/branch/source/status, точные `+/-`, закреплённые commit'ы, красные тесты с именами падений и `RISKY`; событие содержит тот же объект.
+2. Два последовательных прогона дают одну задачу/PacketId и revisions 1, 2; первая запись побайтово остаётся прежней, `byTask` возвращает обе.
+3. Предложения всех прогонов попадают в пакет; applied + proposal одного пути дают один `FileChange`, все hunk'и и суммарные `+/-`, максимальный риск предложения не теряется.
+4. Пустой diff без предложений создаёт честный пустой пакет с `NORMAL`/`NOT_RUN`, а не пропускает задачу.
+5. Поломки: записать только текущий шаг/текущие proposals → тесты 2/3 RED; обновить revision 1 → тест 2 RED; не учесть proposal risk → тест 3 RED.
+
+**Хранение.** `4.sqm` создаёт `change_packet` с колонками `id`, `revision`, `task_id`, `status`, `risk`, `branch`, `created_at`, `payload`; `PRIMARY KEY(id, revision)`, индексы `(task_id, revision)` и `(status, created_at)`. `ChangePacket.sq` повторяет текущую схему и содержит только `insert`, `byId`, `byTask`, `latestRevision`, `all`, `count`. `ChangePacketStore.save` кодирует полный объект через `StoreCodec`; `latestRevision` использует `COALESCE(MAX(revision), 0)`. Повторный `(id, revision)` отклоняется SQLite, старое содержимое остаётся.
+
+`MigrationTest`: непустая база версии 4 после миграции до 5 сохраняет `change_proposal`, таблица пакетов появляется, составной ключ работает. `HostStoreTest`: round-trip пакета, две ревизии читаются раздельно, повторный insert не заменяет первую, запись переживает закрытие/открытие файла. Поломка «save через REPLACE» обязана дать RED на сохранении первой ревизии.
+
+**Протокол, клиент и old/new контекст.** `HostEvent.ChangePacketRecorded(val packet: ChangePacket)` добавляется в sealed event и round-trip список. `HostMessage.AgentSnapshot` получает `val packets: List<ChangePacket> = emptyList()`; `AgentRunHandler` заполняет его из store. `HostSession` получает такой же список; `agentStatus()` заменяет его снимком, событие атомарно добавляет/заменяет только пару `(id, revision)` через `MutableStateFlow.update`. Старые ответы без списка декодируются как пустой.
+
+`DiffContextSource { WORKSPACE, PACKET_OLD, PACKET_NEW }`; `DiffContextRequest` и `DiffContextClient.context` получают аддитивные `packetId: PacketId? = null`, `packetRevision: Int? = null`, `source = WORKSPACE`. Старый вызов не меняется. `PacketContextReader` для packet-источника требует оба идентификатора и закреплённые commit'ы, загружает ровно ревизию, находит файл по новому или прежнему пути, выбирает `previousPath ?: path` для OLD и `path` для NEW. Неизвестная ревизия/файл — `NotFound`, старая запись без commit'ов — `NotImplemented`; диапазон и лимит прежние.
+
+`StageZeroHandler` направляет WORKSPACE в существующий `WorkspaceFileSystem.readContext`, а PACKET_OLD/NEW — в `PacketContextReader`. `ProtocolCodecTest` покрывает request с packet-полями, packet event и AgentSnapshot с пакетом; `HostClientTest` — событие, снимок и точные packet-поля запроса. Поломки: потерять revision в клиенте → клиентский RED; читать текущий HEAD вместо `headCommit` → сквозной RED после доработки; убрать packet event из round-trip → protocol RED.
+
+**Сквозное доказательство.** Новый сценарий в `AgentRunProtocolTest` или отдельный `ChangePacketEndToEndTest`: настоящий HostClient → WebSocket → host-agent → настоящий `write_file`/коммит → сборщик → SQLite. После `FINISHED` клиент получает packet event с полями карточки и diff файла; `agentStatus()` на новом клиенте возвращает ту же ревизию. Запросы PACKET_OLD/PACKET_NEW возвращают исходную и изменённую строки соответственно. Затем вторая доработка создаёт revision 2, а контекст revision 1 по-прежнему читается из её commit'ов. Живой UI не нужен: критерий доказан транспортом, git и хранилищем.
+
+**Проверка.** `JAVA_HOME=/usr/lib/jvm/java-17-openjdk`; сначала `:host-agent:test :host-core:test :protocol:jvmTest :client-state:jvmTest --rerun-tasks --max-workers=1`, затем полный набор JVM-тестов, `build-logic`, `detekt`, `verifyModuleBoundaries`, `:domain:dokkaGenerate`, `build`, сверка `@Test`/`tests=`. После двух независимых ревью — коммит, push рабочей ветки, зелёные `build`/`desktop-windows`, обновление `master`.
+
+**Границы и долг.** Пакетная запись и терминальная запись прогона пока не образуют одну SQLite-транзакцию: сбой процесса между ними восстанавливается существующим механизмом прерванных прогонов, но может оставить уже созданную ревизию; отдельная компенсация здесь не добавляется. Одно изменение одного пути из applied/proposal показано как последовательные hunk'и с очищенными gaps, а не semantic merge — он запланирован позже. Binary/не-UTF-8 и версии больше 512 КиБ отклоняют сборку до появления представления таких файлов. UI, принятие пакета, объяснения hunk'ов и группировка не входят. Запрос контекста по-прежнему принимает workspaceId открытого клиентом воркспейса; привязка задачи к воркспейсу остаётся ограничением «последний открытый воркспейс» из T-1.7.
+
 ## Дальше
 
 Волны B–F расписываются перед началом каждой; полный код очередной задачи добавляется непосредственно перед её исполнением. Состав волн и зависимости зафиксированы выше.
