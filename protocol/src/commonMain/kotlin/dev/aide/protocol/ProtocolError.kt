@@ -95,6 +95,22 @@ sealed interface ProtocolError {
         val rejection: SnapshotRollbackRejection,
     ) : ProtocolError
 
+    /**
+     * Запрошенный диапазон строк некорректен (T-1.23).
+     *
+     * Отдельный вариант, а не [Internal]: клиент сам строит запрос по известному gap,
+     * и ошибка в диапазоне — это либо баг клиента, либо попытка выйти за лимит; в обоих
+     * случаях нужен типизированный ответ, а не общее сообщение.
+     */
+    @Serializable
+    @SerialName("invalidDiffRange")
+    data class InvalidDiffRange(
+        /** Первая строка диапазона, 1-based. */
+        val startLine: Int,
+        /** Число строк в запросе. */
+        val lineCount: Int,
+    ) : ProtocolError
+
     /** Внутренняя ошибка хоста. */
     @Serializable
     @SerialName("internal")

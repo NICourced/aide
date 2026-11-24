@@ -1,5 +1,6 @@
 package dev.aide.host.workspace
 
+import dev.aide.protocol.ContextLinePayload
 import dev.aide.protocol.ProtocolError
 import java.nio.file.Files
 import java.nio.file.Path
@@ -215,5 +216,61 @@ class WorkspaceFileSystemTest {
         assertEquals("markdown", LanguageDetector.detect("docs/readme.md"))
         assertEquals("yaml", LanguageDetector.detect("ci.yml"))
         assertEquals(null, LanguageDetector.detect("Dockerfile"))
+    }
+
+    @Test
+    fun `диапазон строк возвращает номера и точный текст`() {
+        fixture.root.resolve("range.txt").writeText("line-1\nline-2\nline-3\nline-4\nline-5\n")
+        val payload = fs.readContext("range.txt", startLine = 2, lineCount = 3)
+        assertEquals(
+            listOf(
+                ContextLinePayload(number = 2, text = "line-2"),
+                ContextLinePayload(number = 3, text = "line-3"),
+                ContextLinePayload(number = 4, text = "line-4"),
+            ),
+            payload.lines,
+        )
+        assertEquals(2, payload.startLine)
+    }
+
+    @Test
+    fun `запрос с конца файла возвращает только реальные строки`() {
+        fixture.root.resolve("range.txt").writeText("line-1\nline-2\nline-3\n")
+        val payload = fs.readContext("range.txt", startLine = 2, lineCount = 10)
+        assertEquals(
+            listOf(
+                ContextLinePayload(number = 2, text = "line-2"),
+                ContextLinePayload(number = 3, text = "line-3"),
+            ),
+            payload.lines,
+        )
+    }
+
+    @Test
+    fun `некорректный диапазон отклоняется типизированной ошибкой`() {
+        listOf(
+            Triple(0, 1, "startLine меньше единицы"),
+            Triple(1, 0, "lineCount равен нулю"),
+            Triple(1, 201, "lineCount больше лимита"),
+        ).forEach { (startLine, lineCount, description) ->
+            val error = assertFailsWith<WorkspaceAccessException>(description) {
+                fs.readContext("range.txt", startLine = startLine, lineCount = lineCount)
+            }
+            assertIs<ProtocolError.InvalidDiffRange>(error.error)
+        }
+    }
+
+    @Test
+    fun `файл больше лимита показа читается потоково до нужного диапазона`() {
+        val lines = 60_000
+        fixture.root.resolve("huge.txt").writeText((1..lines).joinToString("\n", postfix = "\n") { "line-$it" })
+        val payload = fs.readContext("huge.txt", startLine = 59_999, lineCount = 2)
+        assertEquals(
+            listOf(
+                ContextLinePayload(number = 59_999, text = "line-59999"),
+                ContextLinePayload(number = 60_000, text = "line-60000"),
+            ),
+            payload.lines,
+        )
     }
 }

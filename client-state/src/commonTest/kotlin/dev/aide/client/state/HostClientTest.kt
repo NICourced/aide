@@ -19,6 +19,7 @@ import dev.aide.protocol.HostEvent
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.ToolCallCursor
+import dev.aide.protocol.WorkspaceId
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -392,6 +393,36 @@ class HostClientTest {
             "повтор с тем же RequestId хост принял бы за повтор и вернул прежний ответ",
         )
         assertEquals(null, client.session.value.pendingApproval, "диалог обязан закрыться сразу")
+    }
+
+    @Test
+    fun `запрос контекста diff уходит с параметрами и новым RequestId`() {
+        runBlocking {
+            val workspaceId = WorkspaceId("ws-context")
+
+            client.diffContext.context(workspaceId, "src/A.kt", startLine = 5, lineCount = 10)
+            client.diffContext.context(workspaceId, "src/B.kt", startLine = 1, lineCount = 2)
+
+            val requests = connection.takeRequests().filterIsInstance<ClientMessage.DiffContextRequest>()
+            assertEquals(2, requests.size, "оба запроса контекста обязаны дойти до хоста")
+            assertEquals(
+                2,
+                requests.map { it.requestId }.distinct().size,
+                "повтор с тем же RequestId хост принял бы за повтор и вернул прежний ответ",
+            )
+
+            val first = requests[0]
+            assertEquals(workspaceId, first.workspaceId)
+            assertEquals("src/A.kt", first.path)
+            assertEquals(5, first.startLine)
+            assertEquals(10, first.lineCount)
+
+            val payload = client.diffContext.context(workspaceId, "src/A.kt", startLine = 3, lineCount = 2).getOrThrow()
+            assertEquals(3, payload.startLine)
+            assertEquals(2, payload.lines.size)
+            assertEquals("line-3", payload.lines[0].text)
+            assertEquals(4, payload.lines[1].number)
+        }
     }
 
     @Test

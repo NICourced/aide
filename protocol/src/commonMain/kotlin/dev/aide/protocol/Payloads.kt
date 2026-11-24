@@ -41,6 +41,28 @@ data class FileTreeEntry(
     val sizeBytes: Long? = null,
 )
 
+/** Одна строка контекстного диапазона файла. */
+@Serializable
+data class ContextLinePayload(
+    /** Номер строки в файле, 1-based. */
+    val number: Int,
+    /** Текст без разделителя строки. */
+    val text: String,
+)
+
+/** Запрошенный диапазон строк файла. */
+@Serializable
+data class DiffContextPayload(
+    /** Воркспейс, из которого прочитан файл. */
+    val workspaceId: WorkspaceId,
+    /** Путь относительно корня воркспейса. */
+    val path: String,
+    /** Первая строка диапазона, 1-based. */
+    val startLine: Int,
+    /** Строки диапазона в порядке следования. */
+    val lines: List<ContextLinePayload>,
+)
+
 /** Содержимое файла для просмотра. */
 @Serializable
 data class FileContentPayload(

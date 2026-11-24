@@ -244,4 +244,7 @@ internal fun ProtocolError.toScreenState(): ScreenState<Nothing> = when (this) {
 
     is ProtocolError.SnapshotRollbackRejected ->
         ScreenState.Failed(ScreenState.ErrorKind.ROLLBACK_REJECTED, listOf(rejection.name))
+
+    is ProtocolError.InvalidDiffRange ->
+        ScreenState.Failed(ScreenState.ErrorKind.OTHER, listOf("$startLine:$lineCount"))
 }

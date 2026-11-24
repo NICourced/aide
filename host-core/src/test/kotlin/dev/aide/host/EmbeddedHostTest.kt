@@ -6,11 +6,13 @@ import dev.aide.client.state.KtorHostConnection
 import dev.aide.host.git.GitCliFixture
 import dev.aide.host.workspace.TempRepoFixture
 import dev.aide.protocol.HostMode
+import dev.aide.protocol.WorkspaceId
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.WebSockets
 import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -121,6 +123,40 @@ class EmbeddedHostTest {
                 assertNotNull(client.openWorkspace(fixture.root.toString()))
                 assertEquals("master", client.hostState().getOrThrow().branch)
                 assertNotNull(client.session.value.workspaceId, "Клиент должен знать открытый воркспейс")
+            } finally {
+                host.close()
+            }
+        }
+    }
+
+    @Test
+    fun `запрос диапазона строк проходит через WebSocket до файла`() {
+        runBlocking {
+            fixture.root.resolve("range.txt").writeText("line-1\nline-2\nline-3\nline-4\nline-5\n")
+            val host = EmbeddedHost.open(databasePath = tempDatabase())
+            try {
+                val connection = newConnection(host.endpoint)
+                val client = HostClient(connection, scope)
+                client.start()
+                awaitConnected(connection)
+
+                val workspaceId = client.openWorkspace(fixture.root.toString())
+                assertNotNull(workspaceId)
+
+                val payload = client.diffContext.context(
+                    workspaceId,
+                    "range.txt",
+                    startLine = 2,
+                    lineCount = 2,
+                ).getOrThrow()
+                assertEquals(WorkspaceId(workspaceId.value), payload.workspaceId)
+                assertEquals("range.txt", payload.path)
+                assertEquals(2, payload.startLine)
+                assertEquals(2, payload.lines.size)
+                assertEquals(2, payload.lines[0].number)
+                assertEquals("line-2", payload.lines[0].text)
+                assertEquals(3, payload.lines[1].number)
+                assertEquals("line-3", payload.lines[1].text)
             } finally {
                 host.close()
             }

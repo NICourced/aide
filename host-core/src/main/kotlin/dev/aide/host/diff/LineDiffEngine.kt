@@ -1,5 +1,6 @@
 package dev.aide.host.diff
 
+import dev.aide.domain.ContextGap
 import dev.aide.domain.FileChange
 import dev.aide.domain.FileChangeKind
 import dev.aide.domain.Hunk
@@ -30,16 +31,23 @@ class LineDiffEngine {
         val edits = DiffAlgorithm.getAlgorithm(DiffAlgorithm.SupportedAlgorithm.HISTOGRAM)
             .diff(RawTextComparator.DEFAULT, old, new)
         val changeKind = input.changeKind()
+        val batch = HunkBuilder(input.newPath, old, new).build(edits, changeKind)
         return FileChange(
             path = input.newPath,
             previousPath = input.oldPath.takeIf { it != input.newPath },
             changeKind = changeKind,
-            hunks = HunkBuilder(input.newPath, old, new).build(edits, changeKind),
+            hunks = batch.hunks,
+            contextGaps = batch.contextGaps,
             addedLines = edits.sumOf { it.lengthB },
             removedLines = edits.sumOf { it.lengthA },
         )
     }
 }
+
+private data class HunkBatch(
+    val hunks: List<Hunk>,
+    val contextGaps: List<ContextGap>,
+)
 
 private class HunkBuilder(
     private val path: String,
@@ -48,16 +56,39 @@ private class HunkBuilder(
 ) {
     private val wordDiff = WordDiffEngine()
 
-    fun build(edits: EditList, changeKind: FileChangeKind): List<Hunk> {
+    fun build(edits: EditList, changeKind: FileChangeKind): HunkBatch {
         if (edits.isEmpty()) {
-            return when (changeKind) {
+            val hunks = when (changeKind) {
                 FileChangeKind.ADDED -> listOf(emptyHunk(HunkKind.ADD))
                 FileChangeKind.DELETED -> listOf(emptyHunk(HunkKind.REMOVE))
                 else -> emptyList()
             }
+            return HunkBatch(hunks, contextGaps = emptyList())
         }
-        return edits.grouped().map { group -> buildGroup(group) }
+        val groups = edits.grouped()
+        return HunkBatch(groups.map(::buildGroup), contextGaps(groups))
     }
+
+    private fun contextGaps(groups: List<List<Edit>>): List<ContextGap> {
+        val cursor = ContextCursor()
+        val gaps = mutableListOf<ContextGap>()
+        groups.forEach { group ->
+            val first = group.first()
+            val oldStart = (first.beginA - CONTEXT_LINES).coerceAtLeast(0)
+            if (oldStart > cursor.old) {
+                gaps += ContextGap(cursor.old + 1, cursor.new + 1, oldStart - cursor.old)
+            }
+            val last = group.last()
+            cursor.old = (last.endA + CONTEXT_LINES).coerceAtMost(old.size())
+            cursor.new = (last.endB + CONTEXT_LINES).coerceAtMost(new.size())
+        }
+        if (cursor.old < old.size()) {
+            gaps += ContextGap(cursor.old + 1, cursor.new + 1, old.size() - cursor.old)
+        }
+        return gaps
+    }
+
+    private data class ContextCursor(var old: Int = 0, var new: Int = 0)
 
     private fun EditList.grouped(): List<List<Edit>> {
         val groups = mutableListOf<MutableList<Edit>>()

@@ -56,6 +56,13 @@ class StageZeroHandler(
             HostMessage.Content(message.requestId, open.fileSystem.toPayload(file))
         }
 
+        is ClientMessage.DiffContextRequest -> withWorkspace(message.workspaceId, message.requestId) { open ->
+            HostMessage.DiffContextResponse(
+                message.requestId,
+                open.fileSystem.readContext(message.path, message.startLine, message.lineCount),
+            )
+        }
+
         is ClientMessage.HostState -> withWorkspace(message.workspaceId, message.requestId) { open ->
             HostMessage.State(
                 requestId = message.requestId,

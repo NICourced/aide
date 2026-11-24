@@ -46,6 +46,17 @@ val ChangePacket.addedLines: Int get() = files.sumOf { it.addedLines }
 /** Суммарно удалённые строки по всем файлам — то, что карточка показывает как `-M`. */
 val ChangePacket.removedLines: Int get() = files.sumOf { it.removedLines }
 
+/** Неизменённые строки, скрытые между видимыми участками diff. */
+@Serializable
+data class ContextGap(
+    /** Первая скрытая строка старой версии, 1-based. */
+    val oldStartLine: Int,
+    /** Первая скрытая строка новой версии, 1-based. */
+    val newStartLine: Int,
+    /** Точное число скрытых строк; больше нуля. */
+    val lineCount: Int,
+)
+
 /** Изменения одного файла внутри пакета (§ 4). */
 @Serializable
 data class FileChange(
@@ -55,6 +66,8 @@ data class FileChange(
     val changeKind: FileChangeKind,
     /** Блоки изменений файла. */
     val hunks: List<Hunk>,
+    /** Неизменённые промежутки между видимыми hunk'ами. */
+    val contextGaps: List<ContextGap> = emptyList(),
     /** Добавленные строки в этом файле. */
     val addedLines: Int,
     /** Удалённые строки в этом файле. */

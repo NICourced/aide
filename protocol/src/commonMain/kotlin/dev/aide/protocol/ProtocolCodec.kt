@@ -41,6 +41,7 @@ object ClientMessageType {
     const val OPEN_WORKSPACE = "openWorkspace"
     const val FILE_TREE = "fileTree"
     const val FILE_CONTENT = "fileContent"
+    const val DIFF_CONTEXT_REQUEST = "diffContextRequest"
     const val HOST_STATE = "hostState"
     const val POST_TASK = "postTask"
     const val AGENT_STATUS = "agentStatus"
@@ -67,6 +68,7 @@ object HostMessageType {
     const val WORKSPACE_OPENED = "workspaceOpened"
     const val TREE = "tree"
     const val CONTENT = "content"
+    const val DIFF_CONTEXT_RESPONSE = "diffContextResponse"
     const val STATE = "state"
     const val FAILURE = "failure"
     const val INCOMPATIBLE = "incompatible"
@@ -113,7 +115,8 @@ object ProtocolCodec {
     /** Кодирует сообщение клиента; полнота таблицы гарантируется исчерпывающим `when`. */
     fun encode(message: ClientMessage): ByteArray = when (message) {
         is ClientMessage.Hello, is ClientMessage.OpenWorkspace, is ClientMessage.FileTree,
-        is ClientMessage.FileContent, is ClientMessage.HostState -> encodeStageZero(message)
+        is ClientMessage.FileContent, is ClientMessage.DiffContextRequest,
+        is ClientMessage.HostState -> encodeStageZero(message)
 
         is ClientMessage.PostTask, is ClientMessage.AgentStatus, is ClientMessage.RunControl,
         is ClientMessage.PlanDecision -> encodeAgent(message)
@@ -135,8 +138,8 @@ object ProtocolCodec {
     /** Кодирует сообщение хоста; полнота таблицы гарантируется исчерпывающим `when`. */
     fun encode(message: HostMessage): ByteArray = when (message) {
         is HostMessage.Hello, is HostMessage.WorkspaceOpened, is HostMessage.Tree, is HostMessage.Content,
-        is HostMessage.State, is HostMessage.Failure, is HostMessage.Incompatible, is HostMessage.Event ->
-            encodeStageZero(message)
+        is HostMessage.DiffContextResponse, is HostMessage.State, is HostMessage.Failure,
+        is HostMessage.Incompatible, is HostMessage.Event -> encodeStageZero(message)
 
         is HostMessage.TaskPosted, is HostMessage.AgentSnapshot, is HostMessage.RunControlled,
         is HostMessage.PlanDecided -> encodeAgent(message)
@@ -219,6 +222,9 @@ private fun encodeStageZero(message: ClientMessage): ByteArray = when (message) 
     is ClientMessage.FileContent ->
         envelope(ClientMessageType.FILE_CONTENT, ClientMessage.FileContent.serializer(), message)
 
+    is ClientMessage.DiffContextRequest ->
+        envelope(ClientMessageType.DIFF_CONTEXT_REQUEST, ClientMessage.DiffContextRequest.serializer(), message)
+
     is ClientMessage.HostState ->
         envelope(ClientMessageType.HOST_STATE, ClientMessage.HostState.serializer(), message)
 
@@ -232,6 +238,9 @@ private fun encodeStageZero(message: HostMessage): ByteArray = when (message) {
 
     is HostMessage.Tree -> envelope(HostMessageType.TREE, HostMessage.Tree.serializer(), message)
     is HostMessage.Content -> envelope(HostMessageType.CONTENT, HostMessage.Content.serializer(), message)
+    is HostMessage.DiffContextResponse ->
+        envelope(HostMessageType.DIFF_CONTEXT_RESPONSE, HostMessage.DiffContextResponse.serializer(), message)
+
     is HostMessage.State -> envelope(HostMessageType.STATE, HostMessage.State.serializer(), message)
     is HostMessage.Failure -> envelope(HostMessageType.FAILURE, HostMessage.Failure.serializer(), message)
     is HostMessage.Incompatible ->
@@ -246,6 +255,7 @@ private fun decodeStageZeroClient(env: WireEnvelope): DecodeResult<ClientMessage
     ClientMessageType.OPEN_WORKSPACE -> decode(env, ClientMessage.OpenWorkspace.serializer())
     ClientMessageType.FILE_TREE -> decode(env, ClientMessage.FileTree.serializer())
     ClientMessageType.FILE_CONTENT -> decode(env, ClientMessage.FileContent.serializer())
+    ClientMessageType.DIFF_CONTEXT_REQUEST -> decode(env, ClientMessage.DiffContextRequest.serializer())
     ClientMessageType.HOST_STATE -> decode(env, ClientMessage.HostState.serializer())
     else -> null
 }
@@ -255,6 +265,7 @@ private fun decodeStageZeroHost(env: WireEnvelope): DecodeResult<HostMessage>? =
     HostMessageType.WORKSPACE_OPENED -> decode(env, HostMessage.WorkspaceOpened.serializer())
     HostMessageType.TREE -> decode(env, HostMessage.Tree.serializer())
     HostMessageType.CONTENT -> decode(env, HostMessage.Content.serializer())
+    HostMessageType.DIFF_CONTEXT_RESPONSE -> decode(env, HostMessage.DiffContextResponse.serializer())
     HostMessageType.STATE -> decode(env, HostMessage.State.serializer())
     HostMessageType.FAILURE -> decode(env, HostMessage.Failure.serializer())
     HostMessageType.INCOMPATIBLE -> decode(env, HostMessage.Incompatible.serializer())

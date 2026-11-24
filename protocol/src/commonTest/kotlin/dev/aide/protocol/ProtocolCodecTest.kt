@@ -228,6 +228,13 @@ class ProtocolCodecTest {
             ClientMessage.OpenWorkspace(requestId, "/projects/aide"),
             ClientMessage.FileTree(requestId, workspaceId),
             ClientMessage.FileContent(requestId, workspaceId, "src/auth/Login.kt"),
+            ClientMessage.DiffContextRequest(
+                requestId,
+                workspaceId,
+                "src/auth/Login.kt",
+                startLine = 5,
+                lineCount = 10,
+            ),
             ClientMessage.HostState(requestId, workspaceId),
             ClientMessage.PostTask(requestId, "Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES),
             ClientMessage.PostTask(requestId, "Только предложи", AutonomyMode.SUGGEST_ONLY),
@@ -317,6 +324,7 @@ class ProtocolCodecTest {
             HostMessage.WorkspaceOpened(requestId, workspaceId),
             HostMessage.Tree(requestId, tree),
             HostMessage.Content(requestId, content),
+            diffContextResponse(),
             HostMessage.State(requestId, state),
             HostMessage.State(requestId, state.copy(mode = HostMode.REMOTE)),
             HostMessage.Failure(requestId, ProtocolError.NotFound("src/Main.kt")),
@@ -365,6 +373,19 @@ class ProtocolCodecTest {
             HostMessage.PendingApprovalsSnapshot(requestId, listOf(approvalRequest())),
         ) + hostSnapshotMessages()
     }
+
+    private fun diffContextResponse(): HostMessage.DiffContextResponse = HostMessage.DiffContextResponse(
+        requestId,
+        DiffContextPayload(
+            workspaceId = workspaceId,
+            path = "src/Main.kt",
+            startLine = 2,
+            lines = listOf(
+                ContextLinePayload(number = 2, text = "second"),
+                ContextLinePayload(number = 3, text = "third"),
+            ),
+        ),
+    )
 
     private fun hostSnapshotMessages(): List<HostMessage> = listOf(
         HostMessage.SnapshotListResponse(requestId, emptyList()),
@@ -488,6 +509,7 @@ class ProtocolCodecTest {
             ProtocolError.SnapshotRollbackRejected(SnapshotRollbackRejection.UNKNOWN_SNAPSHOT),
             ProtocolError.SnapshotRollbackRejected(SnapshotRollbackRejection.DIRTY_WORKTREE),
             ProtocolError.SnapshotRollbackRejected(SnapshotRollbackRejection.ACTIVE_RUN),
+            ProtocolError.InvalidDiffRange(startLine = 0, lineCount = 201),
         )
         errors.forEach { error ->
             val message = HostMessage.Failure(requestId, error)

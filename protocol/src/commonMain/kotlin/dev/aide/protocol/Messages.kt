@@ -95,6 +95,22 @@ sealed interface ClientMessage {
         val path: String,
     ) : ClientMessage, RequestIdCarrier
 
+    /** Запросить диапазон строк файла для раскрытия контекста diff. */
+    @Serializable
+    @SerialName("diffContextRequest")
+    data class DiffContextRequest(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Открытый воркспейс. */
+        val workspaceId: WorkspaceId,
+        /** Путь относительно корня воркспейса. */
+        val path: String,
+        /** Первая строка диапазона, 1-based. */
+        val startLine: Int,
+        /** Число строк; хост ограничивает максимальный размер одного ответа. */
+        val lineCount: Int,
+    ) : ClientMessage, RequestIdCarrier
+
     /** Запросить состояние хоста. */
     @Serializable
     @SerialName("hostState")
@@ -419,6 +435,16 @@ sealed interface HostMessage {
         override val requestId: RequestId,
         /** Полезная нагрузка с содержимым. */
         val content: FileContentPayload,
+    ) : HostMessage, RequestIdCarrier
+
+    /** Диапазон строк файла для раскрытия контекста diff. */
+    @Serializable
+    @SerialName("diffContextResponse")
+    data class DiffContextResponse(
+        /** Идентификатор запроса. */
+        override val requestId: RequestId,
+        /** Запрошенный диапазон строк. */
+        val context: DiffContextPayload,
     ) : HostMessage, RequestIdCarrier
 
     /** Состояние хоста. */

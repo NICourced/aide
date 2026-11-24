@@ -344,6 +344,14 @@ class HostClient(
     val snapshots: SnapshotRollbackClient = SnapshotRollbackClient(connection, requestIds::next)
 
     /**
+     * Запрос диапазона строк файла для раскрытия скрытого контекста diff (T-1.23).
+     *
+     * Отдельный объект по той же причине, что и [snapshots]: у diff-вьюера свой набор
+     * запросов, и держать его здесь значило бы растить класс доступа к хосту.
+     */
+    val diffContext: DiffContextClient = DiffContextClient(connection, requestIds::next)
+
+    /**
      * Дозапрашивает состояние хоста, дерево и открытый файл.
      *
      * Нужно и после реконнекта, и по событию [HostEvent.WorkspaceChanged]: пока связи

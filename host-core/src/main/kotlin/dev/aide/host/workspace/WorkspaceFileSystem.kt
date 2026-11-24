@@ -1,6 +1,8 @@
 package dev.aide.host.workspace
 
 import dev.aide.host.workspace.WorkspaceFileSystem.Companion.MAX_DISPLAY_BYTES
+import dev.aide.protocol.ContextLinePayload
+import dev.aide.protocol.DiffContextPayload
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.ProtocolError
 import java.io.IOException
@@ -8,6 +10,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.io.path.bufferedReader
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.notExists
@@ -61,6 +64,36 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
         )
     }
 
+    /**
+     * Читает диапазон строк файла по пути относительно корня.
+     *
+     * Чтение потоковое: метод не материализует файл целиком и не вызывает [readFile],
+     * поэтому запрос к концу файла, большего [MAX_DISPLAY_BYTES], работает за разумное время.
+     */
+    fun readContext(relativePath: String, startLine: Int, lineCount: Int): DiffContextPayload {
+        if (startLine < 1 || lineCount < 1 || lineCount > MAX_CONTEXT_LINES) {
+            throw WorkspaceAccessException(ProtocolError.InvalidDiffRange(startLine, lineCount))
+        }
+        val resolved = resolveInside(relativePath)
+        ensureRegularFile(relativePath, resolved)
+        if (!Files.isReadable(resolved)) {
+            denied(relativePath, "нет прав на чтение файла")
+        }
+
+        val sample = sniffFirstBytes(relativePath, resolved)
+        if (looksBinary(sample)) {
+            notImplemented("показ бинарных файлов появится в следующем этапе")
+        }
+
+        val lines = readContextLines(relativePath, resolved, startLine, lineCount)
+        return DiffContextPayload(
+            workspaceId = workspace.id,
+            path = relativePath,
+            startLine = startLine,
+            lines = lines,
+        )
+    }
+
     /** Превращает прочитанный файл в сообщение протокола. */
     fun toPayload(file: FileContent): FileContentPayload = FileContentPayload(
         workspaceId = workspace.id,
@@ -108,18 +141,6 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
             denied(relativePath, reason)
         }
         return canonical
-    }
-
-    private fun ensureRegularFile(relativePath: String, resolved: Path) {
-        if (resolved.notExists()) {
-            notFound(relativePath)
-        }
-        if (resolved.isDirectory()) {
-            denied(relativePath, "по пути находится каталог, а не файл")
-        }
-        if (!resolved.isRegularFile()) {
-            denied(relativePath, "по пути не обычный файл")
-        }
     }
 
     private fun sizeOf(relativePath: String, resolved: Path): Long = try {
@@ -209,8 +230,67 @@ class WorkspaceFileSystem(private val workspace: Workspace) {
         /** Сколько байт файла отдаётся в UI; больше — обрезается с пометкой. */
         const val MAX_DISPLAY_BYTES: Int = 512 * 1024
 
+        /** Сколько строк за один раз можно запросить для раскрытия контекста diff. */
+        const val MAX_CONTEXT_LINES: Int = 200
+
         /** Сколько первых байт проверяется на бинарность. */
         const val BINARY_SNIFF_BYTES: Int = 8 * 1024
+    }
+}
+
+private fun ensureRegularFile(relativePath: String, resolved: Path) {
+    if (resolved.notExists()) {
+        notFound(relativePath)
+    }
+    if (resolved.isDirectory()) {
+        denied(relativePath, "по пути находится каталог, а не файл")
+    }
+    if (!resolved.isRegularFile()) {
+        denied(relativePath, "по пути не обычный файл")
+    }
+}
+
+private fun sniffFirstBytes(relativePath: String, resolved: Path): ByteArray = try {
+    Files.newInputStream(resolved).use { it.readNBytes(WorkspaceFileSystem.BINARY_SNIFF_BYTES) }
+} catch (error: IOException) {
+    denied(relativePath, "ошибка чтения: ${error.message}")
+}
+
+private fun readContextLines(
+    relativePath: String,
+    resolved: Path,
+    startLine: Int,
+    lineCount: Int,
+): List<ContextLinePayload> = try {
+    resolved.bufferedReader(Charsets.UTF_8).use { reader ->
+        val lines = mutableListOf<ContextLinePayload>()
+        var number = skipToLine(reader, startLine)
+        readUpToCount(reader, number, lineCount, lines)
+        lines
+    }
+} catch (error: IOException) {
+    denied(relativePath, "ошибка чтения: ${error.message}")
+}
+
+private fun skipToLine(reader: java.io.BufferedReader, startLine: Int): Int {
+    var number = 1
+    while (number < startLine && reader.readLine() != null) {
+        number += 1
+    }
+    return number
+}
+
+private fun readUpToCount(
+    reader: java.io.BufferedReader,
+    startNumber: Int,
+    lineCount: Int,
+    lines: MutableList<ContextLinePayload>,
+) {
+    var number = startNumber
+    while (lines.size < lineCount) {
+        val text = reader.readLine() ?: return
+        lines += ContextLinePayload(number, text)
+        number += 1
     }
 }
 

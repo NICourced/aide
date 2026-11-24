@@ -1,6 +1,8 @@
 package dev.aide.client.state
 
 import dev.aide.protocol.ClientMessage
+import dev.aide.protocol.ContextLinePayload
+import dev.aide.protocol.DiffContextPayload
 import dev.aide.protocol.FileContentPayload
 import dev.aide.protocol.FileTreePayload
 import dev.aide.protocol.HostEvent
@@ -109,6 +111,19 @@ internal class FakeHostConnection : HostConnection {
                 text = "fun login() = Unit",
                 sizeBytes = FILE_SIZE_BYTES,
                 truncated = false,
+            ),
+        )
+
+        is ClientMessage.DiffContextRequest -> HostMessage.DiffContextResponse(
+            requestId = message.requestId,
+            context = DiffContextPayload(
+                workspaceId = workspaceId,
+                path = message.path,
+                startLine = message.startLine,
+                lines = listOf(
+                    ContextLinePayload(number = message.startLine, text = "line-${message.startLine}"),
+                    ContextLinePayload(number = message.startLine + 1, text = "line-${message.startLine + 1}"),
+                ),
             ),
         )
 

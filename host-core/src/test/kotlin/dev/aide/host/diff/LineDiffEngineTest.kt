@@ -1,5 +1,6 @@
 package dev.aide.host.diff
 
+import dev.aide.domain.ContextGap
 import dev.aide.domain.FileChangeKind
 import dev.aide.domain.HunkKind
 import dev.aide.domain.LineKind
@@ -29,6 +30,23 @@ class LineDiffEngineTest {
         assertEquals(listOf(6, 7, 8), change.hunks.first().lines.takeLast(3).map { it.oldNumber })
         assertEquals(2, change.addedLines)
         assertEquals(2, change.removedLines)
+        assertEquals(
+            listOf(ContextGap(1, 1, 1), ContextGap(9, 9, 13), ContextGap(29, 29, 2)),
+            change.contextGaps,
+        )
+    }
+
+    @Test
+    fun `сдвиг нумерации даёт корректный suffix gap`() {
+        val change = LineDiffEngine().diff(
+            TextDiffInput(
+                "src/A.kt",
+                "src/A.kt",
+                text(10),
+                "inserted-1\ninserted-2\n${text(10)}",
+            ),
+        )
+        assertEquals(listOf(ContextGap(oldStartLine = 4, newStartLine = 6, lineCount = 7)), change.contextGaps)
     }
 
     @Test
@@ -94,6 +112,7 @@ class LineDiffEngineTest {
         assertEquals(FileChangeKind.RENAMED, pure.changeKind)
         assertEquals("Old.kt", pure.previousPath)
         assertTrue(pure.hunks.isEmpty())
+        assertTrue(pure.contextGaps.isEmpty())
         assertEquals(0, pure.addedLines + pure.removedLines)
         assertEquals("Old.kt", changed.previousPath)
         assertEquals("new", changed.hunks.single().lines.single { it.kind == LineKind.ADDED }.text)
