@@ -2,6 +2,7 @@ package dev.aide.protocol
 
 import dev.aide.domain.AgentRun
 import dev.aide.domain.ApprovalDecision
+import dev.aide.domain.ChangePacket
 import dev.aide.domain.Cost
 import dev.aide.domain.RunId
 import dev.aide.domain.Task
@@ -62,6 +63,19 @@ data class DiffContextPayload(
     /** Строки диапазона в порядке следования. */
     val lines: List<ContextLinePayload>,
 )
+
+/**
+ * Источник версии файла для раскрытия контекста diff (T-1.24).
+ *
+ * [WORKSPACE] — текущее рабочее дерево; [PACKET_OLD] и [PACKET_NEW] — версии,
+ * закреплённые в пакете изменений.
+ */
+@Serializable
+enum class DiffContextSource {
+    WORKSPACE,
+    PACKET_OLD,
+    PACKET_NEW,
+}
 
 /** Содержимое файла для просмотра. */
 @Serializable
@@ -307,6 +321,18 @@ sealed interface HostEvent {
     data class ApprovalRequested(
         /** Что именно просят подтвердить. */
         val request: ToolApprovalRequest,
+    ) : HostEvent
+
+    /**
+     * Пакет изменений сохранён и попал в очередь ревью (T-1.24).
+     *
+     * Событие без запроса: клиент узнаёт о новой ревизии, когда прогон завершается.
+     */
+    @Serializable
+    @SerialName("changePacketRecorded")
+    data class ChangePacketRecorded(
+        /** Сохранённый пакет целиком. */
+        val packet: ChangePacket,
     ) : HostEvent
 
     /** Хост завершает работу; клиенту нужно показать состояние «нет связи» (§ 6.1). */

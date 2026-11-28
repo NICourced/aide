@@ -34,7 +34,7 @@ class AgentRunEngineBranchTest {
     private val tools = stepTools()
 
     private fun engine(plan: List<PlanStep> = plan("шаг")): AgentRunEngine = AgentRunEngine(
-        ports = RunPorts(runs, tasks, sink),
+        ports = RunPorts(runs, tasks, sink, noPackets),
         models = fixedModel(textModel()),
         planner = RunPlanner { _, _, _ ->
             order += PLAN

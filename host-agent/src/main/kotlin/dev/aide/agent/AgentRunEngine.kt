@@ -148,7 +148,7 @@ class AgentRunEngine(
     /** Замок записи прогона: общий у писателя состояний и у таймера прогресса (T-1.5). */
     private val stateLock = Mutex()
 
-    private val writer = RunStateWriter(ports.runs, ports.tasks, ports.events, clock, stateLock)
+    private val writer = RunStateWriter(ports.runs, ports.tasks, ports.events, ports.packets, clock, stateLock)
     private val progress = RunProgress(ports.runs, ports.events, clock, stateLock)
     private val placement = TaskBranchPlacement(repositories.branches, writer)
     private val runSnapshots = RunSnapshots(repositories.snapshots, writer)

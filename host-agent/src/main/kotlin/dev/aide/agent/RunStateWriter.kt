@@ -2,6 +2,8 @@ package dev.aide.agent
 
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.ports.AgentEventSink
+import dev.aide.agent.ports.ChangePackets
+
 import dev.aide.agent.ports.RunRepository
 import dev.aide.agent.ports.TaskRepository
 import dev.aide.domain.AgentRun
@@ -14,9 +16,11 @@ import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
 import dev.aide.domain.TestReport
 import dev.aide.domain.merge
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.Instant
+import org.slf4j.LoggerFactory
 
 /**
  * Запись состояния прогона и статуса задачи (T-1.1).
@@ -26,13 +30,16 @@ import kotlinx.datetime.Instant
  * медленный клиент держал бы состояние прогона. Отдельный класс, потому что переходов
  * много, а движок должен остаться читаемым.
  */
+@Suppress("TooManyFunctions") // класс-концентратор переходов состояния: каждая функция — отдельный переход
 internal class RunStateWriter(
     private val runs: RunRepository,
     private val tasks: TaskRepository,
     private val events: AgentEventSink,
+    private val packets: ChangePackets,
     private val clock: () -> Instant,
     private val lock: Mutex,
 ) {
+    private val logger = LoggerFactory.getLogger(RunStateWriter::class.java)
 
     /**
      * Сохраняет прогон и, если нужно, сообщает о смене состояния.
@@ -117,12 +124,36 @@ internal class RunStateWriter(
         return persist(run.copy(testReport = run.testReport?.merge(update) ?: update))
     }
 
-    /** Завершает прогон успешно; задача уходит в очередь ревью. */
+    /**
+     * Завершает прогон успешно; задача уходит в очередь ревью.
+     *
+     * Сборка пакета предшествует переводу в `REVIEW`: состояние «ждёт ревью» без
+     * пакета невозможно (T-1.24). Отмена хоста пробрасывается, а любая ошибка
+     * сборки превращает прогон в `FAILED`.
+     */
     suspend fun finish(run: AgentRun): AgentRun {
-        // Отметка задачи здесь, а не отдельным методом: вызывается она только отсюда,
-        // а лишний метод перешагнул бы предел числа функций на класс (детект).
-        tasks.load(run.taskId)?.let { persistTask(it.copy(status = TaskStatus.REVIEW, failureReason = null)) }
-        return persist(run.completed(clock()).copy(state = RunState.FINISHED))
+        val task = tasks.load(run.taskId)
+        val completed = run.completed(clock())
+        return if (task == null) {
+            persist(completed.copy(state = RunState.FINISHED))
+        } else {
+            finishWithTask(task, run, completed)
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    // порт ChangePackets может бросить любую ошибку; она превращается в PACKET_ASSEMBLY_FAILED
+    private suspend fun finishWithTask(task: Task, run: AgentRun, completed: AgentRun): AgentRun {
+        try {
+            packets.publish(task, run)
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            logger.warn("сборка пакета не удалась: ${error.message}", error)
+            return fail(run, RunInterruptReason.PACKET_ASSEMBLY_FAILED)
+        }
+        persistTask(task.copy(status = TaskStatus.REVIEW, failureReason = null))
+        return persist(completed.copy(state = RunState.FINISHED))
     }
 
     /** Завершает прогон ошибкой; причина сохраняется кодом и на прогоне, и на задаче. */

@@ -13,8 +13,11 @@ import dev.aide.client.state.KtorHostConnection
 import dev.aide.client.state.decidePlan
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ChangeSource
 import dev.aide.domain.Cost
+import dev.aide.domain.FileChangeKind
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.PacketStatus
 import dev.aide.domain.Permission
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
@@ -23,6 +26,7 @@ import dev.aide.domain.RunState
 import dev.aide.domain.StepStatus
 import dev.aide.domain.Task
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.TestState
 import dev.aide.domain.ToolPermission
 import dev.aide.host.EmbeddedHost
 import dev.aide.host.git.GitCliFixture
@@ -610,6 +614,81 @@ class AgentRunProtocolTest {
             assertEquals(refBeforeRestart, refOf("ai/${taskId.value}"), "ref ветки не пересоздан")
         } finally {
             secondHost.close()
+        }
+    }
+
+    @Test
+    fun `по завершении прогона собирается пакет изменений и доходит до клиента`() = runBlocking {
+        val database = tempDatabase()
+        allowWrite(database)
+        val host = EmbeddedHost.open(
+            databasePath = database,
+            models = scripted(WriteOnceModel()),
+            planner = fixedPlanner(1),
+        )
+        try {
+            val (connection, client) = newClient(host, "packet")
+            client.start()
+            awaitConnected(connection)
+            openRepository(client)
+
+            val taskId = client.postTaskApprovingPlan("Поправь файл", AutonomyMode.ASK_BEFORE_CHANGES)
+                .getOrThrow()
+            val taskBranch = "ai/${taskId.value}"
+
+            val finished = awaitRun(client) { it.state == RunState.FINISHED }
+            assertNotNull(finished, "прогон обязан завершиться: ${client.session.value.runs}")
+
+            val packet = withTimeoutOrNull(10_000) {
+                while (client.session.value.packets.none { it.taskId == taskId }) delay(20)
+                client.session.value.packets.first { it.taskId == taskId }
+            }
+            assertNotNull(packet, "пакет обязан прийти событием или снимком: ${client.session.value.packets}")
+            assertEquals(taskBranch, packet.branch)
+            assertEquals(PacketStatus.AWAITING_REVIEW, packet.status)
+            assertEquals(ChangeSource.AGENT, packet.source)
+            assertTrue(packet.files.isNotEmpty(), "пакет содержит изменения из ветки задачи")
+            assertTrue(
+                packet.files.any { it.path == FILE },
+                "пакет содержит правку файла: ${packet.files.map { it.path }}",
+            )
+            assertTrue(packet.baseCommit?.isNotEmpty() == true)
+            assertTrue(packet.headCommit?.isNotEmpty() == true)
+            assertEquals(TestState.NOT_RUN, packet.tests.state)
+
+            // Пакет сохранён в базе: перезапрос состояния после реконнекта его вернёт.
+            client.agentStatus().getOrThrow()
+            assertTrue(
+                client.session.value.packets.any { it.id == packet.id && it.revision == packet.revision },
+                "сохранённый пакет возвращается в снимке агента",
+            )
+        } finally {
+            host.close()
+        }
+    }
+
+    /** Модель, один раз просящая запись файла, а затем завершающая шаг. */
+    private class WriteOnceModel : LlmClient {
+        private val calls = AtomicInteger(0)
+
+        override suspend fun complete(request: LlmRequest): LlmResponse {
+            val index = calls.incrementAndGet()
+            return if (index == 1) {
+                LlmResponse.Text(
+                    text = "",
+                    cost = Cost(),
+                    elapsedMillis = 1,
+                    toolCalls = listOf(
+                        LlmToolCall(
+                            id = "write-1",
+                            name = WRITE_FILE,
+                            arguments = """{"path":"$FILE","content":"$WRITTEN"}""",
+                        ),
+                    ),
+                )
+            } else {
+                LlmResponse.Text(text = "готово", cost = Cost(), elapsedMillis = 1)
+            }
         }
     }
 

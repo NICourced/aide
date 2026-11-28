@@ -1,7 +1,9 @@
 package dev.aide.client.state
 
+import dev.aide.domain.PacketId
 import dev.aide.protocol.ClientMessage
 import dev.aide.protocol.DiffContextPayload
+import dev.aide.protocol.DiffContextSource
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.RequestId
@@ -19,14 +21,20 @@ class DiffContextClient(
 ) {
 
     /** Запрашивает [lineCount] строк файла, начиная со [startLine]. */
+    @Suppress("LongParameterList") // публичный API: параметры соответствуют протокольному сообщению
     suspend fun context(
         workspaceId: WorkspaceId,
         path: String,
         startLine: Int,
         lineCount: Int,
+        source: DiffContextSource = DiffContextSource.WORKSPACE,
+        packetId: PacketId? = null,
+        packetRevision: Int? = null,
     ): Result<DiffContextPayload> {
         val requestId = nextRequestId()
-        val message = ClientMessage.DiffContextRequest(requestId, workspaceId, path, startLine, lineCount)
+        val message = ClientMessage.DiffContextRequest(
+            requestId, workspaceId, path, startLine, lineCount, source, packetId, packetRevision,
+        )
         return when (val response = connection.request(message)) {
             is HostMessage.DiffContextResponse -> Result.success(response.context)
             is HostMessage.Failure -> Result.failure(HostCallException(response.error))

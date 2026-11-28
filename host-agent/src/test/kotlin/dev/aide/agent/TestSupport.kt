@@ -4,6 +4,7 @@ import dev.aide.agent.llm.LlmClient
 import dev.aide.agent.llm.LlmRequest
 import dev.aide.agent.llm.LlmResponse
 import dev.aide.agent.ports.AgentEventSink
+import dev.aide.agent.ports.ChangePackets
 import dev.aide.agent.ports.RunRepository
 import dev.aide.agent.ports.Snapshots
 import dev.aide.agent.ports.StashReturn
@@ -20,16 +21,23 @@ import dev.aide.agent.provider.ModelProvider
 import dev.aide.agent.provider.ModelUnavailableException
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ChangePacket
+import dev.aide.domain.ChangeSource
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.PacketId
+import dev.aide.domain.PacketStatus
 import dev.aide.domain.PlanDecision
 import dev.aide.domain.PlanStep
+import dev.aide.domain.RiskLevel
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.SnapshotRef
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.TestState
+import dev.aide.domain.TestStatus
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -188,6 +196,50 @@ val noSnapshots: Snapshots = Snapshots { TaskSnapshot.NoHead }
 
 /** Порт восстановления, отвечающий «восстанавливать нечего»: тестам без T-1.4 важен лишь ход прогона. */
 val noRestore: WorkspaceRestore = WorkspaceRestore { WorkspaceRestoreOutcome.Nothing }
+
+/**
+ * Порт пакетов изменений в тестах движка (T-1.24): запоминает вызов и возвращает заданный пакет.
+ *
+ * По умолчанию возвращает минимальный пакет, чтобы прогон мог завершиться; конкретный
+ * исход задаёт тест.
+ */
+class FakeChangePackets(
+    private var packet: ChangePacket = ChangePacket(
+        id = PacketId("fake"),
+        taskId = TaskId("fake"),
+        revision = 1,
+        title = "fake",
+        summary = "fake",
+        files = emptyList(),
+        risk = RiskLevel.NORMAL,
+        tests = TestStatus(state = TestState.NOT_RUN),
+        source = ChangeSource.AGENT,
+        status = PacketStatus.AWAITING_REVIEW,
+        branch = "ai/fake",
+        createdAt = Instant.fromEpochMilliseconds(1),
+    ),
+) : ChangePackets {
+
+    /** Задачи и прогоны, с которыми звали порт, в порядке вызовов. */
+    val calls = mutableListOf<Pair<Task, AgentRun>>()
+
+    /** Меняет пакет, который возвращает порт. */
+    fun answer(packet: ChangePacket) {
+        this.packet = packet
+    }
+
+    /** Бросает ли порт ошибку вместо пакета. */
+    var failure: Throwable? = null
+
+    override suspend fun publish(task: Task, run: AgentRun): ChangePacket {
+        calls += task to run
+        failure?.let { throw it }
+        return packet
+    }
+}
+
+/** Порт пакетов, отвечающий минимальным пакетом: тестам без T-1.24 важен лишь ход прогона. */
+val noPackets: ChangePackets = FakeChangePackets()
 
 /** Порт отложенных правок, отвечающий «откладывать нечего»: тестам без T-1.59 важен лишь ход прогона. */
 val noWorkStash: WorkStash = object : WorkStash {

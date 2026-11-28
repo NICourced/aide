@@ -5,9 +5,12 @@ import dev.aide.domain.AgentRun
 import dev.aide.domain.Cost
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
+import dev.aide.domain.TaskStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.datetime.Instant
@@ -28,7 +31,7 @@ class RunStateWriterTest {
     /** Часы, которые двигает тест: иначе длина прогона осталась бы нулевой. */
     private var now = Instant.fromEpochMilliseconds(START_MILLIS)
 
-    private val writer = RunStateWriter(runs, tasks, sink, { now }, Mutex())
+    private val writer = RunStateWriter(runs, tasks, sink, noPackets, { now }, Mutex())
 
     private fun run(): AgentRun =
         testRun("r-1", RunState.RUNNING).copy(startedAt = Instant.fromEpochMilliseconds(START_MILLIS))
@@ -117,6 +120,60 @@ class RunStateWriterTest {
                 "итог завершённого прогона фиксируется и больше не меняется",
             )
         }
+    }
+
+    @Test
+    fun `отказ сборки пакета дает failed и сохраняет причину`() {
+        runBlocking {
+            val packets = FakeChangePackets()
+            packets.failure = RuntimeException("diff не собрался")
+            val writer = RunStateWriter(runs, tasks, sink, packets, { now }, Mutex())
+            val run = runWithTask()
+            assertNotNull(tasks.load(run.taskId), "задача должна быть сохранена перед finish")
+
+            val failed = writer.finish(run)
+
+            assertEquals(RunState.FAILED, failed.state)
+            assertEquals(RunInterruptReason.PACKET_ASSEMBLY_FAILED, failed.interruptReason)
+            assertEquals(RunState.FAILED, runs.load(failed.id)?.state)
+            assertEquals(TaskStatus.FAILED, tasks.load(failed.taskId)?.status)
+            assertEquals(RunInterruptReason.PACKET_ASSEMBLY_FAILED, tasks.load(failed.taskId)?.failureReason)
+        }
+    }
+
+    @Test
+    fun `публикация пакета предшествует переводу задачи в ревью`() {
+        runBlocking {
+            val packets = FakeChangePackets()
+            val writer = RunStateWriter(runs, tasks, sink, packets, { now }, Mutex())
+            val run = runWithTask()
+
+            writer.finish(run)
+
+            assertEquals(1, packets.calls.size)
+            assertEquals(TaskStatus.REVIEW, tasks.load(run.taskId)?.status)
+        }
+    }
+
+    @Test
+    fun `отмена при публикации пакета пробрасывается`() {
+        runBlocking {
+            val packets = FakeChangePackets()
+            packets.failure = CancellationException("отмена")
+            val writer = RunStateWriter(runs, tasks, sink, packets, { now }, Mutex())
+            val run = runWithTask()
+
+            assertFailsWith<CancellationException> { writer.finish(run) }
+
+            assertEquals(TaskStatus.RUNNING, tasks.load(run.taskId)?.status, "отмена не переводит задачу в REVIEW")
+        }
+    }
+
+    /** Прогон вместе с сохранённой задачей — нужно для проверок публикации пакета (T-1.24). */
+    private fun runWithTask(): AgentRun {
+        val run = run()
+        tasks.save(testTask(run.taskId.value, TaskStatus.RUNNING))
+        return run
     }
 
     @Test

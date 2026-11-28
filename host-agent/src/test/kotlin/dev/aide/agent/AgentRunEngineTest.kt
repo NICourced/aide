@@ -22,8 +22,10 @@ import dev.aide.domain.TaskStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -53,7 +55,7 @@ class AgentRunEngineTest {
 
     private fun engine(plan: List<PlanStep> = plan("шаг"), llm: LlmClient = textModel()): AgentRunEngine =
         AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = fixedModel(llm),
             planner = RunPlanner { _, _, _ -> plan },
             tools = tools,
@@ -194,7 +196,7 @@ class AgentRunEngineTest {
     @Test
     fun `отказ планирования помечает задачу failed с причиной`() = runBlocking {
         val engine = AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = fixedModel(textModel()),
             planner = RunPlanner { _, _, _ -> throw PlanFormatException("не план") },
             tools = tools,
@@ -214,7 +216,7 @@ class AgentRunEngineTest {
     @Test
     fun `сбой рассылки терминального события не превращает завершённый прогон в отказ`() = runBlocking {
         val engine = AgentRunEngine(
-            ports = RunPorts(runs, tasks, ThrowingOnFinishSink(runs, tasks)),
+            ports = RunPorts(runs, tasks, ThrowingOnFinishSink(runs, tasks), noPackets),
             models = fixedModel(textModel()),
             planner = RunPlanner { _, _, _ -> plan("раз") },
             tools = tools,
@@ -249,7 +251,7 @@ class AgentRunEngineTest {
         // Пустая конфигурация — состояние чистой установки (решение 9): прогон падает
         // тем же кодом, что и раньше, и это видно на задаче, потому что прогона ещё нет.
         val engine = AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = failingModel(ModelCheckFailure.NotConfigured),
             planner = RunPlanner { _, _, _ -> plan("раз") },
             tools = tools,
@@ -268,7 +270,7 @@ class AgentRunEngineTest {
     @Test
     fun `отсутствие переменной окружения с ключом даёт свой код отказа`() = runBlocking {
         val engine = AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = failingModel(ModelCheckFailure.MissingKey("DEEPSEEK_API_KEY")),
             planner = RunPlanner { _, _, _ -> plan("раз") },
             tools = tools,
@@ -292,7 +294,7 @@ class AgentRunEngineTest {
         val replacement = ScriptedLlmClient(listOf(text("третий")))
         var chosen = ConfiguredModel("model/a", started)
         val engine = AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = ModelProvider { Result.success(chosen) },
             planner = RunPlanner { _, _, _ -> plan("раз", "два") },
             tools = tools,
@@ -421,7 +423,7 @@ class AgentRunEngineTest {
     fun `перепланирование с комментарием вызывает планировщик заново и снова ждёт`() = runBlocking {
         val comments = mutableListOf<String?>()
         val engine = AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = fixedModel(textModel()),
             planner = RunPlanner { _, _, comment ->
                 comments += comment
@@ -456,7 +458,7 @@ class AgentRunEngineTest {
     @Test
     fun `стоп после перепланирования сохраняет новый план, а не первоначальный`() = runBlocking {
         val engine = AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = fixedModel(textModel()),
             planner = RunPlanner { _, _, comment ->
                 if (comment == null) plan("первоначальный") else plan("переделанный")
@@ -543,6 +545,76 @@ class AgentRunEngineTest {
         withTimeout(5_000) {
             while (runs.load(runId)?.state != state) delay(10)
         }
+    }
+
+    @Test
+    fun `успешный прогон публикует пакет перед переводом задачи в ревью`() = runBlocking {
+        val packets = FakeChangePackets()
+        val engine = AgentRunEngine(
+            ports = RunPorts(runs, tasks, sink, packets),
+            models = fixedModel(textModel()),
+            planner = RunPlanner { _, _, _ -> plan("раз") },
+            tools = tools,
+            repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
+            clock = { Instant.fromEpochMilliseconds(1_000) },
+        )
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        assertTrue(engine.processNextApproved(runs))
+
+        assertEquals(1, packets.calls.size, "порт пакетов обязан быть вызван ровно один раз")
+        val (calledTask, calledRun) = packets.calls.single()
+        assertEquals(runs.all().single().taskId, calledTask.id)
+        assertEquals(runs.all().single().id, calledRun.id)
+        assertEquals(TaskStatus.REVIEW, tasks.load(calledTask.id)?.status)
+    }
+
+    @Test
+    fun `отказ сборки пакета дает failed и не переводит задачу в ревью`() = runBlocking {
+        val packets = FakeChangePackets()
+        packets.failure = RuntimeException("diff не собрался")
+        val engine = AgentRunEngine(
+            ports = RunPorts(runs, tasks, sink, packets),
+            models = fixedModel(textModel()),
+            planner = RunPlanner { _, _, _ -> plan("раз") },
+            tools = tools,
+            repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
+            clock = { Instant.fromEpochMilliseconds(1_000) },
+        )
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        assertTrue(engine.processNextApproved(runs))
+
+        val run = runs.all().single()
+        assertEquals(RunState.FAILED, run.state)
+        assertEquals(RunInterruptReason.PACKET_ASSEMBLY_FAILED, run.interruptReason)
+        assertEquals(TaskStatus.FAILED, tasks.load(run.taskId)?.status)
+        assertEquals(RunInterruptReason.PACKET_ASSEMBLY_FAILED, tasks.load(run.taskId)?.failureReason)
+        assertTrue(sink.taskStates.none { it == TaskStatus.REVIEW }, "задача не должна переходить в REVIEW")
+    }
+
+    @Test
+    fun `отмена во время сборки пакета не превращается в отказ`() = runBlocking {
+        val packets = FakeChangePackets()
+        packets.failure = CancellationException("отмена")
+        val engine = AgentRunEngine(
+            ports = RunPorts(runs, tasks, sink, packets),
+            models = fixedModel(textModel("готово")),
+            planner = RunPlanner { _, _, _ -> plan("раз") },
+            tools = tools,
+            repositories = RepositoryPorts(branchAlreadyExists, noSnapshots, noWorkStash, noRestore),
+            clock = { Instant.fromEpochMilliseconds(1_000) },
+        )
+        engine.postTask("Почини", AutonomyMode.ASK_BEFORE_CHANGES)
+
+        val worker = launch { engine.processNext() }
+        engine.awaitShownPlan(runs)
+        withTimeoutOrNull<Unit>(5_000) { worker.join() }
+
+        val run = runs.all().single()
+        assertNotEquals(RunState.FAILED, run.state, "отмена не должна превращаться в отказ прогона")
+        assertNotEquals(RunInterruptReason.PACKET_ASSEMBLY_FAILED, run.interruptReason)
+        assertNotEquals(TaskStatus.FAILED, tasks.load(run.taskId)?.status)
     }
 
     private companion object {

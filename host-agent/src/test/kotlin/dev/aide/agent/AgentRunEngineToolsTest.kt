@@ -54,7 +54,7 @@ class AgentRunEngineToolsTest {
         plan: List<PlanStep> = plan("шаг"),
         clock: () -> Instant = { Instant.fromEpochMilliseconds(1_000) },
     ): AgentRunEngine = AgentRunEngine(
-        ports = RunPorts(runs, tasks, sink),
+        ports = RunPorts(runs, tasks, sink, noPackets),
         models = fixedModel(llm),
         planner = RunPlanner { _, _, _ -> plan },
         tools = stepToolsIn(workspace, journal),

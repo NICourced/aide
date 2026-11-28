@@ -10,7 +10,9 @@ import dev.aide.host.workspace.Workspace
 import dev.aide.host.workspace.WorkspaceAccessException
 import dev.aide.host.workspace.WorkspaceBoundaryAdapter
 import dev.aide.host.workspace.WorkspaceFileSystem
+import dev.aide.host.packet.PacketContextReader
 import dev.aide.protocol.ClientMessage
+import dev.aide.protocol.DiffContextSource
 import dev.aide.protocol.HostMessage
 import dev.aide.protocol.HostMode
 import dev.aide.protocol.HostStatePayload
@@ -41,6 +43,7 @@ class StageZeroHandler(
     private val mode: HostMode = HostMode.LOCAL,
     private val startedAtMillis: Long = System.currentTimeMillis(),
     private val workspaces: OpenWorkspaces = OpenWorkspaces(),
+    private val packetContext: PacketContextReader? = null,
     private val onWorkspaceOpened: suspend () -> Unit = { },
 ) : ClientMessageHandler, AutoCloseable {
 
@@ -57,10 +60,30 @@ class StageZeroHandler(
         }
 
         is ClientMessage.DiffContextRequest -> withWorkspace(message.workspaceId, message.requestId) { open ->
-            HostMessage.DiffContextResponse(
-                message.requestId,
-                open.fileSystem.readContext(message.path, message.startLine, message.lineCount),
-            )
+            val context = when (message.source) {
+                DiffContextSource.WORKSPACE ->
+                    open.fileSystem.readContext(message.path, message.startLine, message.lineCount)
+
+                DiffContextSource.PACKET_OLD,
+                DiffContextSource.PACKET_NEW,
+                -> {
+                    val reader = packetContext
+                        ?: throw WorkspaceAccessException(
+                            ProtocolError.NotImplemented("чтение контекста пакета недоступно"),
+                        )
+                    reader.read(
+                        packetId = message.packetId
+                            ?: throw WorkspaceAccessException(ProtocolError.NotFound("packetId не задан")),
+                        revision = message.packetRevision
+                            ?: throw WorkspaceAccessException(ProtocolError.NotFound("packetRevision не задан")),
+                        path = message.path,
+                        source = message.source,
+                        startLine = message.startLine,
+                        lineCount = message.lineCount,
+                    )
+                }
+            }
+            HostMessage.DiffContextResponse(message.requestId, context)
         }
 
         is ClientMessage.HostState -> withWorkspace(message.workspaceId, message.requestId) { open ->

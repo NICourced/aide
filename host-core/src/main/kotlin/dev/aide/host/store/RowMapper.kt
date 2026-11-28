@@ -7,8 +7,10 @@ import dev.aide.domain.ClientPlatform
 import dev.aide.domain.Cost
 import dev.aide.domain.DecisionScope
 import dev.aide.domain.DecisionValue
+import dev.aide.domain.ChangePacket
 import dev.aide.domain.HunkId
 import dev.aide.domain.PacketId
+import dev.aide.domain.PacketStatus
 import dev.aide.domain.Permission
 import dev.aide.domain.ProposalId
 import dev.aide.domain.ReviewDecision
@@ -23,6 +25,7 @@ import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
 import dev.aide.domain.ToolPermission
 import dev.aide.host.store.Agent_run as AgentRunRow
+import dev.aide.host.store.Change_packet as ChangePacketRow
 import dev.aide.host.store.Change_proposal as ChangeProposalRow
 import dev.aide.host.store.Review_decision as ReviewDecisionRow
 import dev.aide.host.store.Tool_call as ToolCallRow
@@ -103,6 +106,22 @@ internal object RowMapper {
             tool = row.tool,
             files = emptyList(),
             risk = RiskLevel.valueOf(row.risk),
+            createdAt = Instant.fromEpochMilliseconds(row.created_at),
+        )
+
+    fun changePacket(row: ChangePacketRow): ChangePacket =
+        decode(row.payload, ChangePacket.serializer()) ?: ChangePacket(
+            id = PacketId(row.id),
+            revision = row.revision.toInt(),
+            taskId = TaskId(row.task_id),
+            title = "",
+            summary = "",
+            files = emptyList(),
+            risk = RiskLevel.valueOf(row.risk),
+            tests = dev.aide.domain.TestStatus(state = dev.aide.domain.TestState.NOT_RUN),
+            source = dev.aide.domain.ChangeSource.AGENT,
+            status = PacketStatus.valueOf(row.status),
+            branch = row.branch,
             createdAt = Instant.fromEpochMilliseconds(row.created_at),
         )
 

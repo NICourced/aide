@@ -4,8 +4,10 @@ import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
 import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ChangePacket
 import dev.aide.domain.ModelCheckFailure
 import dev.aide.domain.ModelSecretStatus
+import dev.aide.domain.PacketId
 import dev.aide.domain.ProviderCatalogEntry
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunId
@@ -109,6 +111,12 @@ sealed interface ClientMessage {
         val startLine: Int,
         /** Число строк; хост ограничивает максимальный размер одного ответа. */
         val lineCount: Int,
+        /** Источник версии файла; по умолчанию — текущий воркспейс (T-1.24). */
+        val source: DiffContextSource = DiffContextSource.WORKSPACE,
+        /** Пакет, чьи закреплённые версии читаем; null для [DiffContextSource.WORKSPACE]. */
+        val packetId: PacketId? = null,
+        /** Ревизия пакета; null для [DiffContextSource.WORKSPACE]. */
+        val packetRevision: Int? = null,
     ) : ClientMessage, RequestIdCarrier
 
     /** Запросить состояние хоста. */
@@ -497,6 +505,8 @@ sealed interface HostMessage {
         val runs: List<AgentRun>,
         /** Задачи в порядке постановки. */
         val tasks: List<Task>,
+        /** Пакеты изменений в очереди ревью (T-1.24). */
+        val packets: List<ChangePacket> = emptyList(),
     ) : HostMessage, RequestIdCarrier
 
     /** Команда управления прогоном принята. */

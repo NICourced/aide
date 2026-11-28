@@ -2,20 +2,32 @@ package dev.aide.host.store
 
 import dev.aide.domain.AgentRun
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ChangePacket
+import dev.aide.domain.ChangeSource
 import dev.aide.domain.ClientPlatform
 import dev.aide.domain.Cost
 import dev.aide.domain.DecisionScope
 import dev.aide.domain.DecisionValue
+import dev.aide.domain.FileChange
+import dev.aide.domain.FileChangeKind
+import dev.aide.domain.Hunk
 import dev.aide.domain.HunkId
+import dev.aide.domain.HunkKind
+import dev.aide.domain.HunkLine
+import dev.aide.domain.LineKind
 import dev.aide.domain.PacketId
+import dev.aide.domain.PacketStatus
 import dev.aide.domain.Permission
 import dev.aide.domain.ReviewDecision
+import dev.aide.domain.RiskLevel
 import dev.aide.domain.RunId
 import dev.aide.domain.RunState
 import dev.aide.domain.SnapshotRef
 import dev.aide.domain.Task
 import dev.aide.domain.TaskId
 import dev.aide.domain.TaskStatus
+import dev.aide.domain.TestState
+import dev.aide.domain.TestStatus
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
 import dev.aide.domain.ToolOutcome
@@ -104,4 +116,41 @@ object StoreFixtures {
     )
 
     val packetLevelDecision = decision.copy(scope = DecisionScope.PACKET, targetHunkId = null, comment = null)
+
+    val packet = ChangePacket(
+        id = PacketId("p-1"),
+        revision = 1,
+        taskId = TaskId("t-1"),
+        title = "Авторизация",
+        summary = "Добавить вход",
+        files = listOf(
+            FileChange(
+                path = "src/Main.kt",
+                changeKind = FileChangeKind.MODIFIED,
+                hunks = listOf(
+                    Hunk(
+                        id = HunkId("h-1"),
+                        filePath = "src/Main.kt",
+                        startLine = 1,
+                        kind = HunkKind.REPLACE,
+                        risk = RiskLevel.NORMAL,
+                        lines = listOf(
+                            HunkLine(LineKind.REMOVED, oldNumber = 1, newNumber = null, text = "old"),
+                            HunkLine(LineKind.ADDED, oldNumber = null, newNumber = 1, text = "new"),
+                        ),
+                    ),
+                ),
+                addedLines = 1,
+                removedLines = 1,
+            ),
+        ),
+        risk = RiskLevel.NORMAL,
+        tests = TestStatus(state = TestState.GREEN),
+        source = ChangeSource.AGENT,
+        status = PacketStatus.AWAITING_REVIEW,
+        branch = "ai/t-1",
+        baseCommit = "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736",
+        headCommit = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+        createdAt = t1,
+    )
 }

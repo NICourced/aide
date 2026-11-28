@@ -5,8 +5,19 @@ import dev.aide.domain.AgentRun
 import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
 import dev.aide.domain.Cost
+import dev.aide.domain.ChangePacket
+import dev.aide.domain.ChangeSource
+import dev.aide.domain.FileChange
 import dev.aide.domain.FileChangeKind
+import dev.aide.domain.Hunk
+import dev.aide.domain.HunkId
+import dev.aide.domain.HunkKind
+import dev.aide.domain.HunkLine
+import dev.aide.domain.LineKind
 import dev.aide.domain.ModelCheckFailure
+import dev.aide.domain.PacketId
+import dev.aide.domain.PacketStatus
+import dev.aide.domain.RiskLevel
 import dev.aide.domain.Snapshot
 import dev.aide.domain.SnapshotFileChange
 import dev.aide.domain.SnapshotPreview
@@ -235,6 +246,16 @@ class ProtocolCodecTest {
                 startLine = 5,
                 lineCount = 10,
             ),
+            ClientMessage.DiffContextRequest(
+                requestId,
+                workspaceId,
+                "src/auth/Login.kt",
+                startLine = 5,
+                lineCount = 10,
+                source = DiffContextSource.PACKET_OLD,
+                packetId = PacketId("p-1"),
+                packetRevision = 3,
+            ),
             ClientMessage.HostState(requestId, workspaceId),
             ClientMessage.PostTask(requestId, "Почини сборку", AutonomyMode.ASK_BEFORE_CHANGES),
             ClientMessage.PostTask(requestId, "Только предложи", AutonomyMode.SUGGEST_ONLY),
@@ -330,7 +351,7 @@ class ProtocolCodecTest {
             HostMessage.Failure(requestId, ProtocolError.NotFound("src/Main.kt")),
             HostMessage.Incompatible(IncompatibilityReason.HOST_OUTDATED, ProtocolVersion(2, 0)),
             HostMessage.TaskPosted(requestId, TaskId("t-1")),
-            HostMessage.AgentSnapshot(requestId, listOf(agentRun()), listOf(task())),
+            HostMessage.AgentSnapshot(requestId, listOf(agentRun()), listOf(task()), listOf(changePacket())),
             HostMessage.RunControlled(requestId, RunId("r-1")),
             HostMessage.PlanDecided(requestId, RunId("r-1")),
             HostMessage.AgentConfigSnapshot(requestId, agentConfig(), listOf(catalogEntry())),
@@ -349,6 +370,7 @@ class ProtocolCodecTest {
             HostMessage.Event(HostEvent.RunProgress(RunId("r-1"), 1_500, Cost(amountMicros = 25, known = true))),
             HostMessage.Event(HostEvent.TaskStateChanged(task())),
             HostMessage.Event(HostEvent.ToolCallRecorded(toolCall())),
+            HostMessage.Event(HostEvent.ChangePacketRecorded(changePacket())),
             HostMessage.Event(HostEvent.HostShuttingDown),
             HostMessage.ToolCallPage(
                 requestId = requestId,
@@ -540,6 +562,7 @@ class ProtocolCodecTest {
             HostEvent.RunStateChanged(agentRun().copy(state = RunState.PAUSED)),
             HostEvent.RunProgress(RunId("r-1"), 1_500, Cost(amountMicros = 25, known = false)),
             HostEvent.ApprovalRequested(approvalRequest()),
+            HostEvent.ChangePacketRecorded(changePacket()),
             HostEvent.HostShuttingDown,
         )
         events.forEach { event ->
@@ -547,6 +570,43 @@ class ProtocolCodecTest {
             assertEquals(message, hostMessage(ProtocolCodec.encode(message)))
         }
     }
+
+    private fun changePacket(): ChangePacket = ChangePacket(
+        id = PacketId("p-1"),
+        revision = 2,
+        taskId = TaskId("t-1"),
+        title = "Авторизация",
+        summary = "Добавить вход",
+        files = listOf(
+            FileChange(
+                path = "src/Main.kt",
+                changeKind = FileChangeKind.MODIFIED,
+                hunks = listOf(
+                    Hunk(
+                        id = HunkId("h-1"),
+                        filePath = "src/Main.kt",
+                        startLine = 1,
+                        kind = HunkKind.REPLACE,
+                        risk = RiskLevel.NORMAL,
+                        lines = listOf(
+                            HunkLine(kind = LineKind.REMOVED, oldNumber = 1, newNumber = null, text = "old"),
+                            HunkLine(kind = LineKind.ADDED, oldNumber = null, newNumber = 1, text = "new"),
+                        ),
+                    ),
+                ),
+                addedLines = 1,
+                removedLines = 1,
+            ),
+        ),
+        risk = RiskLevel.NORMAL,
+        tests = dev.aide.domain.TestStatus(state = dev.aide.domain.TestState.GREEN),
+        source = ChangeSource.AGENT,
+        status = PacketStatus.AWAITING_REVIEW,
+        branch = "ai/t-1",
+        baseCommit = "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736",
+        headCommit = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+        createdAt = Instant.fromEpochMilliseconds(1_758_535_200_000),
+    )
 
     private fun snapshot(): Snapshot = Snapshot(
         ref = SnapshotRef("refs/ai/snap/1758535200000-before-agent-step"),

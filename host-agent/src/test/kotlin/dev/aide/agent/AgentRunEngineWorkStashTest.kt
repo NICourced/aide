@@ -49,7 +49,7 @@ class AgentRunEngineWorkStashTest {
 
     private fun engine(llm: LlmClient = textModel()): AgentRunEngine =
         AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = fixedModel(llm),
             planner = RunPlanner { _, _, _ -> plan("шаг") },
             tools = tools,

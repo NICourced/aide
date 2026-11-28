@@ -35,6 +35,9 @@ class HostStore internal constructor(
     /** Очередь неприменённых файловых предложений (T-1.15). */
     val proposals: ChangeProposalStore = ChangeProposalStore(database)
 
+    /** Неизменяемые пакеты изменений для ревью (T-1.24). */
+    val packets: ChangePacketStore = ChangePacketStore(database)
+
     /** Права на инструменты. */
     val permissions: PermissionStore = PermissionStore(database)
 

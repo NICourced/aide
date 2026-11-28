@@ -53,7 +53,7 @@ class AgentRunEngineAutonomyTest {
         fixture: AutonomyFixture = AutonomyFixture(),
     ): TestEngine {
         val engine = AgentRunEngine(
-            ports = RunPorts(runs, tasks, sink),
+            ports = RunPorts(runs, tasks, sink, noPackets),
             models = fixedModel(llm),
             planner = RunPlanner { _, _, _ ->
                 listOf(PlanStep(index = 0, summary = "записать файл", status = StepStatus.PENDING))

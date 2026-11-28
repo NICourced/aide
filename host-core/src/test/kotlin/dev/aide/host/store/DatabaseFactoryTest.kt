@@ -32,7 +32,7 @@ class DatabaseFactoryTest {
                 assertEquals(StoreFixtures.task, store.tasks.load(StoreFixtures.task.id))
             }
 
-            assertEquals(4L, userVersionOf(path))
+            assertEquals(5L, userVersionOf(path))
         } finally {
             directory.toFile().deleteRecursively()
         }
@@ -108,7 +108,7 @@ class DatabaseFactoryTest {
                 assertEquals(2L, store.tasks.count())
             }
 
-            assertEquals(4L, userVersionOf(path))
+            assertEquals(5L, userVersionOf(path))
         } finally {
             directory.toFile().deleteRecursively()
         }

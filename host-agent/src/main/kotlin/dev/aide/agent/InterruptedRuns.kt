@@ -132,6 +132,9 @@ object RunInterruptReason {
      * обрезка по пределу токенов повторится, — поэтому прогон честно останавливается.
      */
     const val RESPONSE_TRUNCATED: String = "response_truncated"
+
+    /** Сборка пакета изменений после прогона не удалась (T-1.24). */
+    const val PACKET_ASSEMBLY_FAILED: String = "packet_assembly_failed"
 }
 
 /**

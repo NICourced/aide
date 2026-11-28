@@ -4,6 +4,7 @@ import dev.aide.domain.AgentConfig
 import dev.aide.domain.AgentRun
 import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ChangePacket
 import dev.aide.domain.Cost
 import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.PlanDecision
@@ -51,6 +52,8 @@ data class HostSession(
     val runs: List<AgentRun> = emptyList(),
     /** Задачи хоста в порядке постановки; статус приходит событиями и запросом (T-1.1). */
     val tasks: List<Task> = emptyList(),
+    /** Пакеты изменений в очереди ревью; приходят событиями и запросом (T-1.24). */
+    val packets: List<ChangePacket> = emptyList(),
     /** Конфигурация моделей хоста; null, пока её не запросили (T-1.56). */
     val agentConfig: AgentConfig? = null,
     /** Каталог заготовок провайдеров (T-1.56). */
@@ -193,6 +196,8 @@ class HostClient(
 
                     is HostEvent.ApprovalRequested -> sessionState.update { it.copy(pendingApproval = event.request) }
 
+                    is HostEvent.ChangePacketRecorded -> sessionState.update { it.withPacket(event.packet) }
+
                     HostEvent.HostShuttingDown -> _hostShuttingDown.value = true
                 }
             }
@@ -294,7 +299,9 @@ class HostClient(
         val requestId = requestIds.next()
         return when (val response = connection.request(ClientMessage.AgentStatus(requestId))) {
             is HostMessage.AgentSnapshot -> {
-                sessionState.update { it.copy(runs = response.runs, tasks = response.tasks) }
+                sessionState.update {
+                    it.copy(runs = response.runs, tasks = response.tasks, packets = response.packets)
+                }
                 Result.success(Unit)
             }
 
@@ -411,6 +418,11 @@ private fun HostSession.withRunProgress(runId: RunId, elapsedMillis: Long, cost:
 /** Обновляет задачу в сессии, сохраняя порядок постановки. */
 private fun HostSession.withTask(task: Task): HostSession =
     copy(tasks = (tasks.filterNot { it.id == task.id } + task).sortedBy { it.createdAt })
+
+/** Обновляет пакет в сессии, сохраняя порядок по времени создания. */
+private fun HostSession.withPacket(packet: ChangePacket): HostSession =
+    copy(packets = (packets.filterNot { it.id == packet.id && it.revision == packet.revision } + packet)
+        .sortedBy { it.createdAt })
 
 /**
  * Выполняет запрос по открытому воркспейсу.

@@ -104,7 +104,7 @@ class RunWorkerTest {
     }
 
     private fun engine(runs: RunRepository, tasks: TaskRepository): AgentRunEngine = AgentRunEngine(
-        ports = RunPorts(runs, tasks, NoopSink),
+        ports = RunPorts(runs, tasks, NoopSink, noPackets),
         models = ModelProvider { Result.success(ConfiguredModel("test/scripted", TextModel())) },
         planner = RunPlanner { _, _, _ -> listOf(PlanStep(index = 0, summary = "шаг", status = StepStatus.PENDING)) },
         tools = testStepTools(),

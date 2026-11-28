@@ -151,6 +151,48 @@ class MigrationTest {
     }
 
     @Test
+    fun `миграция с версии 4 на версию 5 добавляет таблицу пакетов`() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+
+        // 1. База после третьей миграции — состояние версии 4.
+        StoreTestSupport.createLegacyDatabase(driver)
+        HostDatabase.Schema.migrate(driver, 1, 2, *arrayOf<AfterVersion>())
+        HostDatabase.Schema.migrate(driver, 2, 3, *arrayOf<AfterVersion>())
+        HostDatabase.Schema.migrate(driver, 3, 4, *arrayOf<AfterVersion>())
+        assertFalse(
+            StoreTestSupport.columns(driver, "change_packet").contains("id"),
+            "до миграции таблицы пакетов быть не должно",
+        )
+
+        // 2. Миграция до версии 5.
+        HostDatabase.Schema.migrate(driver, 4, 5, *arrayOf<AfterVersion>())
+
+        // 3. Появилась таблица с нужными индексами.
+        val database = HostDatabase(driver)
+        database.changePacketQueries.insert(
+            id = "p-1",
+            revision = 1,
+            task_id = "t-1",
+            status = "AWAITING_REVIEW",
+            risk = "NORMAL",
+            branch = "ai/t-1",
+            created_at = 1_758_535_200_000,
+            payload = byteArrayOf(1, 2, 3),
+        )
+        assertEquals(1, database.changePacketQueries.count().executeAsOne())
+        assertTrue(
+            StoreTestSupport.indexes(driver, "change_packet").contains("change_packet_task"),
+            "версия 5 обязана добавить индекс по task_id",
+        )
+        assertTrue(
+            StoreTestSupport.indexes(driver, "change_packet").contains("change_packet_status"),
+            "версия 5 обязана добавить индекс по status",
+        )
+
+        driver.close()
+    }
+
+    @Test
     fun `чистая база создаётся в текущей версии и принимает записи`() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         HostDatabase.Schema.create(driver)

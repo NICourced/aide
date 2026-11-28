@@ -19,6 +19,9 @@ import dev.aide.agent.tools.StepTools
 import dev.aide.host.agent.AgentConfigHandler
 import dev.aide.host.agent.AgentRunHandler
 import dev.aide.host.agent.ChangeSnapshotGuard
+import dev.aide.host.diff.LineDiffEngine
+import dev.aide.host.packet.ChangePacketAssembler
+import dev.aide.host.packet.PacketContextReader
 import dev.aide.host.agent.ClientMessageRouter
 import dev.aide.host.agent.ModelSecretHandler
 import dev.aide.host.agent.PendingApprovals
@@ -73,6 +76,7 @@ import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.datetime.Clock
 import org.koin.core.KoinApplication
 import org.koin.core.module.Module
 import org.koin.core.qualifier.Qualifier
@@ -143,11 +147,16 @@ object HostApp {
         // Открытые воркспейсы — одна точка правды и для обработчика клиента, и для
         // инструментов агента: воркспейс открывает клиент, а читает его агент (T-1.7).
         single { OpenWorkspaces() }
-        single { StageZeroHandler(mode = get(modeQualifier), workspaces = get(), onWorkspaceOpened = {
-            // Возврат отложенных правок после падения хоста (T-1.59): репозиторий открыт лишь
-            // сейчас, и вернуть правки можно только в него.
-            get<StashRecovery>().afterRestart()
-        }) }
+        single { StageZeroHandler(
+            mode = get(modeQualifier),
+            workspaces = get(),
+            packetContext = PacketContextReader(workspaces = get(), store = get<HostStore>()),
+            onWorkspaceOpened = {
+                // Возврат отложенных правок после падения хоста (T-1.59): репозиторий открыт лишь
+                // сейчас, и вернуть правки можно только в него.
+                get<StashRecovery>().afterRestart()
+            },
+        ) }
         // Ветка задачи: реализация порта объявлена по типу интерфейса, иначе Koin
         // разрешал бы её по точному имени класса и не нашёл бы движку (T-1.18).
         single<TaskBranches> { TaskBranchGuard(workspaces = get(), sessions = get()) }
@@ -173,6 +182,13 @@ object HostApp {
                     runs = StoreRunRepository(get<HostStore>().runs),
                     tasks = StoreTaskRepository(get<HostStore>().tasks),
                     events = ServerRunEventSink(get()),
+                    packets = ChangePacketAssembler(
+                        workspaces = get(),
+                        store = get<HostStore>(),
+                        sessions = get(),
+                        clock = Clock.System::now,
+                        diffEngine = LineDiffEngine(),
+                    ),
                 ),
                 models = models,
                 planner = planner,
@@ -190,6 +206,7 @@ object HostApp {
                 engine = get(),
                 runs = get<HostStore>().runs,
                 tasks = get<HostStore>().tasks,
+                packets = get<HostStore>().packets,
             )
         }
         handlersModule(storage, models)

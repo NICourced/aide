@@ -4,8 +4,10 @@ import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import dev.aide.agent.RunInterruptReason
 import dev.aide.domain.RunId
 import dev.aide.domain.SnapshotRef
+import dev.aide.host.git.ChangeSetRepository
 import dev.aide.host.git.ChangedFile
 import dev.aide.host.git.CommitInfo
+import dev.aide.host.git.GitChangeSet
 import dev.aide.host.git.GitCliFixture
 import dev.aide.host.git.GitRepository
 import dev.aide.host.git.JGitRepository
@@ -23,6 +25,7 @@ import dev.aide.host.git.StepCommitOutcome
 import dev.aide.host.git.TaskBranchOutcome
 import dev.aide.host.git.snapshotRefName
 import dev.aide.host.store.HostStore
+import dev.aide.protocol.ContextLinePayload
 import dev.aide.host.store.db.HostDatabase
 import dev.aide.host.workspace.FileTreeBuilder
 import dev.aide.host.workspace.OpenWorkspaces
@@ -268,6 +271,18 @@ private class RefusingGit : GitRepository {
             SnapshotRollbackOutcome.Refused(SnapshotRollbackRefusal.UNKNOWN_SNAPSHOT)
         override fun revert(ref: SnapshotRef, expectedHead: String): SnapshotRollbackOutcome<SnapshotRevertCommitted> =
             SnapshotRollbackOutcome.Refused(SnapshotRollbackRefusal.UNKNOWN_SNAPSHOT)
+    }
+
+    override val changeSets: ChangeSetRepository = object : ChangeSetRepository {
+        override fun read(baseBranch: String, taskBranch: String): GitChangeSet =
+            GitChangeSet(baseCommit = "", headCommit = "", files = emptyList())
+
+        override fun readContext(
+            commit: String,
+            path: String,
+            startLine: Int,
+            lineCount: Int,
+        ): List<ContextLinePayload> = emptyList()
     }
 
     override fun close() = Unit

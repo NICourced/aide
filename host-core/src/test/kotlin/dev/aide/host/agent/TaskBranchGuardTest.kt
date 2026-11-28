@@ -2,8 +2,10 @@ package dev.aide.host.agent
 
 import dev.aide.agent.RunInterruptReason
 import dev.aide.agent.ports.TaskBranch
+import dev.aide.host.git.ChangeSetRepository
 import dev.aide.host.git.ChangedFile
 import dev.aide.host.git.CommitInfo
+import dev.aide.host.git.GitChangeSet
 import dev.aide.host.git.GitRepository
 import dev.aide.host.git.RestoreOutcome
 import dev.aide.host.git.RestoreRepository
@@ -29,6 +31,7 @@ import dev.aide.host.workspace.TempRepoFixture
 import dev.aide.host.workspace.Workspace
 import dev.aide.host.workspace.WorkspaceBoundaryAdapter
 import dev.aide.host.workspace.WorkspaceFileSystem
+import dev.aide.protocol.ContextLinePayload
 import dev.aide.protocol.DecodeResult
 import dev.aide.protocol.HostEvent
 import dev.aide.protocol.HostMessage
@@ -212,6 +215,18 @@ class TaskBranchGuardTest {
                 expectedHead: String,
             ): SnapshotRollbackOutcome<SnapshotRevertCommitted> =
                 SnapshotRollbackOutcome.Refused(SnapshotRollbackRefusal.UNKNOWN_SNAPSHOT)
+        }
+
+        override val changeSets: ChangeSetRepository = object : ChangeSetRepository {
+            override fun read(baseBranch: String, taskBranch: String): GitChangeSet =
+                GitChangeSet(baseCommit = "", headCommit = "", files = emptyList())
+
+            override fun readContext(
+                commit: String,
+                path: String,
+                startLine: Int,
+                lineCount: Int,
+            ): List<ContextLinePayload> = emptyList()
         }
 
         override fun close() = Unit

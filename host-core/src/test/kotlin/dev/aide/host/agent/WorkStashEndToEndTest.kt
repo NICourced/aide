@@ -68,7 +68,7 @@ class WorkStashEndToEndTest {
     }
 
     private fun engine(llm: LlmClient = TextModel()): AgentRunEngine = AgentRunEngine(
-        ports = RunPorts(runs, tasks, NoopSink),
+        ports = RunPorts(runs, tasks, NoopSink, noPackets),
         models = ModelProvider { Result.success(ConfiguredModel("test/scripted", llm)) },
         planner = RunPlanner { _, _, _ ->
             duringRun = Captured(

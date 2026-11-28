@@ -1,6 +1,7 @@
 package dev.aide.host.git
 
 import dev.aide.domain.FileChangeKind
+import dev.aide.protocol.ContextLinePayload
 import dev.aide.protocol.ProtocolError
 
 /** Файл, изменённый относительно HEAD. */
@@ -119,10 +120,44 @@ interface GitRepository : AutoCloseable {
      */
     val rollback: SnapshotRollbackRepository
 
+    /**
+     * Чтение diff'а между базовой и задачной ветками без переключения рабочего дерева (T-1.24).
+     *
+     * Свойство, а не методы в основном интерфейсе: у операции свои предпроверки
+     * (merge-base, деревья коммитов, чтение blob'ов) и она не трогает HEAD/индекс.
+     */
+    val changeSets: ChangeSetRepository
+
     companion object {
         /** Сколько коммитов отдаётся по умолчанию: столько помещается в список без подгрузки. */
         const val DEFAULT_LOG_LIMIT: Int = 50
     }
+}
+
+/**
+ * Набор файловых изменений между двумя закреплёнными коммитами (T-1.24).
+ *
+ * [baseCommit] — merge-base задачи, [headCommit] — HEAD ветки задачи на момент сборки.
+ */
+data class GitChangeSet(
+    /** Merge-base, от которого считается diff. */
+    val baseCommit: String,
+    /** HEAD ветки задачи. */
+    val headCommit: String,
+    /** Входные данные для построчного diff'а по файлам. */
+    val files: List<dev.aide.host.diff.TextDiffInput>,
+)
+
+/**
+ * Чтение изменений между ветками и строк из blob'ов конкретной ревизии (T-1.24).
+ */
+interface ChangeSetRepository {
+
+    /** Собирает diff между [baseBranch] и [taskBranch] в виде текстовых пар old/new. */
+    fun read(baseBranch: String, taskBranch: String): GitChangeSet
+
+    /** Читает диапазон строк файла из blob'а коммита [commit]. */
+    fun readContext(commit: String, path: String, startLine: Int, lineCount: Int): List<ContextLinePayload>
 }
 
 /**

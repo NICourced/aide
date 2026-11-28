@@ -30,6 +30,10 @@ data class ChangePacket(
     val branch: String,
     /** Снапшот, к которому можно откатить пакет; null, если снапшот ещё не поставлен. */
     val snapshotRef: SnapshotRef? = null,
+    /** Базовый коммит пакета: merge-base задачи, от которого считается diff (T-1.24). */
+    val baseCommit: String? = null,
+    /** HEAD коммит ветки задачи на момент сборки пакета (T-1.24). */
+    val headCommit: String? = null,
     /** Момент сборки пакета. */
     val createdAt: Instant,
 ) {

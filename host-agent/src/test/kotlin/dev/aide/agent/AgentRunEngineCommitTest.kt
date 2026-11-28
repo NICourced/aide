@@ -63,7 +63,7 @@ class AgentRunEngineCommitTest {
         stored: (String) -> ToolPermission? = writeAllowed,
         approve: Boolean = true,
     ): AgentRunEngine = AgentRunEngine(
-        ports = RunPorts(runs, tasks, sink),
+        ports = RunPorts(runs, tasks, sink, noPackets),
         models = fixedModel(llm),
         planner = RunPlanner { _, _, _ -> plan },
         tools = stepToolsIn(

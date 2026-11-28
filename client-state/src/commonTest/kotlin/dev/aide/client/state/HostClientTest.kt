@@ -3,12 +3,26 @@ package dev.aide.client.state
 import dev.aide.domain.AgentRun
 import dev.aide.domain.ApprovalDecision
 import dev.aide.domain.AutonomyMode
+import dev.aide.domain.ChangePacket
+import dev.aide.domain.ChangeSource
 import dev.aide.domain.Cost
+import dev.aide.domain.FileChange
+import dev.aide.domain.FileChangeKind
+import dev.aide.domain.Hunk
+import dev.aide.domain.HunkId
+import dev.aide.domain.HunkKind
+import dev.aide.domain.HunkLine
+import dev.aide.domain.LineKind
+import dev.aide.domain.PacketId
+import dev.aide.domain.PacketStatus
 import dev.aide.domain.PlanDecision
+import dev.aide.domain.RiskLevel
 import dev.aide.domain.RunId
 import dev.aide.domain.RunCommand
 import dev.aide.domain.RunState
 import dev.aide.domain.TaskId
+import dev.aide.domain.TestState
+import dev.aide.domain.TestStatus
 import dev.aide.domain.ToolApprovalRequest
 import dev.aide.domain.ToolCall
 import dev.aide.domain.ToolCallId
@@ -445,6 +459,99 @@ class HostClientTest {
         assertTrue(found, "после реконнекта обязан уйти запрос ожидающих подтверждений")
         assertEquals(1, pending.size, "запрос ожидающих подтверждений обязан уйти ровно один раз")
     }
+
+    @Test
+    fun `событие ChangePacketRecorded обновляет сессию`() = runBlocking {
+        val packet = changePacketFixture()
+        connection.emit(HostEvent.ChangePacketRecorded(packet))
+
+        assertTrue(
+            awaitProcessed { client.session.value.packets.any { it.id == packet.id } },
+            "пакет из события обязан попасть в сессию",
+        )
+    }
+
+    @Test
+    fun `AgentStatus сохраняет пакеты в сессии`() = runBlocking {
+        val packet = changePacketFixture()
+        connection.respond = { message ->
+            if (message is ClientMessage.AgentStatus) {
+                HostMessage.AgentSnapshot(message.requestId, emptyList(), emptyList(), listOf(packet))
+            } else {
+                connection.defaultResponse(message)
+            }
+        }
+
+        client.agentStatus().getOrThrow()
+
+        assertEquals(listOf(packet), client.session.value.packets)
+    }
+
+    @Test
+    fun `запрос контекста пакета уходит с source и идентификаторами`() = runBlocking {
+        val workspaceId = WorkspaceId("ws-packet")
+
+        client.diffContext.context(
+            workspaceId,
+            "src/A.kt",
+            startLine = 1,
+            lineCount = 1,
+            source = dev.aide.protocol.DiffContextSource.PACKET_OLD,
+            packetId = PacketId("p-1"),
+            packetRevision = 2,
+        )
+
+        val request = connection.takeRequests().filterIsInstance<ClientMessage.DiffContextRequest>().single()
+        assertEquals(dev.aide.protocol.DiffContextSource.PACKET_OLD, request.source)
+        assertEquals(PacketId("p-1"), request.packetId)
+        assertEquals(2, request.packetRevision)
+
+        val payload = client.diffContext.context(
+            workspaceId,
+            "src/A.kt",
+            startLine = 1,
+            lineCount = 1,
+            source = dev.aide.protocol.DiffContextSource.PACKET_OLD,
+            packetId = PacketId("p-1"),
+            packetRevision = 2,
+        ).getOrThrow()
+        assertEquals("old-1", payload.lines.single().text)
+    }
+
+    private fun changePacketFixture(): ChangePacket = ChangePacket(
+        id = PacketId("p-1"),
+        revision = 1,
+        taskId = TaskId("t-1"),
+        title = "Авторизация",
+        summary = "Добавить вход",
+        files = listOf(
+            FileChange(
+                path = "src/Main.kt",
+                changeKind = FileChangeKind.MODIFIED,
+                hunks = listOf(
+                    Hunk(
+                        id = HunkId("h-1"),
+                        filePath = "src/Main.kt",
+                        startLine = 1,
+                        kind = HunkKind.REPLACE,
+                        risk = RiskLevel.NORMAL,
+                        lines = listOf(
+                            HunkLine(LineKind.REMOVED, oldNumber = 1, newNumber = null, text = "old"),
+                            HunkLine(LineKind.ADDED, oldNumber = null, newNumber = 1, text = "new"),
+                        ),
+                    ),
+                ),
+                addedLines = 1,
+                removedLines = 1,
+            ),
+        ),
+        risk = RiskLevel.NORMAL,
+        tests = TestStatus(state = TestState.GREEN),
+        source = ChangeSource.AGENT,
+        status = PacketStatus.AWAITING_REVIEW,
+        branch = "ai/t-1",
+        createdAt = TOOL_CALL_AT,
+    )
 
     @Test
     fun `при первом подключении клиент запрашивает ожидающие подтверждения`() = runBlocking {

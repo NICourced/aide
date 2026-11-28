@@ -31,7 +31,7 @@ class AgentRunEngineSnapshotTest {
     private val tools = stepTools()
 
     private fun engine(): AgentRunEngine = AgentRunEngine(
-        ports = RunPorts(runs, tasks, sink),
+        ports = RunPorts(runs, tasks, sink, noPackets),
         models = fixedModel(textModel()),
         planner = RunPlanner { _, _, _ -> plan("шаг") },
         tools = tools,

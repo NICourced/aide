@@ -3,6 +3,7 @@ package dev.aide.host.agent
 import dev.aide.agent.AgentRunEngine
 import dev.aide.agent.UnknownRunException
 import dev.aide.host.server.ClientMessageHandler
+import dev.aide.host.store.ChangePacketStore
 import dev.aide.host.store.RunStore
 import dev.aide.host.store.TaskStore
 import dev.aide.protocol.ClientMessage
@@ -22,6 +23,7 @@ class AgentRunHandler(
     private val engine: AgentRunEngine,
     private val runs: RunStore,
     private val tasks: TaskStore,
+    private val packets: ChangePacketStore,
 ) : ClientMessageHandler {
 
     override suspend fun handle(message: ClientMessage): HostMessage = when (message) {
@@ -38,6 +40,7 @@ class AgentRunHandler(
             requestId = message.requestId,
             runs = runs.all(),
             tasks = tasks.all(),
+            packets = packets.all(),
         )
 
         is ClientMessage.RunControl -> control(message)

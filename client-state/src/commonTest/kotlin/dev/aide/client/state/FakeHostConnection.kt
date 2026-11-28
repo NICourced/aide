@@ -13,6 +13,8 @@ import dev.aide.protocol.ProtocolError
 import dev.aide.protocol.ProtocolVersion
 import dev.aide.domain.ModelSecretStatus
 import dev.aide.domain.TaskId
+import dev.aide.domain.PacketId
+import dev.aide.protocol.DiffContextSource
 import dev.aide.protocol.SessionId
 import dev.aide.protocol.WorkspaceId
 import kotlinx.coroutines.channels.Channel
@@ -88,7 +90,7 @@ internal class FakeHostConnection : HostConnection {
     fun takeRequests(): List<ClientMessage> =
         generateSequence { received.tryReceive().getOrNull() }.toList()
 
-    private fun defaultResponse(message: ClientMessage): HostMessage = when (message) {
+    internal fun defaultResponse(message: ClientMessage): HostMessage = when (message) {
         is ClientMessage.Hello -> HostMessage.Hello(ProtocolVersion.CURRENT, SessionId("session-fake"))
 
         is ClientMessage.OpenWorkspace -> HostMessage.WorkspaceOpened(message.requestId, workspaceId)
@@ -120,10 +122,20 @@ internal class FakeHostConnection : HostConnection {
                 workspaceId = workspaceId,
                 path = message.path,
                 startLine = message.startLine,
-                lines = listOf(
-                    ContextLinePayload(number = message.startLine, text = "line-${message.startLine}"),
-                    ContextLinePayload(number = message.startLine + 1, text = "line-${message.startLine + 1}"),
-                ),
+                lines = when (message.source) {
+                    DiffContextSource.WORKSPACE -> listOf(
+                        ContextLinePayload(number = message.startLine, text = "line-${message.startLine}"),
+                        ContextLinePayload(number = message.startLine + 1, text = "line-${message.startLine + 1}"),
+                    )
+
+                    DiffContextSource.PACKET_OLD -> listOf(
+                        ContextLinePayload(number = message.startLine, text = "old-${message.startLine}"),
+                    )
+
+                    DiffContextSource.PACKET_NEW -> listOf(
+                        ContextLinePayload(number = message.startLine, text = "new-${message.startLine}"),
+                    )
+                },
             ),
         )
 
@@ -157,7 +169,12 @@ internal class FakeHostConnection : HostConnection {
     private fun agentOrModelResponse(message: ClientMessage): HostMessage = when (message) {
         is ClientMessage.PostTask -> HostMessage.TaskPosted(message.requestId, TaskId("t-task"))
 
-        is ClientMessage.AgentStatus -> HostMessage.AgentSnapshot(message.requestId, emptyList(), emptyList())
+        is ClientMessage.AgentStatus -> HostMessage.AgentSnapshot(
+            message.requestId,
+            emptyList(),
+            emptyList(),
+            emptyList(),
+        )
 
         is ClientMessage.RunControl -> HostMessage.RunControlled(message.requestId, message.runId)
 

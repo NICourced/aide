@@ -5,6 +5,7 @@ import dev.aide.domain.ClientPlatform
 import dev.aide.domain.DecisionScope
 import dev.aide.domain.DecisionValue
 import dev.aide.domain.PacketId
+import dev.aide.domain.PacketStatus
 import dev.aide.domain.Permission
 import dev.aide.domain.RunId
 import dev.aide.domain.TaskId
@@ -231,5 +232,43 @@ class HostStoreTest {
 
         assertEquals(Permission.DENY, store.permissions.load("fs.write")?.write)
         assertEquals(1, store.permissions.all().size)
+    }
+
+    @Test
+    fun `пакет изменений переживает запись и чтение`() {
+        store.packets.save(StoreFixtures.packet)
+
+        assertEquals(StoreFixtures.packet, store.packets.load(StoreFixtures.packet.id, StoreFixtures.packet.revision))
+    }
+
+    @Test
+    fun `пакеты читаются по задаче в порядке ревизий`() {
+        val first = StoreFixtures.packet
+        val second = first.copy(revision = 2, status = PacketStatus.IN_PROGRESS)
+        store.packets.save(first)
+        store.packets.save(second)
+
+        assertEquals(listOf(first, second), store.packets.byTask(first.taskId))
+    }
+
+    @Test
+    fun `последняя ревизия пакета возвращает максимум`() {
+        store.packets.save(StoreFixtures.packet)
+        store.packets.save(StoreFixtures.packet.copy(revision = 3))
+
+        assertEquals(3, store.packets.latestRevision(StoreFixtures.packet.id))
+    }
+
+    @Test
+    fun `пакеты читаются все в порядке создания`() {
+        val other = StoreFixtures.packet.copy(
+            id = PacketId("p-2"),
+            taskId = TaskId("t-2"),
+            createdAt = Instant.parse("2026-09-22T10:02:00Z"),
+        )
+        store.packets.save(StoreFixtures.packet)
+        store.packets.save(other)
+
+        assertEquals(listOf(StoreFixtures.packet, other), store.packets.all())
     }
 }

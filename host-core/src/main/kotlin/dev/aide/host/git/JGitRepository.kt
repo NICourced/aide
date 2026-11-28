@@ -53,6 +53,8 @@ class JGitRepository internal constructor(
         ::changedFiles,
     )
 
+    override val changeSets: ChangeSetRepository = PacketDiffOperation(repository)
+
     override fun currentBranch(): String = repository.branch ?: DETACHED_HEAD
 
     override fun headCommit(): String =
